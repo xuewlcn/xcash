@@ -21,9 +21,11 @@ from common.fields import EvmAddressField
 from common.models import UndeletableModel
 from evm.choices import TxKind
 from evm.constants import EVM_PIPELINE_DEPTH
+from evm.intents import assert_transfer_type_implemented
 
 if TYPE_CHECKING:
     from currencies.models import Crypto
+    from evm.intents import EvmTxIntent
 
 # ERC-20 transfer(address,uint256) 函数选择器
 _ERC20_TRANSFER_SELECTOR = "0xa9059cbb"
@@ -285,7 +287,7 @@ class EvmBroadcastTask(UndeletableModel):
         return hashes
 
     def _find_receipt_for_known_hashes(self) -> tuple[str | None, dict | None]:
-        from web3.exceptions import TransactionNotFound
+        from web3.exceptions import TransactionNotFound  # noqa: PLC0415
 
         for tx_hash in self._known_tx_hashes():
             try:
@@ -324,7 +326,7 @@ class EvmBroadcastTask(UndeletableModel):
         if receipt is None or tx_hash is None:
             return False
 
-        from evm.coordinator import InternalEvmTaskCoordinator
+        from evm.coordinator import InternalEvmTaskCoordinator  # noqa: PLC0415
 
         status = receipt.get("status")
         if status == 1:
@@ -344,7 +346,7 @@ class EvmBroadcastTask(UndeletableModel):
     @staticmethod
     def _is_execution_reverted_error(exc: Exception) -> bool:
         """识别链上模拟时合约回退 / 交易本身注定失败的错误。"""
-        from web3.exceptions import ContractLogicError
+        from web3.exceptions import ContractLogicError  # noqa: PLC0415
 
         if isinstance(exc, ContractLogicError):
             return True
@@ -382,7 +384,7 @@ class EvmBroadcastTask(UndeletableModel):
         if self.base_task.transfer_type != TransferType.DepositCollection:
             return False
 
-        from deposits.models import DepositAddress
+        from deposits.models import DepositAddress  # noqa: PLC0415
 
         return DepositAddress.objects.filter(address=self.address).exists()
 
@@ -394,8 +396,8 @@ class EvmBroadcastTask(UndeletableModel):
         Vault 派生所需字段；若 DB 关系异常（极端情况）记录日志静默跳过，
         让上层保持 QUEUED 等下一轮再试，而不是把 pre-flight 打成硬错误。
         """
-        from deposits.models import DepositAddress
-        from deposits.service import GasRechargeService
+        from deposits.models import DepositAddress  # noqa: PLC0415
+        from deposits.service import GasRechargeService  # noqa: PLC0415
 
         try:
             deposit_address = DepositAddress.objects.select_related(
@@ -582,6 +584,50 @@ class EvmBroadcastTask(UndeletableModel):
             )
             state.next_nonce = nonce + 1
             state.save()
+            return broadcast_task
+
+    @classmethod
+    def schedule(cls, intent: EvmTxIntent) -> EvmBroadcastTask:
+        """按 EvmTxIntent 原子创建待执行广播任务。
+
+        verify_fn 必须在 (address, chain) 行锁内、nonce 分配前执行；验证失败时整个
+        事务回滚，避免留下未通过业务二次校验的 BroadcastTask 或 nonce 空洞。
+        """
+        assert_transfer_type_implemented(intent.transfer_type)
+
+        with db_transaction.atomic():
+            state = AddressChainState.acquire_for_update(
+                address=intent.address,
+                chain=intent.chain,
+            )
+
+            if intent.verify_fn is not None:
+                intent.verify_fn()
+
+            nonce = cls._next_nonce(intent.address, intent.chain, state=state)
+            base_task = BroadcastTask.objects.create(
+                chain=intent.chain,
+                address=intent.address,
+                transfer_type=intent.transfer_type,
+                crypto=intent.crypto,
+                recipient=intent.recipient,
+                amount=intent.amount,
+                stage=getattr(intent, "stage", BroadcastTaskStage.QUEUED),
+                result=getattr(intent, "result", BroadcastTaskResult.UNKNOWN),
+            )
+            broadcast_task = cls.objects.create(
+                base_task=base_task,
+                address=intent.address,
+                chain=intent.chain,
+                tx_kind=intent.tx_kind,
+                to=intent.to,
+                value=intent.value,
+                data=intent.data,
+                gas=intent.gas,
+                nonce=nonce,
+            )
+            state.next_nonce = nonce + 1
+            state.save(update_fields=["next_nonce", "updated_at"])
             return broadcast_task
 
     @staticmethod
