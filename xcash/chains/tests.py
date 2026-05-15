@@ -40,7 +40,9 @@ from chains.signer import SignerServiceError
 from chains.signer import build_signer_signature_payload
 from chains.signer import get_signer_backend
 from chains.tasks import block_number_updated
+from currencies.models import ChainToken
 from currencies.models import Crypto
+from evm.choices import TxKind
 
 
 class ChainPoaDetectionTests(SimpleTestCase):
@@ -1781,3 +1783,126 @@ def test_chain_create2_factory_address_is_nullable():
     )
     # 字段默认为空，不影响现有 chain 创建
     assert chain.create2_factory_address in (None, "")
+
+
+@pytest.mark.django_db
+def test_address_send_crypto_schedules_native_transfer_intent():
+    native = Crypto.objects.create(
+        name="Task12 Native",
+        symbol="T12N",
+        coingecko_id="task12-native",
+        decimals=18,
+    )
+    chain = Chain.objects.create(
+        code="task12-native",
+        chain_id=912_001,
+        name="Task12 Native Chain",
+        type=ChainType.EVM,
+        native_coin=native,
+        base_transfer_gas=21_000,
+        erc20_transfer_gas=60_000,
+    )
+    address = Address.objects.create(
+        wallet=Wallet.objects.create(),
+        chain_type=ChainType.EVM,
+        usage=AddressUsage.Vault,
+        bip44_account=Wallet.get_bip44_account(AddressUsage.Vault),
+        address_index=0,
+        address=Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000121201"
+        ),
+    )
+    tx_hash = "0x" + "12" * 32
+
+    with patch("evm.models.EvmBroadcastTask.schedule") as schedule_mock:
+        schedule_mock.return_value = Mock(base_task=Mock(tx_hash=tx_hash))
+
+        result = address.send_crypto(
+            crypto=native,
+            chain=chain,
+            to="0x0000000000000000000000000000000000121202",
+            amount=Decimal("1.5"),
+            transfer_type=TransferType.Withdrawal,
+        )
+
+    assert result == tx_hash
+    schedule_mock.assert_called_once()
+    (intent,) = schedule_mock.call_args.args
+    assert intent.address == address
+    assert intent.chain == chain
+    assert intent.tx_kind == TxKind.NATIVE_TRANSFER
+    assert intent.transfer_type == TransferType.Withdrawal
+    assert intent.crypto == native
+    assert intent.value == 1_500_000_000_000_000_000
+    assert intent.gas == chain.base_transfer_gas
+
+
+@pytest.mark.django_db
+def test_address_send_crypto_schedules_erc20_transfer_intent():
+    native = Crypto.objects.create(
+        name="Task12 ETH",
+        symbol="T12ETH",
+        coingecko_id="task12-eth",
+    )
+    token = Crypto.objects.create(
+        name="Task12 USDC",
+        symbol="T12USDC",
+        coingecko_id="task12-usdc",
+        decimals=6,
+    )
+    chain = Chain.objects.create(
+        code="task12-erc20",
+        chain_id=912_002,
+        name="Task12 ERC20 Chain",
+        type=ChainType.EVM,
+        native_coin=native,
+        base_transfer_gas=21_000,
+        erc20_transfer_gas=65_000,
+    )
+    ChainToken.objects.create(
+        chain=chain,
+        crypto=token,
+        address=Web3.to_checksum_address(
+            "0x00000000000000000000000000000000001212c0"
+        ),
+        decimals=6,
+    )
+    address = Address.objects.create(
+        wallet=Wallet.objects.create(),
+        chain_type=ChainType.EVM,
+        usage=AddressUsage.Vault,
+        bip44_account=Wallet.get_bip44_account(AddressUsage.Vault),
+        address_index=0,
+        address=Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000121203"
+        ),
+    )
+    recipient = Web3.to_checksum_address(
+        "0x0000000000000000000000000000000000121204"
+    )
+    tx_hash = "0x" + "13" * 32
+
+    with patch("evm.models.EvmBroadcastTask.schedule") as schedule_mock:
+        schedule_mock.return_value = Mock(base_task=Mock(tx_hash=tx_hash))
+
+        result = address.send_crypto(
+            crypto=token,
+            chain=chain,
+            to=recipient,
+            amount=Decimal("2.25"),
+            transfer_type=TransferType.DepositCollection,
+        )
+
+    assert result == tx_hash
+    schedule_mock.assert_called_once()
+    (intent,) = schedule_mock.call_args.args
+    assert intent.address == address
+    assert intent.chain == chain
+    assert intent.tx_kind == TxKind.CONTRACT_CALL
+    assert intent.to == Web3.to_checksum_address(
+        "0x00000000000000000000000000000000001212c0"
+    )
+    assert intent.transfer_type == TransferType.DepositCollection
+    assert intent.crypto == token
+    assert intent.recipient == recipient
+    assert intent.gas == chain.erc20_transfer_gas

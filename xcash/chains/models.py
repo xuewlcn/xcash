@@ -513,18 +513,30 @@ class Address(UndeletableModel):
         """
         if chain.type == ChainType.EVM:
             # EvmBroadcastTask 内部管理锁，不在此处获取，避免双重加锁。
-            from evm.models import EvmBroadcastTask
+            from evm.intents import build_erc20_transfer_intent  # noqa: PLC0415
+            from evm.intents import build_native_transfer_intent  # noqa: PLC0415
+            from evm.models import EvmBroadcastTask  # noqa: PLC0415
 
             decimals = crypto.get_decimals(chain)
             value_raw = int(amount * Decimal(10**decimals))
-            task = EvmBroadcastTask.schedule_transfer(
-                address=self,
-                chain=chain,
-                crypto=crypto,
-                to=to,
-                value_raw=value_raw,
-                transfer_type=transfer_type,
-            )
+            if crypto == chain.native_coin or crypto.is_native:
+                intent = build_native_transfer_intent(
+                    address=self,
+                    chain=chain,
+                    to=to,
+                    value=value_raw,
+                    transfer_type=transfer_type,
+                )
+            else:
+                intent = build_erc20_transfer_intent(
+                    address=self,
+                    chain=chain,
+                    crypto=crypto,
+                    to=to,
+                    value_raw=value_raw,
+                    transfer_type=transfer_type,
+                )
+            task = EvmBroadcastTask.schedule(intent)
             return task.base_task.tx_hash
 
         msg = f"Unsupported chain type for send_crypto: {chain.type}"
