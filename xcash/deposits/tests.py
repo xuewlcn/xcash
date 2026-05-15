@@ -602,10 +602,10 @@ class DepositServiceDecimalsTests(TestCase):
     @patch.object(DepositService, "_snapshot_collectible_group")
     @patch("deposits.service.DepositCollection.objects")
     @patch("deposits.service.Deposit.objects.filter")
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     def test_collect_deposit_uses_chain_specific_crypto_decimals(
         self,
-        schedule_transfer_mock,
+        schedule_mock,
         deposit_filter_mock,
         collection_objects_mock,
         lock_group_mock,
@@ -625,18 +625,20 @@ class DepositServiceDecimalsTests(TestCase):
         collection_objects_mock.create.return_value = SimpleNamespace(pk=999)
         deposit_filter_mock.return_value.update = Mock()
         collection_objects_mock.filter.return_value.update = Mock()
-        schedule_transfer_mock.return_value = SimpleNamespace(base_task=Mock())
+        schedule_mock.return_value = SimpleNamespace(base_task=Mock())
 
         chain = SimpleNamespace(
             type=ChainType.EVM,
             code="bsc",
-            native_coin=SimpleNamespace(symbol="BNB"),
+            native_coin=SimpleNamespace(symbol="BNB", decimals=18),
+            erc20_transfer_gas=100_000,
         )
         crypto = SimpleNamespace(
             symbol="USDT",
             decimals=6,
             is_native=False,
             get_decimals=Mock(return_value=18),
+            address=Mock(return_value="0x00000000000000000000000000000000000000bb"),
             price=Mock(return_value=Decimal("1")),
         )
         project = SimpleNamespace(id=1, gather_worth=Decimal("0.1"))
@@ -656,7 +658,7 @@ class DepositServiceDecimalsTests(TestCase):
         lock_group_mock.return_value = [deposit]
 
         fake_addr = SimpleNamespace(
-            address="0xdeposit",
+            address="0x00000000000000000000000000000000000000dd",
             send_crypto=Mock(return_value="0x" + "a" * 64),
         )
         deposit_address_get_mock.return_value = SimpleNamespace(address=fake_addr)
@@ -667,18 +669,22 @@ class DepositServiceDecimalsTests(TestCase):
         collected = DepositService.collect_deposit(deposit)
 
         self.assertTrue(collected)
-        schedule_transfer_mock.assert_called_once_with(
-            crypto=crypto,
-            chain=chain,
-            address=fake_addr,
-            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000aa"),
-            value_raw=10**18,
-            transfer_type=TransferType.DepositCollection,
+        schedule_mock.assert_called_once()
+        intent = schedule_mock.call_args.args[0]
+        self.assertEqual(intent.crypto, crypto)
+        self.assertEqual(intent.chain, chain)
+        self.assertEqual(intent.address, fake_addr)
+        self.assertEqual(
+            intent.recipient,
+            Web3.to_checksum_address("0x00000000000000000000000000000000000000aa"),
         )
+        self.assertEqual(intent.value, 0)
+        self.assertEqual(intent.amount, Decimal("1"))
+        self.assertEqual(intent.transfer_type, TransferType.DepositCollection)
 
     @patch.object(DepositService, "_lock_pending_group_ids", return_value={2})
     @patch("deposits.service.db_transaction.atomic", return_value=nullcontext())
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer", side_effect=RuntimeError("broadcast task create failed"))
+    @patch("evm.models.EvmBroadcastTask.schedule", side_effect=RuntimeError("broadcast task create failed"))
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
@@ -693,25 +699,27 @@ class DepositServiceDecimalsTests(TestCase):
         recipient_filter_mock,
         deposit_address_get_mock,
         adapter_factory_mock,
-        _schedule_transfer_mock,
+        _schedule_mock,
         _atomic_mock,
         _lock_ids_mock,
     ):
         # 创建 BroadcastTask 失败时，不应提前创建 collection 或绑定 deposit 关系。
         recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
-            SimpleNamespace(address="0xrecipient")
+            SimpleNamespace(address="0x00000000000000000000000000000000000000aa")
         )
         deposit_filter_mock.return_value.update = Mock()
 
         chain = SimpleNamespace(
             type=ChainType.EVM,
             code="eth",
-            native_coin=SimpleNamespace(symbol="ETH"),
+            native_coin=SimpleNamespace(symbol="ETH", decimals=18),
+            erc20_transfer_gas=100_000,
         )
         crypto = SimpleNamespace(
             symbol="USDT",
             is_native=False,
             get_decimals=Mock(return_value=6),
+            address=Mock(return_value="0x00000000000000000000000000000000000000bb"),
             price=Mock(return_value=Decimal("1")),
         )
         project = SimpleNamespace(id=1, gather_worth=Decimal("0.1"))
@@ -730,7 +738,7 @@ class DepositServiceDecimalsTests(TestCase):
         )
         lock_group_mock.return_value = [deposit]
         fake_addr = SimpleNamespace(
-            address="0xdeposit",
+            address="0x00000000000000000000000000000000000000dd",
             send_crypto=Mock(side_effect=RuntimeError("broadcast failed")),
         )
         deposit_address_get_mock.return_value = SimpleNamespace(address=fake_addr)
@@ -766,27 +774,31 @@ class GasRechargeServiceTests(SimpleTestCase):
     @staticmethod
     def _make_deposit_address():
         """构造最小可用的 DepositAddress mock。"""
-        native_coin = SimpleNamespace(symbol="ETH")
+        native_coin = SimpleNamespace(symbol="ETH", decimals=18)
         chain = SimpleNamespace(
             type=ChainType.EVM, code="eth",
             native_coin=native_coin,
             base_transfer_gas=50_000,
             erc20_transfer_gas=100_000,
         )
-        vault_addr = SimpleNamespace(address="0xvault")
+        vault_addr = SimpleNamespace(
+            address="0x00000000000000000000000000000000000000aa"
+        )
         wallet = SimpleNamespace(get_address=Mock(return_value=vault_addr))
         project = SimpleNamespace(wallet=wallet)
         customer = SimpleNamespace(project=project)
         deposit_address = SimpleNamespace(
             pk=42, id=42,
             customer=customer,
-            address=SimpleNamespace(address="0xdeposit"),
+            address=SimpleNamespace(
+                address="0x00000000000000000000000000000000000000dd"
+            ),
         )
         return deposit_address, chain, vault_addr
 
     @patch("deposits.service.GasRecharge.objects.create")
     @patch("deposits.service.GasRecharge.objects.filter")
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     def test_request_recharge_creates_task_and_gas_recharge_when_no_pending(
         self, schedule_mock, gr_filter_mock, gr_create_mock,
     ):
@@ -805,12 +817,15 @@ class GasRechargeServiceTests(SimpleTestCase):
         )
         self.assertTrue(result)
         schedule_mock.assert_called_once()
-        call_kwargs = schedule_mock.call_args[1]
+        intent = schedule_mock.call_args.args[0]
         # 补 gas 金额 = 10 * expected_collection_gas_cost = 10_000_000
-        self.assertEqual(call_kwargs["value_raw"], 10 * expected_collection_gas_cost)
-        self.assertEqual(call_kwargs["transfer_type"], TransferType.GasRecharge)
-        self.assertEqual(call_kwargs["address"], vault_addr)
-        self.assertEqual(call_kwargs["to"], "0xdeposit")
+        self.assertEqual(intent.value, 10 * expected_collection_gas_cost)
+        self.assertEqual(intent.transfer_type, TransferType.GasRecharge)
+        self.assertEqual(intent.address, vault_addr)
+        self.assertEqual(
+            intent.to,
+            Web3.to_checksum_address("0x00000000000000000000000000000000000000dd"),
+        )
         gr_create_mock.assert_called_once_with(
             deposit_address=deposit_address,
             broadcast_task=base_task_sentinel,
@@ -818,7 +833,7 @@ class GasRechargeServiceTests(SimpleTestCase):
 
     @patch("deposits.service.GasRecharge.objects.create")
     @patch("deposits.service.GasRecharge.objects.filter")
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     def test_request_recharge_is_idempotent_when_pending_exists(
         self, schedule_mock, gr_filter_mock, gr_create_mock,
     ):
@@ -839,7 +854,7 @@ class GasRechargeServiceTests(SimpleTestCase):
 
     @patch("deposits.service.GasRecharge.objects.create")
     @patch("deposits.service.GasRecharge.objects.filter")
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     def test_request_recharge_returns_false_when_gas_cost_zero(
         self, schedule_mock, gr_filter_mock, gr_create_mock,
     ):
@@ -870,7 +885,7 @@ class GasRechargeServiceIdempotencyDbTests(TestCase):
     """
 
     @patch("chains.models.Wallet.get_address")
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     def test_request_recharge_is_idempotent_with_real_pending_record(
         self, schedule_mock, get_address_mock,
     ):
@@ -937,7 +952,7 @@ class GasRechargeServiceIdempotencyDbTests(TestCase):
         get_address_mock.assert_not_called()
 
     @patch("chains.models.Wallet.get_address")
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     def test_request_recharge_ignores_pending_record_on_other_chain(
         self, schedule_mock, get_address_mock,
     ):
@@ -1309,6 +1324,13 @@ class CollectScheduleLifecycleTests(TestCase):
             rpc="http://localhost:8545",
             active=True,
         )
+        ChainToken.objects.create(
+            crypto=crypto,
+            chain=chain,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000c31"
+            ),
+        )
         recipient_address = RecipientAddress.objects.create(
             project=project,
             chain_type=chain.type,
@@ -1464,12 +1486,12 @@ class CollectScheduleLifecycleTests(TestCase):
         self.assertEqual(DepositCollection.objects.count(), 0)
         self.assertEqual(schedule_manager.all().count(), 0)
 
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     @patch("deposits.service.AdapterFactory.get_adapter")
     def test_gather_deposits_creates_one_collection_and_deletes_expired_schedule_when_threshold_met(
         self,
         adapter_factory_mock,
-        schedule_transfer_mock,
+        schedule_mock,
     ):
         fixed_now = timezone.make_aware(datetime(2026, 4, 19, 12, 0, 0))
         fixture = self._make_collect_fixture(
@@ -1490,7 +1512,7 @@ class CollectScheduleLifecycleTests(TestCase):
         adapter_factory_mock.return_value = SimpleNamespace(
             get_balance=Mock(return_value=10**18)
         )
-        schedule_transfer_mock.return_value = SimpleNamespace(
+        schedule_mock.return_value = SimpleNamespace(
             base_task=BroadcastTask.objects.create(
                 chain=fixture["chain"],
                 address=fixture["deposit_address"].address,
@@ -1556,14 +1578,14 @@ class CollectScheduleLifecycleTests(TestCase):
             schedule.next_collect_time, fixed_now + timedelta(minutes=25)
         )
 
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.RecipientAddress.objects.filter")
     def test_collect_deposit_marks_same_group_records_with_one_collection_hash(
         self,
         recipient_filter_mock,
         adapter_factory_mock,
-        schedule_transfer_mock,
+        schedule_mock,
     ):
         # 同一客户在同链同币下多笔完成充币应共享一笔归集交易，不能重复发起第二笔归集。
         project = Project.objects.create(
@@ -1595,6 +1617,13 @@ class CollectScheduleLifecycleTests(TestCase):
             rpc="http://localhost:8545",
             active=True,
         )
+        ChainToken.objects.create(
+            crypto=crypto,
+            chain=chain,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000e1"
+            ),
+        )
         addr = Address.objects.create(
             wallet=project.wallet,
             chain_type=ChainType.EVM,
@@ -1624,7 +1653,7 @@ class CollectScheduleLifecycleTests(TestCase):
             ),
             amount=Decimal("3"),
         )
-        schedule_transfer_mock.return_value = SimpleNamespace(base_task=base_task)
+        schedule_mock.return_value = SimpleNamespace(base_task=base_task)
         fake_addr = SimpleNamespace(
             address=addr.address,
             send_crypto=Mock(return_value="0x" + "c" * 64),
@@ -1687,9 +1716,9 @@ class CollectScheduleLifecycleTests(TestCase):
         self.assertEqual(deposit1.collection_id, deposit2.collection_id)
         self.assertIsNone(deposit1.collection.collection_hash)
         self.assertEqual(deposit1.collection.broadcast_task, base_task)
-        schedule_transfer_mock.assert_called_once()
+        schedule_mock.assert_called_once()
 
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
@@ -1698,7 +1727,7 @@ class CollectScheduleLifecycleTests(TestCase):
         recipient_filter_mock,
         deposit_address_get_mock,
         adapter_factory_mock,
-        schedule_transfer_mock,
+        schedule_mock,
     ):
         """
         同客户连续多笔充值在 prepare_collection 阶段应合并成一笔归集，
@@ -1781,7 +1810,7 @@ class CollectScheduleLifecycleTests(TestCase):
             ),
             amount=Decimal("3"),
         )
-        schedule_transfer_mock.return_value = SimpleNamespace(base_task=collection_task)
+        schedule_mock.return_value = SimpleNamespace(base_task=collection_task)
 
         collected = DepositService.collect_deposit(deposit1)
         # 第二笔已被合入同一归集，再调用 collect_deposit 不应再建第二笔
@@ -1795,9 +1824,9 @@ class CollectScheduleLifecycleTests(TestCase):
         self.assertIsNotNone(deposit1.collection_id)
         self.assertEqual(deposit1.collection_id, deposit2.collection_id)
         # 归集金额 = 1 + 2 = 3 ETH（非余额），value_raw = 3 * 10^18
-        schedule_transfer_mock.assert_called_once()
-        call_kwargs = schedule_transfer_mock.call_args[1]
-        self.assertEqual(call_kwargs["value_raw"], 3 * 10**18)
+        schedule_mock.assert_called_once()
+        intent = schedule_mock.call_args.args[0]
+        self.assertEqual(intent.value, 3 * 10**18)
 
     def test_confirm_collection_marks_same_hash_group_completed(self):
         # 同一归集哈希命中的多条充币记录在确认后要一起写入 collected_at。
@@ -2163,7 +2192,7 @@ class CollectScheduleLifecycleTests(TestCase):
             DepositCollection.objects.filter(broadcast_task=broadcast_task).count(), 0
         )
 
-    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("evm.models.EvmBroadcastTask.schedule")
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch.object(DepositService, "_select_recipient")
@@ -2172,7 +2201,7 @@ class CollectScheduleLifecycleTests(TestCase):
         recipient_filter_mock,
         deposit_address_get_mock,
         adapter_factory_mock,
-        schedule_transfer_mock,
+        schedule_mock,
     ):
         # 定时归集任务即使一次捞到同组两条 completed deposit，也只能真正发出一笔归集交易。
         project = Project.objects.create(
@@ -2201,6 +2230,13 @@ class CollectScheduleLifecycleTests(TestCase):
             chain_id=203,
             rpc="http://localhost:8545",
             active=True,
+        )
+        ChainToken.objects.create(
+            crypto=crypto,
+            chain=chain,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000004e1"
+            ),
         )
         addr = Address.objects.create(
             wallet=project.wallet,
@@ -2247,7 +2283,7 @@ class CollectScheduleLifecycleTests(TestCase):
             ),
             amount=Decimal("3"),
         )
-        schedule_transfer_mock.return_value = SimpleNamespace(base_task=base_task)
+        schedule_mock.return_value = SimpleNamespace(base_task=base_task)
 
         transfer1 = OnchainTransfer.objects.create(
             chain=chain,
@@ -2305,7 +2341,7 @@ class CollectScheduleLifecycleTests(TestCase):
         self.assertEqual(deposit1.collection_id, deposit2.collection_id)
         self.assertIsNone(deposit1.collection.collection_hash)
         self.assertEqual(deposit1.collection.broadcast_task, base_task)
-        schedule_transfer_mock.assert_called_once()
+        schedule_mock.assert_called_once()
 
 
 class DepositAddressApiGuardTests(TestCase):
@@ -2699,14 +2735,14 @@ class DepositCollectionAnvilTests(TestCase):
     依赖本地 anvil 的充币归集完整链路集成测试。
 
     新的归集设计下，prepare_collection 不再做 gas 补充，gas 职责已上移到
-    EVM 广播层 pre-flight。由于本套测试用 mock 替换了 schedule_transfer
+    EVM 广播层 pre-flight。由于本套测试用 mock 替换了 schedule
     直接在 anvil 上真实转账，真正的广播（及其 pre-flight gas 补给）被绕过。
     因此这些集成测试聚焦"余额/归集金额/对账"等归集侧真实链路行为，gas
     补给流程单独由单元测试 + 广播层测试覆盖。
 
     仅 mock 两处：
       1. Wallet.get_address — 跳过 remote signer
-      2. EvmBroadcastTask.schedule_transfer — 通过 anvil impersonation 做真实链上转账
+      2. EvmBroadcastTask.schedule — 通过 anvil impersonation 做真实链上转账
     其余（余额查询、归集金额、归集逻辑）全部走真实链路。
     """
 
@@ -2779,10 +2815,10 @@ class DepositCollectionAnvilTests(TestCase):
         self.wallet_get_addr_mock = patcher_wallet.start()
         self.addCleanup(patcher_wallet.stop)
 
-        # 2. EvmBroadcastTask.schedule_transfer → anvil impersonation 真实转账
+        # 2. EvmBroadcastTask.schedule → anvil impersonation 真实转账
         patcher_schedule = patch(
-            "evm.models.EvmBroadcastTask.schedule_transfer",
-            side_effect=self._anvil_schedule_transfer,
+            "evm.models.EvmBroadcastTask.schedule",
+            side_effect=self._anvil_schedule,
         )
         self.schedule_mock = patcher_schedule.start()
         self.addCleanup(patcher_schedule.stop)
@@ -2809,16 +2845,19 @@ class DepositCollectionAnvilTests(TestCase):
         self.w3.provider.make_request("anvil_stopImpersonatingAccount", [from_addr])
         return "0x" + receipt.transactionHash.hex()
 
-    def _anvil_schedule_transfer(self, *, address, crypto, chain, to, value_raw, transfer_type):
-        """EvmBroadcastTask.schedule_transfer 的替代：在 anvil 上真实转账。"""
+    def _anvil_schedule(self, intent):
+        """EvmBroadcastTask.schedule 的替代：按 intent 在 anvil 上真实转账。"""
+        address = intent.address
+        crypto = intent.crypto
+        chain = intent.chain
         from_addr = address.address if hasattr(address, "address") else address
-        tx_hash = self._impersonate_send_eth(from_addr, to, value_raw)
+        tx_hash = self._impersonate_send_eth(from_addr, intent.recipient, intent.value)
         decimals = crypto.get_decimals(chain)
         base_task = BroadcastTask.objects.create(
             chain=chain, address=address if isinstance(address, Address) else self.deposit_addr_obj,
-            transfer_type=transfer_type, crypto=crypto,
-            recipient=to,
-            amount=Decimal(value_raw) / Decimal(10**decimals),
+            transfer_type=intent.transfer_type, crypto=crypto,
+            recipient=intent.recipient,
+            amount=Decimal(intent.value) / Decimal(10**decimals),
             tx_hash=tx_hash,
         )
         return SimpleNamespace(base_task=base_task)
@@ -2826,7 +2865,7 @@ class DepositCollectionAnvilTests(TestCase):
     def _create_deposit(self, amount: Decimal, *, seq: int = 1) -> Deposit:
         """创建 Deposit 记录并在 anvil 上设置对应余额。
 
-        为保证 schedule_transfer mock 调用 anvil impersonation 真实转账时能付
+        为保证 schedule intent mock 调用 anvil impersonation 真实转账时能付
         gas，每次创建充值时同时额外预充一份 GAS_PADDING_WEI。这部分不计入
         归集金额（归集金额 = 充值总额，不是余额），只用来模拟"广播层已经
         通过 pre-flight 确认 gas 到账"的状态。

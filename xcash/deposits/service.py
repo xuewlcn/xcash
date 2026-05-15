@@ -90,16 +90,17 @@ class GasRechargeService:
             usage=AddressUsage.Vault,
         )
         try:
+            from evm.intents import build_native_transfer_intent  # noqa: PLC0415
             from evm.models import EvmBroadcastTask  # noqa: PLC0415
 
-            task = EvmBroadcastTask.schedule_transfer(
+            intent = build_native_transfer_intent(
                 address=vault_addr,
                 chain=chain,
-                crypto=chain.native_coin,
                 to=deposit_address.address.address,
-                value_raw=recharge_raw,
+                value=recharge_raw,
                 transfer_type=TransferType.GasRecharge,
             )
+            task = EvmBroadcastTask.schedule(intent)
             GasRecharge.objects.create(
                 deposit_address=deposit_address,
                 broadcast_task=task.base_task,
@@ -292,6 +293,8 @@ class DepositService:
         若加锁再校验时发现候选组已被并发处理或状态漂移，本轮放弃（返回 False），
         由下一轮 gather_deposits 重新扫描发起。
         """
+        from evm.intents import build_erc20_transfer_intent  # noqa: PLC0415
+        from evm.intents import build_native_transfer_intent  # noqa: PLC0415
         from evm.models import EvmBroadcastTask  # noqa: PLC0415
 
         expected_ids = set(params["group_ids"])
@@ -301,14 +304,24 @@ class DepositService:
 
         decimals = params["crypto"].get_decimals(params["chain"])
         value_raw = int(params["amount"] * Decimal(10**decimals))
-        task = EvmBroadcastTask.schedule_transfer(
-            address=params["address"],
-            crypto=params["crypto"],
-            chain=params["chain"],
-            to=params["recipient_address"],
-            value_raw=value_raw,
-            transfer_type=TransferType.DepositCollection,
-        )
+        if params["crypto"] == params["chain"].native_coin:
+            intent = build_native_transfer_intent(
+                address=params["address"],
+                chain=params["chain"],
+                to=params["recipient_address"],
+                value=value_raw,
+                transfer_type=TransferType.DepositCollection,
+            )
+        else:
+            intent = build_erc20_transfer_intent(
+                address=params["address"],
+                crypto=params["crypto"],
+                chain=params["chain"],
+                to=params["recipient_address"],
+                value_raw=value_raw,
+                transfer_type=TransferType.DepositCollection,
+            )
+        task = EvmBroadcastTask.schedule(intent)
         collection = DepositCollection.objects.create(
             collection_hash=None,
             broadcast_task=task.base_task,
