@@ -72,7 +72,7 @@ services:
       - signer-db
       - redis
     env_file:
-      - .env
+      - ${ENV_FILE:-.env}
     command: /start
 
   django: &django
@@ -86,7 +86,7 @@ services:
       - redis
       - signer
     env_file:
-      - .env
+      - ${ENV_FILE:-.env}
     # django/worker/beat 都需要按 DNS 别名解析 saas 侧 Caddy：
     # django 同步校验 SaaS permission，worker 推送内部回调，beat 调度刷新任务。
     networks: [default, xcash_public]
