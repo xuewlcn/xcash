@@ -62,6 +62,17 @@ INSTALLED_APPS = [
     "wallets",
 ]
 
+# 仅在开发侧迁移审计命令中启用，避免生产镜像安装 --no-group dev 后缺少
+# django-migration-linter 依赖导致 signer 启动失败。
+if env.bool("SIGNER_ENABLE_MIGRATION_LINTER", default=False):
+    INSTALLED_APPS += ["django_migration_linter"]
+    MIGRATION_LINTER_OPTIONS = {
+        "sql_analyser": "postgresql",
+        "warnings_as_errors": [],
+        "ignore_initial_migrations": True,
+        "no_cache": True,
+    }
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",

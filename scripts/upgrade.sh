@@ -9,6 +9,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 UPGRADE_REF="${1:-${UPGRADE_REF:-main}}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-false}"
 QUIESCE_BEFORE_REHEARSAL="${QUIESCE_BEFORE_REHEARSAL:-false}"
+CONFIRM_ONLINE_DUMP_RISK="${CONFIRM_ONLINE_DUMP_RISK:-}"
 UPGRADE_LOCK_FILE="${UPGRADE_LOCK_FILE:-/tmp/xcash-upgrade.lock}"
 
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
@@ -146,6 +147,39 @@ compare_plans() {
   fi
 }
 
+confirm_online_dump_risk() {
+  if [[ "${QUIESCE_BEFORE_REHEARSAL}" == "true" ]]; then
+    return
+  fi
+
+  if [[ "${CONFIRM_ONLINE_DUMP_RISK}" == "yes" ]]; then
+    log "online dump risk accepted via CONFIRM_ONLINE_DUMP_RISK=yes"
+    return
+  fi
+
+  if [[ "${CONFIRM_ONLINE_DUMP_RISK}" == "no" ]]; then
+    die "online dump risk was rejected; set QUIESCE_BEFORE_REHEARSAL=true to stop app services before dump"
+  fi
+
+  if [[ ! -t 0 ]]; then
+    die "online dump risk requires confirmation; set CONFIRM_ONLINE_DUMP_RISK=yes or QUIESCE_BEFORE_REHEARSAL=true"
+  fi
+
+  printf '[upgrade] WARNING: app services will keep writing while the production database dump is taken.\n' >&2
+  printf '[upgrade] Data migrations may pass on the dump snapshot but fail or behave differently on the live database.\n' >&2
+  read -r -p "[upgrade] Continue with online dump? [Y/n] " answer
+  answer="${answer:-yes}"
+
+  case "${answer}" in
+    y | Y | yes | YES)
+      log "online dump risk accepted interactively"
+      ;;
+    *)
+      die "online dump risk was rejected; set QUIESCE_BEFORE_REHEARSAL=true to stop app services before dump"
+      ;;
+  esac
+}
+
 trap cleanup EXIT
 
 require_command docker
@@ -188,6 +222,7 @@ if [[ "${QUIESCE_BEFORE_REHEARSAL}" == "true" ]]; then
   "${COMPOSE[@]}" stop django worker beat signer || true
 fi
 
+confirm_online_dump_risk
 dump_database django-db "${MAIN_DUMP}"
 
 log "reset rehearsal databases"

@@ -63,6 +63,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: signer-migration-linter
+        name: Signer migration linter
+        entry: ./scripts/dev-signer-lint-migrations.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
 # sets up .pre-commit-ci.yaml to ensure pre-commit dependencies stay up to date
 ci:
   autoupdate_schedule: weekly
