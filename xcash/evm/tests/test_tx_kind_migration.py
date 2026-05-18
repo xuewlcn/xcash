@@ -212,9 +212,47 @@ def _create_minimal_address(apps, *, suffix):
 
 
 def _targets_with_evm(executor, evm_migration):
-    """仅回退 evm 自身；其它 app 保持 leaf，避免污染复用测试库 schema。"""
-    return [
-        target
-        for target in executor.loader.graph.leaf_nodes()
-        if target[0] != "evm"
-    ] + [("evm", evm_migration)]
+    """构造迁移 target：evm 钉到指定版本，其它 app 钉到不与之冲突的最新版本。
+
+    BTC 移除后 chains/0015 显式 depends_on `evm/0005`。若像旧实现那样
+    无脑把所有 leaf 钉住，当 evm_migration < 0005 时 Django 必须先正向
+    应用 evm/0003-0005 与 chains/0015-0017 才能满足 chains leaf，再
+    反向回到 evm_migration，产出 forward+backward 混合 plan 并报错。
+
+    解法：以 (evm, evm_migration) 为锚点，对每个非 evm app 找“仍可达”
+    的最大祖先版本——具体做法是检查该 app 每个候选迁移的 forwards_plan
+    是否包含任何比 evm_migration 更新的 evm 节点；若不包含则可用。
+    最终对每个 app 取“最大可用版本”作为 target。
+    """
+    graph = executor.loader.graph
+    evm_apps_order: dict[str, int] = {
+        name: idx
+        for idx, (app, name) in enumerate(
+            graph.forwards_plan(("evm", graph.leaf_nodes("evm")[0][1]))
+        )
+        if app == "evm"
+    }
+    target_evm_index = evm_apps_order[evm_migration]
+
+    def is_compatible(node: tuple[str, str]) -> bool:
+        """节点 node 的 forwards_plan 不包含比 evm_migration 更新的 evm 迁移。"""
+        for app, name in graph.forwards_plan(node):
+            if app == "evm" and evm_apps_order.get(name, -1) > target_evm_index:
+                return False
+        return True
+
+    targets: list[tuple[str, str]] = [("evm", evm_migration)]
+    # 对每个非 evm app，按其内部迁移倒序找第一个 compatible 的节点。
+    apps_with_nodes: dict[str, list[str]] = {}
+    for app, name in graph.nodes:
+        if app == "evm":
+            continue
+        apps_with_nodes.setdefault(app, []).append(name)
+    for app, names in apps_with_nodes.items():
+        # 按 migration 名字典序倒序；Django 迁移命名以编号前缀开头，
+        # 字典序与拓扑序在同一 app 内通常一致。
+        for name in sorted(names, reverse=True):
+            if is_compatible((app, name)):
+                targets.append((app, name))
+                break
+    return targets
