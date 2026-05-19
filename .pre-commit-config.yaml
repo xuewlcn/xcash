@@ -70,6 +70,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: signer-no-runpython
+        name: Signer migrations must be schema-only (no RunPython/RunSQL)
+        entry: ./scripts/check-signer-no-runpython.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
 # sets up .pre-commit-ci.yaml to ensure pre-commit dependencies stay up to date
 ci:
   autoupdate_schedule: weekly

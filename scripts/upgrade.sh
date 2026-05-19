@@ -8,9 +8,19 @@ ENV_FILE="${ENV_FILE:-.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 UPGRADE_REF="${1:-${UPGRADE_REF:-main}}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-false}"
-QUIESCE_BEFORE_REHEARSAL="${QUIESCE_BEFORE_REHEARSAL:-false}"
-CONFIRM_ONLINE_DUMP_RISK="${CONFIRM_ONLINE_DUMP_RISK:-}"
+# 默认空字符串 → 触发交互确认；显式传 true/false 可覆盖默认。
+STOP_BEFORE_REHEARSAL="${STOP_BEFORE_REHEARSAL:-}"
 UPGRADE_LOCK_FILE="${UPGRADE_LOCK_FILE:-/tmp/xcash-upgrade.lock}"
+
+# cleanup 需要区分失败发生在哪个阶段：
+# - production migrate 前：production 库未被触碰，只恢复本脚本停过的旧容器
+# - production migrate 中：DB 可能处于中间态，不自动启动业务服务
+# - production migrate 后：DB 已到新 schema，后置步骤失败时按新镜像尝试恢复服务
+LOCK_ACQUIRED=false
+APP_SERVICES_STOP_REQUESTED=false
+APP_SERVICES_TO_RESTORE=()
+PRODUCTION_MIGRATE_STARTED=false
+PRODUCTION_MIGRATE_COMPLETED=false
 
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 REHEARSAL_COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" --profile migration-rehearsal)
@@ -28,17 +38,60 @@ die() {
 cleanup() {
   local exit_code=$?
 
+  # 失败退出时把 TMP_DIR 下所有 *.log 一次性回放到 stderr，
+  # 避免长流程中真正的失败原因被后续输出冲掉。
+  # plan/.norm 等结构化数据不在回放范围（无人类可读价值，且 die 之前已经 diff 过）。
+  if [[ "${exit_code}" -ne 0 && -n "${TMP_DIR}" && -d "${TMP_DIR}" ]]; then
+    shopt -s nullglob
+    local log_file
+    for log_file in "${TMP_DIR}"/*.log; do
+      printf '\n[upgrade] === replay %s ===\n' "$(basename "${log_file}")" >&2
+      cat "${log_file}" >&2
+    done
+    shopt -u nullglob
+  fi
+
+  # 只有持有升级锁的进程才允许恢复服务或清理 rehearsal 容器，避免并发启动失败
+  # 的第二个进程误碰正在执行升级的一号进程。
+  if [[ "${exit_code}" -ne 0 && "${LOCK_ACQUIRED}" == "true" ]]; then
+    if [[ "${PRODUCTION_MIGRATE_STARTED}" == "true" && "${PRODUCTION_MIGRATE_COMPLETED}" != "true" ]]; then
+      printf '\n[upgrade] WARNING: production migrate was in progress when failure occurred.\n' >&2
+      printf '[upgrade] NOT restarting services automatically — DB may be mid-migration.\n' >&2
+      printf '[upgrade] Verify schema manually, then resume with: docker compose up -d\n' >&2
+    elif [[ "${PRODUCTION_MIGRATE_COMPLETED}" == "true" ]]; then
+      printf '\n[upgrade] failure after production migrations completed; starting services on migrated schema\n' >&2
+      run_cleanup_command "start services on migrated schema" \
+        "${COMPOSE[@]}" up -d --remove-orphans
+    elif [[ "${APP_SERVICES_STOP_REQUESTED}" == "true" ]]; then
+      printf '\n[upgrade] failure before production migrate; restoring previously stopped app services\n' >&2
+      restore_pre_migration_services
+    fi
+  fi
+
   if [[ -n "${TMP_DIR}" && -d "${TMP_DIR}" ]]; then
     rm -rf "${TMP_DIR}"
   fi
 
-  "${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db >/dev/null 2>&1 || true
+  if [[ "${LOCK_ACQUIRED}" == "true" ]]; then
+    "${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db migration-rehearsal-signer-db >/dev/null 2>&1 || true
+  fi
 
   exit "${exit_code}"
 }
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+run_cleanup_command() {
+  local description="$1"
+  shift
+  local output
+
+  if ! output="$("$@" 2>&1)"; then
+    printf '[upgrade] WARNING: failed to %s\n' "${description}" >&2
+    printf '%s\n' "${output}" >&2
+  fi
 }
 
 ensure_git_clean() {
@@ -78,27 +131,56 @@ wait_for_postgres() {
     'until pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do sleep 1; done'
 }
 
-dump_database() {
-  local service="$1"
-  local output="$2"
+dump_main_database() {
+  local output="$1"
 
-  log "dump ${service}"
-  "${COMPOSE[@]}" exec -T "${service}" sh -c \
+  log "dump django-db (full)"
+  "${COMPOSE[@]}" exec -T django-db sh -c \
     'pg_dump --format=custom --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"${output}"
 }
 
-restore_database() {
+# signer 库私钥不出该库：只 dump schema 用于结构演练，行数据不复制到演练库。
+# 这是有意识接受的 trade-off，并非"无损失"：真实数据仍可能让 schema migration 在
+# production 失败（ADD NOT NULL 撞 NULL 行、ADD UNIQUE 撞重复值、改列类型撞不兼容
+# 数据、ADD CHECK 撞违例、DROP 被 FK 引用的列等）。减灾依赖：
+#   1. pre-commit signer-no-runpython 强制 schema-only（无 data migration）；
+#   2. pre-commit signer-migration-linter 严格模式拦截大部分危险 DDL；
+#   3. 危险但 linter 拦不住的 DDL（ADD UNIQUE、改类型、ADD CHECK 等）由 PR 评审兜底，
+#      建议采用"先加 nullable 列 + 后台 backfill + 二段加约束"模式分多次上线。
+#
+# 此外必须把 django_migrations 表的行数据一起带过去：该表记录"哪些迁移已应用"，
+# 缺失会让演练库以为所有迁移都未跑，migrate --plan 输出从 0001 起的全量历史，
+# 与 production 必然 diff 失败。该表只含迁移文件名 + 时间戳，无敏感数据。
+dump_signer_schema() {
+  local output="$1"
+
+  log "dump signer-db (schema + django_migrations history)"
+  "${COMPOSE[@]}" exec -T signer-db sh -c '
+    set -e
+    pg_dump --schema-only --no-owner --no-privileges \
+      -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+    pg_dump --data-only --table=django_migrations --no-owner --no-privileges \
+      -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+  ' >"${output}"
+}
+
+restore_main_database() {
   local service="$1"
   local input="$2"
-  local compose=("${COMPOSE[@]}")
 
-  if [[ "${service}" == migration-rehearsal-* ]]; then
-    compose=("${REHEARSAL_COMPOSE[@]}")
-  fi
-
-  log "restore dump into ${service}"
-  "${compose[@]}" exec -T "${service}" sh -c \
+  log "restore main dump into ${service}"
+  "${REHEARSAL_COMPOSE[@]}" exec -T "${service}" sh -c \
     'pg_restore --exit-on-error --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <"${input}"
+}
+
+# schema-only dump 是 plain SQL，pg_restore 不接受；用 psql + ON_ERROR_STOP 重放。
+restore_signer_schema() {
+  local service="$1"
+  local input="$2"
+
+  log "restore signer schema into ${service}"
+  "${REHEARSAL_COMPOSE[@]}" exec -T "${service}" sh -c \
+    'psql --set ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <"${input}"
 }
 
 run_main_manage() {
@@ -107,10 +189,13 @@ run_main_manage() {
 
   # POSTGRES_PASSWORD 由 compose 的 env_file (.env) 注入，不再通过命令行 -e 传递，
   # 避免短时间内出现在宿主 ps aux 输出中。
+  # one-off 容器在 compose 网络内访问 django-db，必须使用容器端口 5432，
+  # 避免 .env 中宿主映射端口污染生产/演练 manage.py 连接。
   # -T 禁用 PTY，确保 stdout 是干净字节流，避免 ANSI 控制序列/CR 行尾污染 plan 比对。
   "${COMPOSE[@]}" run --rm --no-deps -T \
     -e XCASH_IGNORE_DATABASE_URL=true \
     -e POSTGRES_HOST="${postgres_host}" \
+    -e POSTGRES_PORT=5432 \
     django python manage.py "$@"
 }
 
@@ -119,10 +204,41 @@ run_signer_manage() {
   shift
 
   # SIGNER_POSTGRES_PASSWORD 由 compose 的 env_file (.env) 注入，理由同 run_main_manage。
+  # one-off 容器在 compose 网络内访问 signer-db，必须使用容器端口 5432，
+  # 避免 .env 中宿主映射端口（如 5433）污染生产/演练 manage.py 连接。
   # -T 同样用于消除 PTY 引入的不确定字节，参见 run_main_manage 注释。
   "${COMPOSE[@]}" run --rm --no-deps -T \
     -e SIGNER_POSTGRES_HOST="${postgres_host}" \
+    -e SIGNER_POSTGRES_PORT=5432 \
     signer bash -lc 'cd /app/signer && python manage.py "$@"' signer-manage "$@"
+}
+
+stop_app_services() {
+  local reason="$1"
+  local running_services
+
+  log "stop app services ${reason}"
+  if [[ "${APP_SERVICES_STOP_REQUESTED}" != "true" ]]; then
+    running_services="$("${COMPOSE[@]}" ps --services --filter status=running django worker beat signer)"
+    if [[ -n "${running_services}" ]]; then
+      while IFS= read -r service; do
+        [[ -n "${service}" ]] && APP_SERVICES_TO_RESTORE+=("${service}")
+      done <<<"${running_services}"
+    fi
+  fi
+
+  APP_SERVICES_STOP_REQUESTED=true
+  "${COMPOSE[@]}" stop django worker beat signer
+}
+
+restore_pre_migration_services() {
+  if [[ "${#APP_SERVICES_TO_RESTORE[@]}" -eq 0 ]]; then
+    printf '[upgrade] no app services were running before stop; nothing to restore\n' >&2
+    return
+  fi
+
+  run_cleanup_command "restore previously running app services" \
+    "${COMPOSE[@]}" start "${APP_SERVICES_TO_RESTORE[@]}"
 }
 
 # 从 migrate --plan 输出中只保留真正的迁移行（形如 "  app_label.NNNN_name"），
@@ -147,35 +263,41 @@ compare_plans() {
   fi
 }
 
-confirm_online_dump_risk() {
-  if [[ "${QUIESCE_BEFORE_REHEARSAL}" == "true" ]]; then
+# 默认停机演练：dump 前先停 django/worker/beat/signer，让演练库快照与
+# production migrate 时刻完全一致；用户输入 n/no 才走"在线 dump"模式
+# （停机时长更短，但演练快照与上线时刻数据可能不一致，data migration 风险更高）。
+# 非交互场景（无 TTY 且未显式设 STOP_BEFORE_REHEARSAL）一律默认停机，安全优先。
+resolve_stop_before_rehearsal() {
+  if [[ "${STOP_BEFORE_REHEARSAL}" == "true" ]]; then
+    log "STOP_BEFORE_REHEARSAL=true; will stop app services before rehearsal dump"
     return
   fi
 
-  if [[ "${CONFIRM_ONLINE_DUMP_RISK}" == "yes" ]]; then
-    log "online dump risk accepted via CONFIRM_ONLINE_DUMP_RISK=yes"
+  if [[ "${STOP_BEFORE_REHEARSAL}" == "false" ]]; then
+    log "STOP_BEFORE_REHEARSAL=false; keep app services running during rehearsal dump"
     return
-  fi
-
-  if [[ "${CONFIRM_ONLINE_DUMP_RISK}" == "no" ]]; then
-    die "online dump risk was rejected; set QUIESCE_BEFORE_REHEARSAL=true to stop app services before dump"
   fi
 
   if [[ ! -t 0 ]]; then
-    die "online dump risk requires confirmation; set CONFIRM_ONLINE_DUMP_RISK=yes or QUIESCE_BEFORE_REHEARSAL=true"
+    log "no TTY; defaulting to STOP_BEFORE_REHEARSAL=true (safer rehearsal)"
+    STOP_BEFORE_REHEARSAL=true
+    return
   fi
 
-  printf '[upgrade] WARNING: app services will keep writing while the production database dump is taken.\n' >&2
-  printf '[upgrade] Data migrations may pass on the dump snapshot but fail or behave differently on the live database.\n' >&2
-  read -r -p "[upgrade] Continue with online dump? [Y/n] " answer
+  printf '[upgrade] About to dump production for rehearsal.\n' >&2
+  printf '[upgrade] Default: stop app services first (rehearsal == production at migrate time, longer downtime).\n' >&2
+  printf '[upgrade] Choose "n" to keep services running (shorter downtime, rehearsal snapshot may drift).\n' >&2
+  read -r -p "[upgrade] Stop services before dump? [Y/n] " answer
   answer="${answer:-yes}"
 
   case "${answer}" in
-    y | Y | yes | YES)
-      log "online dump risk accepted interactively"
+    n | N | no | NO)
+      STOP_BEFORE_REHEARSAL=false
+      log "online dump selected; rehearsal data may diverge from production at migrate time"
       ;;
     *)
-      die "online dump risk was rejected; set QUIESCE_BEFORE_REHEARSAL=true to stop app services before dump"
+      STOP_BEFORE_REHEARSAL=true
+      log "quiesced dump selected; will stop app services before dump"
       ;;
   esac
 }
@@ -201,11 +323,15 @@ set +a
 # 文件描述符 9 在脚本退出时自动释放，无需在 cleanup 中显式处理。
 exec 9>"${UPGRADE_LOCK_FILE}"
 flock -n 9 || die "another upgrade is in progress (lock: ${UPGRADE_LOCK_FILE})"
+LOCK_ACQUIRED=true
 
 TMP_DIR="$(mktemp -d)"
 MAIN_DUMP="${TMP_DIR}/xcash-main.dump"
+SIGNER_SCHEMA_DUMP="${TMP_DIR}/xcash-signer-schema.sql"
 MAIN_REHEARSAL_PLAN="${TMP_DIR}/main-rehearsal.plan"
 MAIN_PRODUCTION_PLAN="${TMP_DIR}/main-production.plan"
+SIGNER_REHEARSAL_PLAN="${TMP_DIR}/signer-rehearsal.plan"
+SIGNER_PRODUCTION_PLAN="${TMP_DIR}/signer-production.plan"
 
 pull_code
 
@@ -217,36 +343,63 @@ log "ensure database and cache dependencies are running"
 wait_for_postgres django-db
 wait_for_postgres signer-db
 
-if [[ "${QUIESCE_BEFORE_REHEARSAL}" == "true" ]]; then
-  log "stop app services before rehearsal"
-  "${COMPOSE[@]}" stop django worker beat signer || true
+resolve_stop_before_rehearsal
+
+if [[ "${STOP_BEFORE_REHEARSAL}" == "true" ]]; then
+  stop_app_services "before rehearsal dump"
 fi
 
-confirm_online_dump_risk
-dump_database django-db "${MAIN_DUMP}"
+dump_main_database "${MAIN_DUMP}"
+dump_signer_schema "${SIGNER_SCHEMA_DUMP}"
 
 log "reset rehearsal databases"
-"${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db >/dev/null 2>&1 || true
-"${REHEARSAL_COMPOSE[@]}" up -d migration-rehearsal-db
+"${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db migration-rehearsal-signer-db >/dev/null 2>&1 || true
+"${REHEARSAL_COMPOSE[@]}" up -d migration-rehearsal-db migration-rehearsal-signer-db
 wait_for_postgres migration-rehearsal-db
+wait_for_postgres migration-rehearsal-signer-db
 
-restore_database migration-rehearsal-db "${MAIN_DUMP}"
+restore_main_database migration-rehearsal-db "${MAIN_DUMP}"
+restore_signer_schema migration-rehearsal-signer-db "${SIGNER_SCHEMA_DUMP}"
 
 log "run main database migration rehearsal"
-run_main_manage migration-rehearsal-db migrate --plan | tee "${MAIN_REHEARSAL_PLAN}"
-run_main_manage migration-rehearsal-db migrate --noinput
-run_main_manage migration-rehearsal-db check --deploy
+# plan 阶段输出短：tee 同时写 plan 文件（用于比对）+ log 文件（用于失败回放），stdout 静默。
+run_main_manage migration-rehearsal-db migrate --plan 2>&1 \
+  | tee "${TMP_DIR}/main-rehearsal-plan.log" >"${MAIN_REHEARSAL_PLAN}"
+# migrate / check 阶段输出长且重要：tee 写 log 文件 + terminal 实时显示。
+run_main_manage migration-rehearsal-db migrate --noinput 2>&1 \
+  | tee "${TMP_DIR}/main-rehearsal-migrate.log"
+run_main_manage migration-rehearsal-db check --deploy 2>&1 \
+  | tee "${TMP_DIR}/main-rehearsal-check.log"
 
-log "stop app services before production migration"
-"${COMPOSE[@]}" stop django worker beat signer || true
+log "run signer database migration rehearsal"
+run_signer_manage migration-rehearsal-signer-db migrate --plan 2>&1 \
+  | tee "${TMP_DIR}/signer-rehearsal-plan.log" >"${SIGNER_REHEARSAL_PLAN}"
+run_signer_manage migration-rehearsal-signer-db migrate --noinput 2>&1 \
+  | tee "${TMP_DIR}/signer-rehearsal-migrate.log"
+
+if [[ "${STOP_BEFORE_REHEARSAL}" != "true" ]]; then
+  stop_app_services "before production migration"
+fi
 
 log "verify production migration plans"
-run_main_manage django-db migrate --plan | tee "${MAIN_PRODUCTION_PLAN}"
+run_main_manage django-db migrate --plan 2>&1 \
+  | tee "${TMP_DIR}/main-production-plan.log" >"${MAIN_PRODUCTION_PLAN}"
 compare_plans "${MAIN_REHEARSAL_PLAN}" "${MAIN_PRODUCTION_PLAN}" "main database"
 
+run_signer_manage signer-db migrate --plan 2>&1 \
+  | tee "${TMP_DIR}/signer-production-plan.log" >"${SIGNER_PRODUCTION_PLAN}"
+compare_plans "${SIGNER_REHEARSAL_PLAN}" "${SIGNER_PRODUCTION_PLAN}" "signer database"
+
+# 跨过此线后 production 库可能进入（部分）迁移后状态；只有两库迁移都完成后
+# cleanup 才会按新 schema 尝试拉起服务。
+PRODUCTION_MIGRATE_STARTED=true
+
 log "apply production migrations"
-run_main_manage django-db migrate --noinput
-run_signer_manage signer-db migrate --noinput
+run_main_manage django-db migrate --noinput 2>&1 \
+  | tee "${TMP_DIR}/main-production-migrate.log"
+run_signer_manage signer-db migrate --noinput 2>&1 \
+  | tee "${TMP_DIR}/signer-production-migrate.log"
+PRODUCTION_MIGRATE_COMPLETED=true
 
 log "run production post-migration setup"
 run_main_manage django-db collectstatic --noinput
