@@ -295,8 +295,12 @@ class EvmErc20TransferScanner:
         tx_hash: str,
     ) -> bool:
         from chains.models import BroadcastTask  # noqa: PLC0415
-        from evm.internal_tx.exceptions import UnknownInternalBroadcastError  # noqa: PLC0415
-        from evm.internal_tx.processor import process_internal_transaction  # noqa: PLC0415
+        from evm.internal_tx.exceptions import (
+            UnknownInternalBroadcastError,  # noqa: PLC0415
+        )
+        from evm.internal_tx.processor import (
+            process_internal_transaction,  # noqa: PLC0415
+        )
 
         if BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash) is None:
             return False
