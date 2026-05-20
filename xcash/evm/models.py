@@ -194,16 +194,18 @@ class EvmBroadcastTask(UndeletableModel):
 
     def _passes_balance_preflight(self) -> bool:
         # pre-flight 第 1 步：主动阈值检查。
-        # buffer_required = value + N * task.gas * current_gas_price。
+        # buffer_required = value + N * task.gas * signed_gas_price。
         # N 由 tx_kind 派发表控制；task.gas 是 schedule 时按具体交易形态
         # 已经确定的 gas limit，避免原生转账和合约调用都套用 ERC-20 上限。
+        if self.gas_price is None:
+            raise ValueError("EVM 任务尚未签名，gas_price 不可为空")
         current_native_balance = self.chain.w3.eth.get_balance(self.address.address)  # noqa: SLF001
-        current_gas_price = self.chain.w3.eth.gas_price  # noqa: SLF001
+        signed_gas_price = int(self.gas_price)
         multiplier = get_preflight_buffer_multiplier(TxKind(self.tx_kind))
         expected_collection_gas_cost = (
-            current_gas_price * self.chain.erc20_transfer_gas
+            signed_gas_price * self.chain.erc20_transfer_gas
         )
-        buffer_required = int(self.value) + multiplier * self.gas * current_gas_price
+        buffer_required = int(self.value) + multiplier * self.gas * signed_gas_price
         if current_native_balance < buffer_required:
             # 仅归集场景补 gas；Withdrawal 的 address 是 Vault 本身，补 gas 无意义，
             # 保持 QUEUED 静默返回，等运营向 Vault 注资即可。
@@ -375,6 +377,11 @@ class EvmBroadcastTask(UndeletableModel):
             expected_collection_gas_cost=expected_collection_gas_cost,
         )
 
+    @staticmethod
+    def _replacement_gas_price(*, old_gas_price: int, current_gas_price: int) -> int:
+        bumped = (old_gas_price * 1125 + 999) // 1000
+        return max(int(current_gas_price), bumped)
+
     def _ensure_signed_with_latest_gas_price(self) -> None:
         """首次广播时签名并生成首个 tx_hash；重试时仅在 gas 提升时重签。"""
         current_gas_price = self.chain.w3.eth.gas_price  # noqa: SLF001
@@ -394,12 +401,16 @@ class EvmBroadcastTask(UndeletableModel):
         if current_gas_price <= self.gas_price:
             return
 
+        replacement_gas_price = self._replacement_gas_price(
+            old_gas_price=int(self.gas_price),
+            current_gas_price=int(current_gas_price),
+        )
         signed = get_signer_backend().sign_evm_transaction(
             address=self.address,
             chain=self.chain,
-            tx_dict=self._build_transaction_dict(gas_price=current_gas_price),
+            tx_dict=self._build_transaction_dict(gas_price=replacement_gas_price),
         )
-        self.gas_price = current_gas_price
+        self.gas_price = replacement_gas_price
         self.signed_payload = signed.raw_transaction
         self.save(update_fields=["gas_price", "signed_payload"])
 

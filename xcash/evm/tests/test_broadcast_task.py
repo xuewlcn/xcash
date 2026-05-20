@@ -812,6 +812,64 @@ class EvmBroadcastTaskTests(TestCase):
         estimate_gas_mock.assert_not_called()
         send_raw_mock.assert_called_once()
 
+    def test_balance_preflight_uses_signed_gas_price_not_current_lower_price(self):
+        native = Crypto.objects.create(
+            name="Ethereum Signed Gas",
+            symbol="ETHSG",
+            coingecko_id="ethereum-signed-gas",
+        )
+        chain = Chain.objects.create(
+            code="eth-signed-gas",
+            name="Ethereum Signed Gas",
+            type=ChainType.EVM,
+            chain_id=20502,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address=Web3.to_checksum_address("0x" + "a1" * 20),
+        )
+        send_raw_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                get_balance=Mock(return_value=42_000),
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            action_type=OnchainActionType.Withdrawal,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=Web3.to_checksum_address("0x" + "a2" * 20),
+            value=0,
+            data="",
+            gas=21_000,
+            tx_kind=TxKind.NATIVE_TRANSFER,
+            gas_price=10,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        task.broadcast()
+
+        send_raw_mock.assert_not_called()
+        base_task.refresh_from_db()
+        assert base_task.stage == BroadcastTaskStage.QUEUED
+
     @patch.object(EvmBroadcastTask, "is_pipeline_full", return_value=True)
     def test_pending_chain_rebroadcast_ignores_pipeline_full(self, _pipeline_full_mock):
         # 低 nonce 的 PENDING_CHAIN 任务超时重播是为了释放同地址 pipeline；
@@ -875,6 +933,70 @@ class EvmBroadcastTaskTests(TestCase):
         broadcast_task.broadcast(allow_pending_chain_rebroadcast=True)
 
         send_raw_mock.assert_called_once()
+
+    @patch("evm.models.get_signer_backend")
+    def test_rebroadcast_bumps_gas_price_by_125_percent(self, get_signer_backend_mock):
+        native = Crypto.objects.create(
+            name="Ethereum Fee Bump",
+            symbol="ETHFB",
+            coingecko_id="ethereum-fee-bump",
+        )
+        chain = Chain.objects.create(
+            code="eth-fee-bump",
+            name="Ethereum Fee Bump",
+            type=ChainType.EVM,
+            chain_id=20503,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address=Web3.to_checksum_address("0x" + "a3" * 20),
+        )
+        signer = Mock()
+        signer.sign_evm_transaction.return_value = SimpleNamespace(
+            tx_hash="0x" + "a4" * 32,
+            raw_transaction="0x02",
+        )
+        get_signer_backend_mock.return_value = signer
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=105,
+                get_balance=Mock(return_value=10**18),
+                send_raw_transaction=Mock(),
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            action_type=OnchainActionType.Withdrawal,
+            tx_hash="0x" + "a5" * 32,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=Web3.to_checksum_address("0x" + "a6" * 20),
+            value=0,
+            data="",
+            gas=21_000,
+            tx_kind=TxKind.NATIVE_TRANSFER,
+            gas_price=100,
+            signed_payload="0x01",
+        )
+
+        task.broadcast(allow_pending_chain_rebroadcast=True)
+
+        tx_dict = signer.sign_evm_transaction.call_args.kwargs["tx_dict"]
+        assert tx_dict["gasPrice"] == 113
 
     def test_broadcast_keeps_fee_too_low_error_retryable_without_finalizing(self):
         native = Crypto.objects.create(
