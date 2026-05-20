@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
+from django.utils import timezone
 from web3 import Web3
 
 from chains.models import Address
@@ -14,6 +15,8 @@ from evm.models import EvmBroadcastTask
 from evm.models import X402Facilitation
 from evm.models import X402FacilitationStatus
 from evm.services.idempotency import lock_evm_idempotency_key
+
+MIN_AUTHORIZATION_VALIDITY_SECONDS = 60
 
 
 @dataclass
@@ -34,6 +37,12 @@ class X402FacilitationService:
     ) -> X402CreateResult:
         if facilitator.chain_type != ChainType.EVM:
             raise ValidationError("facilitator must be EVM system address")
+
+        min_valid_before = (
+            int(timezone.now().timestamp()) + MIN_AUTHORIZATION_VALIDITY_SECONDS
+        )
+        if authorization.valid_before <= min_valid_before:
+            raise ValueError("x402 authorization valid_before is too close")
 
         authorization_from = Web3.to_checksum_address(authorization.from_address)
         authorization_to = Web3.to_checksum_address(authorization.to)

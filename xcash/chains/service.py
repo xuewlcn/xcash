@@ -205,6 +205,31 @@ class TransferService:
         return not differences, differences
 
     @staticmethod
+    def drop_reorged_unconfirmed_transfers(
+        *,
+        chain: Chain,
+        block: int,
+        block_hash: str | None,
+    ) -> int:
+        """丢弃同高度但 block_hash 已变化的未确认转账，让 replay 扫描可重建新分叉记录。"""
+        if not block_hash:
+            return 0
+
+        transfers = list(
+            OnchainTransfer.objects.filter(
+                chain=chain,
+                block=block,
+                status=TransferStatus.CONFIRMING,
+                block_hash__isnull=False,
+            )
+            .exclude(block_hash=block_hash)
+            .order_by("pk")
+        )
+        for transfer in transfers:
+            transfer.drop()
+        return len(transfers)
+
+    @staticmethod
     def _refresh_observed_transfer_chain_position(
         existing: OnchainTransfer,
         observed: ObservedTransferPayload,

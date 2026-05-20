@@ -381,6 +381,7 @@ class X402InternalLifecycleTests(TestCase):
         self.auth_from = Web3.to_checksum_address("0x" + "31" * 20)
         self.auth_to = Web3.to_checksum_address("0x" + "41" * 20)
         self.value_raw = 1_000_000
+        now_ts = int(timezone.now().timestamp())
         result = X402FacilitationService.create_and_schedule(
             facilitator=self.facilitator,
             chain=self.chain,
@@ -389,8 +390,8 @@ class X402InternalLifecycleTests(TestCase):
                 from_address=self.auth_from,
                 to=self.auth_to,
                 value=self.value_raw,
-                valid_after=1_700_000_000,
-                valid_before=1_700_000_900,
+                valid_after=now_ts - 60,
+                valid_before=now_ts + 3_600,
                 nonce=b"\x01" * 32,
                 v=27,
                 r=b"\x02" * 32,
@@ -463,6 +464,61 @@ class X402InternalLifecycleTests(TestCase):
         assert self.facilitation.status == X402FacilitationStatus.FAILED
         assert not OnchainTransfer.objects.filter(hash=self.base_task.tx_hash).exists()
 
+    def test_dropped_facilitation_cannot_be_confirmed_by_stale_transfer(self):
+        transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=1234,
+            block_hash=make_tx_hash("bd"),
+            hash=self.base_task.tx_hash,
+            event_id="erc20:5",
+            crypto=self.crypto,
+            from_address=self.auth_from,
+            to_address=self.auth_to,
+            value=Decimal(self.value_raw),
+            amount=Decimal("1"),
+            timestamp=1_700_000_000,
+            datetime=timezone.now(),
+            type=OnchainActionType.X402Facilitate,
+        )
+        self.facilitation.transfer = transfer
+        self.facilitation.status = X402FacilitationStatus.DROPPED
+        self.facilitation.save(update_fields=["transfer", "status", "updated_at"])
+
+        handlers_mod.HANDLERS[OnchainActionType.X402Facilitate].confirm(transfer)
+
+        self.facilitation.refresh_from_db()
+        assert self.facilitation.status == X402FacilitationStatus.DROPPED
+
+    def test_failed_facilitation_cannot_be_rebound_by_stale_transfer(self):
+        transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=1234,
+            block_hash=make_tx_hash("bf"),
+            hash=self.base_task.tx_hash,
+            event_id="erc20:6",
+            crypto=self.crypto,
+            from_address=self.auth_from,
+            to_address=self.auth_to,
+            value=Decimal(self.value_raw),
+            amount=Decimal("1"),
+            timestamp=1_700_000_000,
+            datetime=timezone.now(),
+        )
+        self.facilitation.transfer = None
+        self.facilitation.status = X402FacilitationStatus.FAILED
+        self.facilitation.save(update_fields=["transfer", "status", "updated_at"])
+
+        matched = handlers_mod.HANDLERS[OnchainActionType.X402Facilitate].match(
+            transfer, self.base_task
+        )
+
+        self.facilitation.refresh_from_db()
+        transfer.refresh_from_db()
+        assert matched is False
+        assert self.facilitation.transfer_id is None
+        assert self.facilitation.status == X402FacilitationStatus.FAILED
+        assert transfer.type == ""
+
 
 class Create2InternalLifecycleTests(TestCase):
     def test_success_creates_transfer_and_binds_collection(self):
@@ -522,6 +578,93 @@ class Create2InternalLifecycleTests(TestCase):
         assert collection.transfer_id == transfer.pk
         assert collection.status == ContractDeployCollectionStatus.BROADCASTED
         assert transfer.type == OnchainActionType.ContractDeployCollect
+
+    def test_dropped_collection_cannot_be_confirmed_by_stale_transfer(self):
+        chain = make_evm_chain(code="eth-c2-drop", chain_id=42904)
+        chain.create2_factory_address = Web3.to_checksum_address("0x" + "12" * 20)
+        chain.save(update_fields=["create2_factory_address"])
+        crypto = make_erc20_token(chain=chain, address_suffix="ce", decimals=6)
+        deployer = make_evm_system_address(suffix="d5", usage=AddressUsage.Vault)
+        vault_address = Web3.to_checksum_address("0x" + "45" * 20)
+        result = ContractDeployCollectionService.create_and_schedule(
+            deployer=deployer,
+            chain=chain,
+            crypto=crypto,
+            salt=b"\x02" * 32,
+            vault_address=vault_address,
+            expected_collect_value_raw=1_000_000,
+            gas=200_000,
+        )
+        collection = result.collection
+        base_task = collection.broadcast_task
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1234,
+            block_hash=make_tx_hash("c2d"),
+            hash=make_tx_hash("c2f"),
+            event_id="erc20:8",
+            crypto=crypto,
+            from_address=collection.collector_address,
+            to_address=collection.vault_address,
+            value=Decimal("1000000"),
+            amount=Decimal("1"),
+            timestamp=1_700_000_000,
+            datetime=timezone.now(),
+            type=OnchainActionType.ContractDeployCollect,
+        )
+        collection.transfer = transfer
+        collection.status = ContractDeployCollectionStatus.DROPPED
+        collection.save(update_fields=["transfer", "status", "updated_at"])
+
+        handlers_mod.HANDLERS[OnchainActionType.ContractDeployCollect].confirm(transfer)
+
+        collection.refresh_from_db()
+        base_task.refresh_from_db()
+        assert collection.status == ContractDeployCollectionStatus.DROPPED
+
+    def test_failed_collection_cannot_be_rebound_by_stale_transfer(self):
+        chain = make_evm_chain(code="eth-c2-failed", chain_id=42905)
+        chain.create2_factory_address = Web3.to_checksum_address("0x" + "13" * 20)
+        chain.save(update_fields=["create2_factory_address"])
+        crypto = make_erc20_token(chain=chain, address_suffix="cf", decimals=6)
+        deployer = make_evm_system_address(suffix="d6", usage=AddressUsage.Vault)
+        result = ContractDeployCollectionService.create_and_schedule(
+            deployer=deployer,
+            chain=chain,
+            crypto=crypto,
+            salt=b"\x03" * 32,
+            vault_address=Web3.to_checksum_address("0x" + "46" * 20),
+            expected_collect_value_raw=1_000_000,
+            gas=200_000,
+        )
+        collection = result.collection
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1234,
+            block_hash=make_tx_hash("c2a"),
+            hash=make_tx_hash("c2b"),
+            event_id="erc20:9",
+            crypto=crypto,
+            from_address=collection.collector_address,
+            to_address=collection.vault_address,
+            value=Decimal("1000000"),
+            amount=Decimal("1"),
+            timestamp=1_700_000_000,
+            datetime=timezone.now(),
+        )
+        collection.status = ContractDeployCollectionStatus.FAILED
+        collection.save(update_fields=["status", "updated_at"])
+
+        matched = handlers_mod.HANDLERS[OnchainActionType.ContractDeployCollect].match(
+            transfer, collection.broadcast_task
+        )
+
+        collection.refresh_from_db()
+        transfer.refresh_from_db()
+        assert matched is False
+        assert collection.transfer_id is None
+        assert collection.status == ContractDeployCollectionStatus.FAILED
+        assert transfer.type == ""
 
 
 class ProcessorFailureAtomicityTests(TransactionTestCase):

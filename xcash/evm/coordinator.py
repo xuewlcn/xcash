@@ -71,7 +71,16 @@ class InternalEvmTaskCoordinator:
                     )
                     continue
             elif status == TxCheckStatus.FAILED:
-                cls._finalize_failed_task(evm_task=evm_task)
+                try:
+                    cls._finalize_failed_task(evm_task=evm_task)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "协调器收口失败交易异常",
+                        chain=chain.code,
+                        address=evm_task.address.address,
+                        nonce=evm_task.nonce,
+                    )
+                    continue
             else:
                 # 所有历史 hash 都找不到 receipt，交易已被 mempool 丢弃，重新广播。
                 try:

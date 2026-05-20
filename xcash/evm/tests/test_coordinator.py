@@ -826,3 +826,49 @@ class CoordinatorIntegrationTest(TestCase):
         self.assertEqual(
             OnchainTransfer.objects.filter(hash=tx_hash).count(), 0,
         )
+
+    @patch.object(Chain, "w3", new_callable=PropertyMock)
+    def test_reconcile_continues_when_failed_finalize_raises(
+        self,
+        chain_w3_mock,
+    ):
+        def create_evm_task(*, tx_hash: str, nonce: int) -> EvmBroadcastTask:
+            base_task = BroadcastTask.objects.create(
+                chain=self.chain,
+                address=self.addr,
+                action_type=OnchainActionType.Withdrawal,
+                tx_hash=tx_hash,
+                stage=BroadcastTaskStage.PENDING_CHAIN,
+                result=BroadcastTaskResult.UNKNOWN,
+            )
+            return EvmBroadcastTask.objects.create(
+                base_task=base_task,
+                address=self.addr,
+                chain=self.chain,
+                nonce=nonce,
+                to=_RECEIVER_HEX,
+                value=Decimal("1"),
+                gas=21000,
+                tx_kind=TxKind.NATIVE_TRANSFER,
+                gas_price=1,
+                signed_payload="0x01",
+            )
+
+        first_evm_task = create_evm_task(tx_hash="0x" + "b1" * 32, nonce=0)
+        second_evm_task = create_evm_task(tx_hash="0x" + "b2" * 32, nonce=1)
+        self._make_overdue(first_evm_task)
+        self._make_overdue(second_evm_task)
+        chain_w3_mock.return_value = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_transaction_receipt=Mock(return_value={"status": 0}),
+            ),
+        )
+
+        with patch.object(
+            InternalEvmTaskCoordinator,
+            "_finalize_failed_task",
+            side_effect=[RuntimeError("handler failed"), True],
+        ) as finalize_failed_mock:
+            InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
+
+        self.assertEqual(finalize_failed_mock.call_count, 2)

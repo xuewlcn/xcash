@@ -239,11 +239,21 @@ class EvmErc20TransferScanner:
         timestamp_cache: dict[int, int] = {}
         created_transfers = 0
         processed_internal_hashes: set[str] = set()
+        reorg_checked_blocks: set[tuple[int, str | None]] = set()
 
         for log in logs:
             parsed = cls._parse_log(log=log, watch_set=watch_set)
             if parsed is None:
                 continue
+
+            block_identity = (parsed["block_number"], parsed["block_hash"])
+            if block_identity not in reorg_checked_blocks:
+                TransferService.drop_reorged_unconfirmed_transfers(
+                    chain=chain,
+                    block=parsed["block_number"],
+                    block_hash=parsed["block_hash"],
+                )
+                reorg_checked_blocks.add(block_identity)
 
             tx_hash = parsed["tx_hash"]
             if tx_hash in processed_internal_hashes:

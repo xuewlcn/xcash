@@ -10,6 +10,7 @@ from evm.models import EvmScanCursor
 @admin.register(EvmBroadcastTask)
 class EvmBroadcastTaskAdmin(ReadOnlyModelAdmin):
     ordering = ("-created_at",)
+    exclude = ("signed_payload",)
     list_display = (
         "display_address",
         "display_chain",

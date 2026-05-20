@@ -1,11 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 from django.test import TestCase
 from django.test import TransactionTestCase
+from django.utils import timezone
 from web3 import Web3
 
 from chains.models import AddressUsage
 from evm.intents import Eip3009Authorization
+from evm.models import EvmBroadcastTask
 from evm.models import X402Facilitation
 from evm.services.x402 import X402FacilitationService
 from evm.tests._fixtures import make_erc20_token
@@ -25,12 +28,13 @@ class X402IdempotencyTests(TestCase):
             suffix="82",
             usage=AddressUsage.Vault,
         )
+        now_ts = int(timezone.now().timestamp())
         self.auth = Eip3009Authorization(
             from_address=("0x" + "83" * 20).lower(),
             to=("0x" + "84" * 20).lower(),
             value=1_000_000,
-            valid_after=1_700_000_000,
-            valid_before=1_700_000_900,
+            valid_after=now_ts - 60,
+            valid_before=now_ts + 3_600,
             nonce=b"\x85" * 32,
             v=27,
             r=b"\x86" * 32,
@@ -84,18 +88,37 @@ class X402IdempotencyTests(TestCase):
                 authorization=changed,
             )
 
+    def test_valid_before_must_leave_execution_window(self):
+        near_expired = replace(
+            self.auth,
+            valid_before=int(timezone.now().timestamp()) + 60,
+            nonce=b"\x90" * 32,
+        )
+
+        with self.assertRaisesRegex(ValueError, "valid_before"):
+            X402FacilitationService.create_and_schedule(
+                facilitator=self.facilitator,
+                chain=self.chain,
+                crypto=self.crypto,
+                authorization=near_expired,
+            )
+
+        assert X402Facilitation.objects.count() == 0
+        assert EvmBroadcastTask.objects.count() == 0
+
 
 class X402IdempotencyConcurrencyTests(TransactionTestCase):
     def test_concurrent_same_authorization_returns_single_facilitation(self):
         chain = make_evm_chain(code="eth-x402-idem-concurrent", chain_id=56)
         crypto = make_erc20_token(chain=chain, address_suffix="88", decimals=6)
         facilitator = make_evm_system_address(suffix="89", usage=AddressUsage.Vault)
+        now_ts = int(timezone.now().timestamp())
         auth = Eip3009Authorization(
             from_address=Web3.to_checksum_address("0x" + "8a" * 20),
             to=Web3.to_checksum_address("0x" + "8b" * 20),
             value=1_000_000,
-            valid_after=1_700_000_000,
-            valid_before=1_700_000_900,
+            valid_after=now_ts - 60,
+            valid_before=now_ts + 3_600,
             nonce=b"\x8c" * 32,
             v=27,
             r=b"\x8d" * 32,

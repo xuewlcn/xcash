@@ -19,6 +19,7 @@ from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainActionType
 from chains.models import OnchainTransfer
+from chains.models import TransferStatus
 from chains.models import Wallet
 from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from core.models import PlatformSettings
@@ -211,6 +212,7 @@ class EvmErc20ScannerTests(TestCase):
             ],
             "data": hex(value),
             "blockNumber": block_number,
+            "blockHash": bytes.fromhex("10" * 32),
             "logIndex": log_index,
             "transactionHash": bytes.fromhex("ab" * 32),
         }
@@ -258,6 +260,7 @@ class EvmErc20ScannerTests(TestCase):
     ) -> dict:
         return {
             "number": 20,
+            "hash": bytes.fromhex("20" * 32),
             "timestamp": timestamp,
             "transactions": txs,
         }
@@ -369,6 +372,55 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(transfer.amount, Decimal("1"))
         self.assertEqual(cursor.last_scanned_block, 100)
         self.assertEqual(cursor.last_safe_block, 94)
+
+    @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("evm.scanner.erc20.EvmScannerRpcClient.get_block_timestamp")
+    @patch("evm.scanner.erc20.EvmScannerRpcClient.get_transfer_logs")
+    @patch("evm.scanner.erc20.EvmScannerRpcClient.get_latest_block_number")
+    def test_erc20_replay_drops_unconfirmed_transfer_when_block_hash_changes(
+        self,
+        get_latest_block_number_mock,
+        get_transfer_logs_mock,
+        get_block_timestamp_mock,
+        _enqueue_processing_mock,
+        _mark_pending_confirm_mock,
+    ):
+        old_transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=100,
+            block_hash="0x" + "99" * 32,
+            hash="0x" + "ab" * 32,
+            event_id="erc20:5",
+            crypto=self.token,
+            from_address=Web3.to_checksum_address("0x" + "cc" * 20),
+            to_address=self.addr.address,
+            value=Decimal(10**18),
+            amount=Decimal("1"),
+            timestamp=1_700_000_000,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMING,
+        )
+        get_latest_block_number_mock.return_value = 100
+        get_block_timestamp_mock.return_value = 1_700_000_100
+        get_transfer_logs_mock.return_value = [
+            self._build_transfer_log(
+                from_address=old_transfer.from_address,
+                to_address=old_transfer.to_address,
+                block_number=100,
+            )
+        ]
+
+        result = EvmErc20TransferScanner.scan_chain(chain=self.chain, batch_size=32)
+
+        replacement = OnchainTransfer.objects.get(
+            chain=self.chain,
+            hash=old_transfer.hash,
+            event_id=old_transfer.event_id,
+        )
+        self.assertEqual(result.created_transfers, 1)
+        self.assertNotEqual(replacement.pk, old_transfer.pk)
+        self.assertEqual(replacement.block_hash, "0x" + "10" * 32)
 
     def test_erc20_scanner_routes_known_internal_hash_to_processor(self):
         tx_hash = "0x" + "51" * 32
@@ -1002,6 +1054,68 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(transfer.amount, Decimal("1"))
         self.assertEqual(cursor.last_scanned_block, 20)
         self.assertEqual(cursor.last_safe_block, 14)
+
+    @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
+    def test_native_replay_drops_unconfirmed_transfer_when_block_hash_changes(
+        self,
+        get_latest_block_number_mock,
+        get_full_block_mock,
+        get_receipt_status_mock,
+        _get_block_receipts_status_mock,
+        _enqueue_processing_mock,
+        _mark_pending_confirm_mock,
+    ):
+        tx_hash = "0x" + "cd" * 32
+        old_transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=20,
+            block_hash="0x" + "88" * 32,
+            hash=tx_hash,
+            event_id="native:tx",
+            crypto=self.native,
+            from_address=Web3.to_checksum_address("0x" + "cc" * 20),
+            to_address=self.addr.address,
+            value=Decimal(10**18),
+            amount=Decimal("1"),
+            timestamp=1_700_000_000,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMING,
+        )
+        get_latest_block_number_mock.return_value = 20
+        get_receipt_status_mock.return_value = 1
+        get_full_block_mock.side_effect = lambda *, block_number: (
+            self._build_native_block(
+                txs=[
+                    self._build_native_tx(
+                        from_address=old_transfer.from_address,
+                        to_address=old_transfer.to_address,
+                        value=10**18,
+                        tx_hash_hex="cd",
+                    )
+                ]
+            )
+            if block_number == 20
+            else self._build_native_block(txs=[])
+        )
+
+        result = EvmNativeDirectScanner.scan_chain(chain=self.chain, batch_size=4)
+
+        replacement = OnchainTransfer.objects.get(
+            chain=self.chain,
+            hash=tx_hash,
+            event_id="native:tx",
+        )
+        self.assertEqual(result.created_transfers, 1)
+        self.assertNotEqual(replacement.pk, old_transfer.pk)
+        self.assertEqual(replacement.block_hash, "0x" + "20" * 32)
 
     @patch("chains.service.TransferService.create_observed_transfer")
     @patch(

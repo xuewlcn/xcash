@@ -234,6 +234,11 @@ class EvmNativeDirectScanner:
         for block_number in range(from_block, to_block + 1):
             block: dict[str, Any] = rpc_client.get_full_block(block_number=block_number)
             block_hash = cls._normalize_hash(block.get("hash"))
+            TransferService.drop_reorged_unconfirmed_transfers(
+                chain=chain,
+                block=block_number,
+                block_hash=block_hash,
+            )
             timestamp = int(block["timestamp"])
             occurred_at = datetime.fromtimestamp(
                 timestamp,

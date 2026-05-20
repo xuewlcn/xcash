@@ -60,11 +60,18 @@ def create2_matcher(
 class ContractDeployCollectionHandler:
     def match(self, transfer: OnchainTransfer, broadcast_task: BroadcastTask) -> bool:
         from evm.models import ContractDeployCollection
+        from evm.models import ContractDeployCollectionStatus
 
         with db_transaction.atomic():
             collection = (
                 ContractDeployCollection.objects.select_for_update()
-                .filter(broadcast_task=broadcast_task)
+                .filter(
+                    broadcast_task=broadcast_task,
+                    status__in=[
+                        ContractDeployCollectionStatus.CREATED,
+                        ContractDeployCollectionStatus.BROADCASTED,
+                    ],
+                )
                 .first()
             )
             if collection is None:
@@ -81,7 +88,10 @@ class ContractDeployCollectionHandler:
         from evm.models import ContractDeployCollection
         from evm.models import ContractDeployCollectionStatus
 
-        ContractDeployCollection.objects.filter(transfer=transfer).update(
+        ContractDeployCollection.objects.filter(
+            transfer=transfer,
+            status=ContractDeployCollectionStatus.BROADCASTED,
+        ).update(
             status=ContractDeployCollectionStatus.CONFIRMED,
             updated_at=timezone.now(),
         )
@@ -90,7 +100,13 @@ class ContractDeployCollectionHandler:
         from evm.models import ContractDeployCollection
         from evm.models import ContractDeployCollectionStatus
 
-        ContractDeployCollection.objects.filter(transfer=transfer).update(
+        ContractDeployCollection.objects.filter(
+            transfer=transfer,
+            status__in=[
+                ContractDeployCollectionStatus.BROADCASTED,
+                ContractDeployCollectionStatus.CONFIRMED,
+            ],
+        ).update(
             transfer=None,
             status=ContractDeployCollectionStatus.DROPPED,
             updated_at=timezone.now(),
@@ -104,7 +120,13 @@ class ContractDeployCollectionHandler:
         from evm.models import ContractDeployCollection
         from evm.models import ContractDeployCollectionStatus
 
-        ContractDeployCollection.objects.filter(broadcast_task=broadcast_task).update(
+        ContractDeployCollection.objects.filter(
+            broadcast_task=broadcast_task,
+            status__in=[
+                ContractDeployCollectionStatus.CREATED,
+                ContractDeployCollectionStatus.BROADCASTED,
+            ],
+        ).update(
             status=ContractDeployCollectionStatus.FAILED,
             failure_reason=reason,
             updated_at=timezone.now(),

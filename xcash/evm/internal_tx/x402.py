@@ -60,11 +60,18 @@ def x402_matcher(
 class X402Handler:
     def match(self, transfer: OnchainTransfer, broadcast_task: BroadcastTask) -> bool:
         from evm.models import X402Facilitation
+        from evm.models import X402FacilitationStatus
 
         with db_transaction.atomic():
             facilitation = (
                 X402Facilitation.objects.select_for_update()
-                .filter(broadcast_task=broadcast_task)
+                .filter(
+                    broadcast_task=broadcast_task,
+                    status__in=[
+                        X402FacilitationStatus.CREATED,
+                        X402FacilitationStatus.BROADCASTED,
+                    ],
+                )
                 .first()
             )
             if facilitation is None:
@@ -81,7 +88,10 @@ class X402Handler:
         from evm.models import X402Facilitation
         from evm.models import X402FacilitationStatus
 
-        X402Facilitation.objects.filter(transfer=transfer).update(
+        X402Facilitation.objects.filter(
+            transfer=transfer,
+            status=X402FacilitationStatus.BROADCASTED,
+        ).update(
             status=X402FacilitationStatus.CONFIRMED,
             updated_at=timezone.now(),
         )
@@ -90,7 +100,13 @@ class X402Handler:
         from evm.models import X402Facilitation
         from evm.models import X402FacilitationStatus
 
-        X402Facilitation.objects.filter(transfer=transfer).update(
+        X402Facilitation.objects.filter(
+            transfer=transfer,
+            status__in=[
+                X402FacilitationStatus.BROADCASTED,
+                X402FacilitationStatus.CONFIRMED,
+            ],
+        ).update(
             transfer=None,
             status=X402FacilitationStatus.DROPPED,
             updated_at=timezone.now(),
@@ -104,7 +120,13 @@ class X402Handler:
         from evm.models import X402Facilitation
         from evm.models import X402FacilitationStatus
 
-        X402Facilitation.objects.filter(broadcast_task=broadcast_task).update(
+        X402Facilitation.objects.filter(
+            broadcast_task=broadcast_task,
+            status__in=[
+                X402FacilitationStatus.CREATED,
+                X402FacilitationStatus.BROADCASTED,
+            ],
+        ).update(
             status=X402FacilitationStatus.FAILED,
             failure_reason=reason,
             updated_at=timezone.now(),
