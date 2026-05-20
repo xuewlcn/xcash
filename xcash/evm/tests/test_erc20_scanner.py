@@ -1,22 +1,31 @@
 from decimal import Decimal
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
+from django.utils import timezone
 from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
+from chains.models import BroadcastTask
+from chains.models import BroadcastTaskFailureReason
+from chains.models import BroadcastTaskResult
+from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
+from chains.models import OnchainActionType
 from chains.models import OnchainTransfer
 from chains.models import Wallet
 from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from core.models import PlatformSettings
 from currencies.models import ChainToken
 from currencies.models import Crypto
+from evm.choices import TxKind
+from evm.models import EvmBroadcastTask
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.erc20 import EvmErc20ScanResult
@@ -24,6 +33,7 @@ from evm.scanner.erc20 import EvmErc20TransferScanner
 from evm.scanner.native import EvmNativeDirectScanner
 from evm.scanner.native import EvmNativeScanResult
 from evm.scanner.rpc import EvmScannerRpcError
+from evm.scanner.watchers import EvmWatchSet
 from evm.scanner.watchers import load_watch_set
 from evm.tasks import scan_active_evm_chains
 from evm.tasks import scan_active_evm_erc20_chains
@@ -324,6 +334,83 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(transfer.amount, Decimal("1"))
         self.assertEqual(cursor.last_scanned_block, 100)
         self.assertEqual(cursor.last_safe_block, 94)
+
+    def test_erc20_scanner_routes_known_internal_hash_to_processor(self):
+        tx_hash = "0x" + "51" * 32
+        recipient = Web3.to_checksum_address("0x" + "52" * 20)
+        wrong_recipient = Web3.to_checksum_address("0x" + "53" * 20)
+        value_raw = 123_000_000
+        encoded_args = (
+            recipient.removeprefix("0x").rjust(64, "0")
+            + hex(value_raw)[2:].rjust(64, "0")
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=self.chain,
+            address=self.addr,
+            action_type=OnchainActionType.Withdrawal,
+            tx_hash=tx_hash,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=self.addr,
+            chain=self.chain,
+            nonce=0,
+            to=self.token_deployment.address,
+            value=0,
+            data=f"0xa9059cbb{encoded_args}",
+            gas=self.chain.erc20_transfer_gas,
+            tx_kind=TxKind.CONTRACT_CALL,
+            gas_price=1,
+            signed_payload="0x01",
+        )
+        log = self._build_transfer_log(
+            from_address=self.addr.address,
+            to_address=wrong_recipient,
+            value=value_raw,
+            log_index=4,
+            block_number=100,
+        )
+        log["transactionHash"] = bytes.fromhex("51" * 32)
+        receipt = {
+            "status": 1,
+            "blockNumber": 100,
+            "blockHash": "0x" + "61" * 32,
+            "logs": [log],
+        }
+        rpc_client = Mock()
+        rpc_client.get_transaction.return_value = {
+            "hash": tx_hash,
+            "from": self.addr.address,
+            "to": self.token_deployment.address,
+            "input": f"0xa9059cbb{encoded_args}",
+        }
+        rpc_client.get_transaction_receipt.return_value = receipt
+        rpc_client.get_block_timestamp.return_value = 1_700_000_000
+        watch_set = EvmWatchSet(
+            watched_addresses=frozenset({self.addr.address, wrong_recipient}),
+            tokens_by_address={self.token_deployment.address: self.token_deployment},
+        )
+
+        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
+            ts.return_value = (1_700_000_000, timezone.now())
+            created = EvmErc20TransferScanner._persist_logs(
+                chain=self.chain,
+                logs=[log],
+                rpc_client=rpc_client,
+                watch_set=watch_set,
+            )
+
+        base_task.refresh_from_db()
+        self.assertEqual(created, 0)
+        self.assertFalse(OnchainTransfer.objects.filter(hash=tx_hash).exists())
+        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
+        self.assertEqual(
+            base_task.failure_reason,
+            BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING,
+        )
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")

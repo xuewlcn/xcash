@@ -238,10 +238,22 @@ class EvmErc20TransferScanner:
 
         timestamp_cache: dict[int, int] = {}
         created_transfers = 0
+        processed_internal_hashes: set[str] = set()
 
         for log in logs:
             parsed = cls._parse_log(log=log, watch_set=watch_set)
             if parsed is None:
+                continue
+
+            tx_hash = parsed["tx_hash"]
+            if tx_hash in processed_internal_hashes:
+                continue
+            if cls._process_internal_log_transaction_if_known(
+                chain=chain,
+                rpc_client=rpc_client,
+                tx_hash=tx_hash,
+            ):
+                processed_internal_hashes.add(tx_hash)
                 continue
 
             block_number = parsed["block_number"]
@@ -273,6 +285,37 @@ class EvmErc20TransferScanner:
                 created_transfers += 1
 
         return created_transfers
+
+    @classmethod
+    def _process_internal_log_transaction_if_known(
+        cls,
+        *,
+        chain: Chain,
+        rpc_client: EvmScannerRpcClient,
+        tx_hash: str,
+    ) -> bool:
+        from chains.models import BroadcastTask  # noqa: PLC0415
+        from evm.internal_tx.exceptions import UnknownInternalBroadcastError  # noqa: PLC0415
+        from evm.internal_tx.processor import process_internal_transaction  # noqa: PLC0415
+
+        if BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash) is None:
+            return False
+
+        tx = rpc_client.get_transaction(tx_hash=tx_hash)
+        receipt = rpc_client.get_transaction_receipt(tx_hash=tx_hash)
+        if tx is None or receipt is None:
+            return True
+
+        try:
+            process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
+        except UnknownInternalBroadcastError as exc:
+            logger.warning(
+                "EVM ERC20 扫描命中内部交易哈希但处理器找不到 BroadcastTask",
+                chain=chain.code,
+                tx_hash=exc.tx_hash,
+                from_address=exc.from_address,
+            )
+        return True
 
     @staticmethod
     def _parse_log(

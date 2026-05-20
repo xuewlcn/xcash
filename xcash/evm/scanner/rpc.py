@@ -250,6 +250,15 @@ class EvmScannerRpcClient:
         status = receipt.get("status")
         return int(status) if status in (0, 1) else None
 
+    def get_transaction(self, *, tx_hash: str) -> dict[str, Any] | None:
+        tx = self._call_with_retry(
+            fn=lambda: self.chain.w3.eth.get_transaction(tx_hash),  # noqa: SLF001
+            summary="获取交易详情失败",
+            method="eth_getTransactionByHash",
+            context=f"tx_hash={tx_hash}",
+        )
+        return dict(tx) if tx is not None else None
+
     def get_transaction_receipt(self, *, tx_hash: str) -> dict[str, Any] | None:
         receipt = self._call_with_retry(
             fn=lambda: self.chain.w3.eth.get_transaction_receipt(tx_hash),  # noqa: SLF001
