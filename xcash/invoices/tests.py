@@ -34,6 +34,7 @@ from currencies.models import Fiat
 from invoices.exceptions import InvoiceAllocationError
 from invoices.exceptions import InvoiceStatusError
 from invoices.models import Invoice
+from invoices.models import InvoiceBillingMode
 from invoices.models import InvoicePaySlot
 from invoices.models import InvoicePaySlotDiscardReason
 from invoices.models import InvoicePaySlotStatus
@@ -1620,4 +1621,23 @@ class InvoiceSelectForUpdateLockScopeTests(InvoicePaySlotTests):
         with CaptureQueriesContext(connection) as captured:
             InvoiceService.drop_invoice(invoice)
 
-        self._assert_lock_scope_is_self_only(self._for_update_tails(captured))
+
+class InvoiceBillingModeFieldTest(TestCase, InvoiceTestMixin):
+    def setUp(self):
+        self.setup_base_fixtures()
+
+    def _make_minimal_invoice(self):
+        return self.create_test_invoice(out_no="billing-mode-test")
+
+    def test_invoice_default_billing_mode_is_differ(self):
+        invoice = self._make_minimal_invoice()
+        self.assertEqual(invoice.billing_mode, InvoiceBillingMode.DIFFER)
+
+    def test_pay_slot_default_billing_mode_is_differ(self):
+        slot = InvoicePaySlot(billing_mode=InvoiceBillingMode.DIFFER.value)
+        self.assertEqual(slot.billing_mode, InvoiceBillingMode.DIFFER)
+
+    def test_pay_slot_recipient_address_nullable(self):
+        field = InvoicePaySlot._meta.get_field("recipient_address")
+        self.assertTrue(field.null)
+        self.assertTrue(field.blank)

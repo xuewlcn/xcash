@@ -54,6 +54,11 @@ class InvoicePaySlotDiscardReason(models.TextChoices):
     SETTLED = "settled", _("已被其他付款占用")
 
 
+class InvoiceBillingMode(models.TextChoices):
+    DIFFER = "differ", _("差额")
+    CONTRACT = "contract", _("合约")
+
+
 class Invoice(models.Model):
     MAX_ALLOCATION_RETRY = 5
     MAX_ACTIVE_PAY_SLOTS = 2
@@ -156,6 +161,13 @@ class Invoice(models.Model):
         max_length=16,
         db_index=True,
         verbose_name=_("接入协议"),
+    )
+    billing_mode = models.CharField(
+        choices=InvoiceBillingMode,
+        default=InvoiceBillingMode.DIFFER,
+        max_length=16,
+        db_index=True,
+        verbose_name=_("计费模式"),
     )
 
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
@@ -450,6 +462,18 @@ class InvoicePaySlot(models.Model):
     pay_address = AddressField(
         verbose_name=_("支付地址"),
         db_index=True,
+    )
+    billing_mode = models.CharField(
+        choices=InvoiceBillingMode,
+        default=InvoiceBillingMode.DIFFER,
+        max_length=16,
+        verbose_name=_("计费模式"),
+    )
+    recipient_address = AddressField(
+        blank=True,
+        null=True,
+        verbose_name=_("派生 collector 时使用的归集目标地址"),
+        help_text=_("仅合约账单填写,差额账单留空。后续部署 collector 时使用此值,保证地址不漂移。"),
     )
     status = models.CharField(
         choices=InvoicePaySlotStatus,
