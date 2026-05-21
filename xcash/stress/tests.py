@@ -1541,3 +1541,26 @@ class VerifyDepositCollectionSchedulingTests(SimpleTestCase):
         reschedule_mock.assert_not_called()
         gather_mock.assert_not_called()
         on_finished_mock.assert_not_called()
+
+
+class BuildStressCasesBillingModeTests(SimpleTestCase):
+    """_build_stress_cases 按 40% contract / 60% differ 抽样。"""
+
+    databases: set[str] = set()
+
+    def test_distribution_within_expected_range(self):
+        import random as _random
+        from invoices.models import InvoiceBillingMode
+        from stress.service import _build_stress_cases
+
+        stress = StressRun(pk=99, count=200)
+        _random.seed(0)
+        cases = _build_stress_cases(stress)
+
+        contract = sum(
+            1 for c in cases if c.billing_mode == InvoiceBillingMode.CONTRACT
+        )
+        # 期望 40% 左右；用 [30%, 50%] 容忍区间避开 seed 敏感失败。
+        self.assertEqual(len(cases), 200)
+        self.assertGreaterEqual(contract, 60)
+        self.assertLessEqual(contract, 100)

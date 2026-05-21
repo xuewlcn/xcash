@@ -20,6 +20,7 @@ from common.consts import NONCE_HEADER
 from common.consts import SIGNATURE_HEADER
 from common.consts import TIMESTAMP_HEADER
 from invoices.models import Invoice
+from invoices.models import InvoiceBillingMode
 from projects.models import Project
 from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
@@ -449,6 +450,17 @@ def _setup_wallet_for_withdrawal(project: Project) -> None:
     wallet.get_address(chain_type=ChainType.EVM, usage=AddressUsage.Vault)
 
 
+def _pick_billing_mode() -> str:
+    """按 40% contract / 60% differ 独立抽样。
+
+    需求强调"差不多 40/60 左右"，因此采用 Bernoulli 抽样而非配额拆分。
+    count 较小时实际比例会有抖动，但符合"压测样本而非严格配比"的语义。
+    """
+    if random.random() < 0.4:  # noqa: S311
+        return InvoiceBillingMode.CONTRACT
+    return InvoiceBillingMode.DIFFER
+
+
 def _build_stress_cases(stress: StressRun) -> list[InvoiceStressCase]:
     """构建本轮待执行的 InvoiceStressCase 列表。"""
     total_seconds = stress.count / 10.0
@@ -463,6 +475,7 @@ def _build_stress_cases(stress: StressRun) -> list[InvoiceStressCase]:
                 stress_run=stress,
                 sequence=i,
                 scheduled_offset=offset,
+                billing_mode=_pick_billing_mode(),
             )
         )
 
