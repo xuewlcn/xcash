@@ -21,6 +21,8 @@ from eth_utils import keccak
 from rest_framework.test import APIRequestFactory
 from web3 import Web3
 
+from chains.models import Address
+from chains.models import AddressUsage
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainActionType
@@ -2035,3 +2037,100 @@ class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
         self.assertFalse(matched)
         self.invoice.refresh_from_db()
         self.assertEqual(self.invoice.status, InvoiceStatus.WAITING)
+
+
+class TriggerContractCollectionTest(TestCase, InvoiceTestMixin):
+    def setUp(self):
+        self.setup_base_fixtures(
+            username="contract-collection-merchant",
+            project_name="ContractCollectionProject",
+            crypto_symbol="USDTCOL",
+            chain_code="eth-contract-collection",
+            chain_id=8806,
+        )
+        self.chain.create2_factory_address = Web3.to_checksum_address(
+            "0x00000000000000000000000000000000000000ab"
+        )
+        self.chain.save(update_fields=["create2_factory_address"])
+        ChainToken.objects.create(
+            crypto=self.crypto,
+            chain=self.chain,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000c3"
+            ),
+        )
+        self.invoice = self.create_test_invoice(
+            out_no="contract-collection-order",
+            billing_mode=InvoiceBillingMode.CONTRACT,
+            amount=Decimal("100"),
+            status=InvoiceStatus.COMPLETED,
+        )
+        self.matched_slot = InvoicePaySlot.objects.create(
+            invoice=self.invoice,
+            project=self.invoice.project,
+            version=1,
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000ce"
+            ),
+            pay_amount=Decimal("100"),
+            recipient_address=self.recipient_address,
+            billing_mode=InvoiceBillingMode.CONTRACT,
+            status=InvoicePaySlotStatus.MATCHED,
+            matched_at=timezone.now(),
+        )
+        self.deployer = Address.objects.create(
+            wallet=self.project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            address_index=0,
+            bip44_account=Wallet.get_bip44_account(AddressUsage.Vault),
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000f1"
+            ),
+        )
+
+    def test_raises_when_not_contract_billing_mode(self):
+        from invoices.exceptions import InvoiceBillingModeError
+
+        self.invoice.billing_mode = InvoiceBillingMode.DIFFER
+        self.invoice.save(update_fields=["billing_mode"])
+
+        with self.assertRaises(InvoiceBillingModeError):
+            self.invoice.trigger_contract_collection()
+
+    def test_raises_when_status_not_completed(self):
+        self.invoice.status = InvoiceStatus.CONFIRMING
+        self.invoice.save(update_fields=["status"])
+
+        with self.assertRaises(InvoiceStatusError):
+            self.invoice.trigger_contract_collection()
+
+    @patch("evm.services.create2.ContractDeployCollectionService.create_and_schedule")
+    def test_calls_create_and_schedule_with_expected_args(self, mock_schedule):
+        from evm.constants import GAS_ERC20_COLLECTOR
+
+        mock_schedule.return_value = Mock(collection=Mock(pk=999999))
+        with patch.object(Wallet, "get_address", return_value=self.deployer):
+            self.invoice.trigger_contract_collection()
+
+        mock_schedule.assert_called_once()
+        kwargs = mock_schedule.call_args.kwargs
+        self.assertEqual(kwargs["deployer"], self.deployer)
+        self.assertEqual(kwargs["chain"], self.chain)
+        self.assertEqual(kwargs["crypto"], self.crypto)
+        self.assertEqual(kwargs["recipient_address"], self.recipient_address)
+        self.assertEqual(kwargs["gas"], GAS_ERC20_COLLECTOR)
+        self.assertEqual(
+            kwargs["expected_collect_value_raw"],
+            int(self.matched_slot.pay_amount * Decimal(10) ** self.crypto.decimals),
+        )
+        self.assertEqual(
+            kwargs["salt"],
+            keccak(
+                self.invoice.sys_no.encode()
+                + self.chain.code.encode()
+                + self.crypto.symbol.encode()
+            )[:32],
+        )

@@ -25,6 +25,9 @@ from projects.models import Project
 from projects.service import ProjectService
 
 from .exceptions import InvoiceAllocationError
+from .exceptions import InvoiceBillingModeError
+from .exceptions import InvoiceCollectionError
+from .exceptions import InvoiceStatusError
 
 if TYPE_CHECKING:
     from chains.models import Chain
@@ -366,6 +369,70 @@ class Invoice(models.Model):
                 continue
 
         raise self.InvoiceAllocationError(f"{detail} (alloc retry exceeded)")
+
+    def trigger_contract_collection(self):
+        """合约账单完成后调度部署 collector 完成归集。
+
+        幂等性由 ContractDeployCollectionService.create_and_schedule 保证；这里
+        只负责校验账单状态、锁定已命中的 PaySlot，并把 collection 关联回来源槽位。
+        """
+        from chains.models import AddressUsage
+        from chains.models import ChainType
+        from evm.constants import GAS_ERC20_COLLECTOR
+        from evm.constants import GAS_NATIVE_COLLECTOR
+        from evm.models import ContractDeployCollection
+        from evm.services.create2 import ContractDeployCollectionService
+
+        if self.billing_mode != InvoiceBillingMode.CONTRACT:
+            raise InvoiceBillingModeError(
+                f"invoice {self.sys_no} is not contract billing"
+            )
+        if self.status != InvoiceStatus.COMPLETED:
+            raise InvoiceStatusError(
+                f"invoice {self.sys_no} must be COMPLETED, got {self.status}"
+            )
+
+        with db_transaction.atomic():
+            Invoice.objects.select_for_update(of=("self",)).get(pk=self.pk)
+
+            matched_slot = (
+                self.pay_slots.filter(status=InvoicePaySlotStatus.MATCHED)
+                .order_by("-matched_at", "-version", "-pk")
+                .first()
+            )
+            if matched_slot is None or not matched_slot.recipient_address:
+                raise InvoiceCollectionError(
+                    f"invoice {self.sys_no} has no matched contract PaySlot"
+                )
+
+            chain = matched_slot.chain
+            crypto = matched_slot.crypto
+            deployer = self.project.wallet.get_address(
+                chain_type=ChainType.EVM,
+                usage=AddressUsage.Vault,
+            )
+            salt = keccak(
+                self.sys_no.encode() + chain.code.encode() + crypto.symbol.encode()
+            )[:32]
+            token_address = crypto.address(chain) or None
+            gas = GAS_NATIVE_COLLECTOR if token_address is None else GAS_ERC20_COLLECTOR
+            expected_collect_value_raw = int(
+                matched_slot.pay_amount * Decimal(10) ** crypto.decimals
+            )
+
+            result = ContractDeployCollectionService.create_and_schedule(
+                deployer=deployer,
+                chain=chain,
+                crypto=crypto,
+                salt=salt,
+                recipient_address=matched_slot.recipient_address,
+                expected_collect_value_raw=expected_collect_value_raw,
+                gas=gas,
+            )
+            ContractDeployCollection.objects.filter(pk=result.collection.pk).update(
+                pay_slot=matched_slot,
+            )
+            return result.collection
 
     @classmethod
     def get_pay_differ(
