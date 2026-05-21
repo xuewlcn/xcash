@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from celery import shared_task
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 
 from evm.models import ContractDeployCollectionStatus
@@ -128,7 +129,17 @@ def retry_contract_collection_for_completed_invoices():
         .exclude(
             pay_slots__contract_deploy_collections__status__in=active_states,
         )
+        .annotate(
+            contract_collection_attempt_count=Count(
+                "pay_slots__contract_deploy_collections",
+                distinct=True,
+            )
+        )
+        .filter(
+            contract_collection_attempt_count__lt=Invoice.MAX_CONTRACT_COLLECTION_ATTEMPTS,
+        )
         .distinct()
+        .order_by("pk")
         .values_list("pk", flat=True)[:50]
     )
     for invoice_id in candidates:

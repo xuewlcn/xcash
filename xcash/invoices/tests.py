@@ -1621,7 +1621,7 @@ class InvoiceSelectForUpdateLockScopeTests(InvoicePaySlotTests):
         InvoiceService.try_match_invoice(transfer)
         invoice.refresh_from_db()
 
-        with CaptureQueriesContext(connection) as captured:
+        with CaptureQueriesContext(connection):
             InvoiceService.drop_invoice(invoice)
 
 
@@ -1946,6 +1946,58 @@ class CreateContractInvoicePreflightTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], ErrorCode.CONTRACT_BILLING_EVM_ONLY.code)
 
+    def test_fails_when_contract_methods_mix_non_evm_chain(self):
+        usdt, _ = Crypto.objects.get_or_create(
+            symbol="USDT",
+            defaults={
+                "name": "Tether USD",
+                "prices": {"USD": "1"},
+                "coingecko_id": "tether-contract-mixed",
+            },
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=self.chain,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000c4"
+            ),
+        )
+        trx = Crypto.objects.create(
+            name="Contract Mixed TRX",
+            symbol="TRXMIX",
+            prices={"USD": "0.1"},
+            coingecko_id="trx-contract-mixed",
+        )
+        tron_chain = Chain.objects.create(
+            name="Contract Mixed Tron",
+            code="tron-contract-mixed",
+            type=ChainType.TRON,
+            native_coin=trx,
+            chain_id=8814,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=tron_chain,
+            address="TTokenMIX",
+        )
+        RecipientAddress.objects.create(
+            name="Contract Mixed Tron Recipient",
+            project=self.project,
+            chain_type=ChainType.TRON,
+            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
+            usage=RecipientAddressUsage.INVOICE,
+        )
+        payload = self._base_payload()
+        payload["currency"] = usdt.symbol
+        payload["methods"] = {usdt.symbol: [self.chain.code, tron_chain.code]}
+
+        response = self._post(payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], ErrorCode.CONTRACT_BILLING_EVM_ONLY.code)
+
     def test_succeeds_when_all_preflight_pass(self):
         response = self._post(self._base_payload())
 
@@ -2091,6 +2143,46 @@ class TriggerContractCollectionTest(TestCase, InvoiceTestMixin):
             ),
         )
 
+    def _attach_transfer(self, *, amount: Decimal) -> OnchainTransfer:
+        value = Decimal(amount * Decimal(10) ** self.crypto.get_decimals(self.chain))
+        transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=1,
+            hash=f"0x{self.chain.chain_id:08x}{int(amount):056x}",
+            event_id=f"tc-{int(amount)}",
+            crypto=self.crypto,
+            from_address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000b4"
+            ),
+            to_address=self.matched_slot.pay_address,
+            value=value,
+            amount=amount,
+            timestamp=int(timezone.now().timestamp()),
+            datetime=timezone.now(),
+        )
+        Invoice.objects.filter(pk=self.invoice.pk).update(transfer=transfer)
+        self.invoice.refresh_from_db()
+        return transfer
+
+    def _create_collection_for_matched_slot(self, *, status: str, suffix: int):
+        from evm.models import ContractDeployCollection
+
+        return ContractDeployCollection.objects.create(
+            chain=self.chain,
+            crypto=self.crypto,
+            deployer_address=self.deployer,
+            factory_address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000fa"
+            ),
+            collector_address=Web3.to_checksum_address(f"0x{(2000 + suffix):040x}"),
+            recipient_address=self.recipient_address,
+            salt=bytes([suffix]) * 32,
+            collector_init_code_hash=bytes([suffix + 1]) * 32,
+            expected_collect_value_raw=1_000_000,
+            pay_slot=self.matched_slot,
+            status=status,
+        )
+
     def test_raises_when_not_contract_billing_mode(self):
         from invoices.exceptions import InvoiceBillingModeError
 
@@ -2134,6 +2226,35 @@ class TriggerContractCollectionTest(TestCase, InvoiceTestMixin):
                 + self.crypto.symbol.encode()
             )[:32],
         )
+
+    @patch("evm.services.create2.ContractDeployCollectionService.create_and_schedule")
+    def test_uses_matched_transfer_value_when_payment_is_overpaid(self, mock_schedule):
+        transfer = self._attach_transfer(amount=Decimal("150"))
+        mock_schedule.return_value = Mock(collection=Mock(pk=999999))
+
+        with patch.object(Wallet, "get_address", return_value=self.deployer):
+            self.invoice.trigger_contract_collection()
+
+        kwargs = mock_schedule.call_args.kwargs
+        self.assertEqual(kwargs["expected_collect_value_raw"], int(transfer.value))
+
+    @patch("evm.services.create2.ContractDeployCollectionService.create_and_schedule")
+    def test_does_not_schedule_after_five_collection_attempts(self, mock_schedule):
+        from evm.models import ContractDeployCollectionStatus
+
+        mock_schedule.return_value = Mock(collection=Mock(pk=999999))
+        latest = None
+        for suffix in range(1, 6):
+            latest = self._create_collection_for_matched_slot(
+                status=ContractDeployCollectionStatus.FAILED,
+                suffix=suffix,
+            )
+
+        with patch.object(Wallet, "get_address", return_value=self.deployer):
+            result = self.invoice.trigger_contract_collection()
+
+        self.assertEqual(result, latest)
+        mock_schedule.assert_not_called()
 
 
 class ConfirmInvoiceContractHookTest(TestCase, InvoiceTestMixin):
@@ -2301,6 +2422,20 @@ class RetryContractCollectionBeatTest(TestCase, InvoiceTestMixin):
         from invoices.tasks import retry_contract_collection_for_completed_invoices
 
         Invoice.objects.filter(pk=self.invoice.pk).update(updated_at=timezone.now())
+
+        retry_contract_collection_for_completed_invoices()
+
+        mock_delay.assert_not_called()
+
+    @patch("invoices.tasks.deploy_contract_collection.delay")
+    def test_skips_invoice_after_five_collection_attempts(self, mock_delay):
+        from evm.models import ContractDeployCollectionStatus
+        from invoices.tasks import retry_contract_collection_for_completed_invoices
+
+        for _ in range(5):
+            self._create_collection_for_slot(
+                status=ContractDeployCollectionStatus.FAILED,
+            )
 
         retry_contract_collection_for_completed_invoices()
 

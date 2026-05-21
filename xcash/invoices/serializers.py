@@ -16,8 +16,8 @@ from common.consts import MAX_INVOICE_DURATION
 from common.consts import MIN_INVOICE_DURATION
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
-from core.runtime_settings import get_open_native_scanner
 from common.serializers import StrippedDecimalField
+from core.runtime_settings import get_open_native_scanner
 from currencies.service import CryptoService
 from currencies.service import FiatService
 from projects.models import RecipientAddress
@@ -204,21 +204,23 @@ class InvoiceCreateSerializer(Serializer):
         if not chains:
             raise APIError(ErrorCode.CONTRACT_BILLING_EVM_ONLY)
 
-        evm_chains = [chain for chain in chains if chain.type == ChainType.EVM]
-        if not evm_chains:
+        chains_by_code = {chain.code: chain for chain in chains}
+        if any(
+            chain_code not in chains_by_code
+            or chains_by_code[chain_code].type != ChainType.EVM
+            for chain_code in chain_codes
+        ):
             raise APIError(ErrorCode.CONTRACT_BILLING_EVM_ONLY)
 
+        evm_chains = list(chains_by_code.values())
         for chain in evm_chains:
             if not chain.create2_factory_address:
                 raise APIError(ErrorCode.CONTRACT_BILLING_FACTORY_NOT_CONFIGURED)
 
-        chains_by_code = {chain.code: chain for chain in chains}
         for crypto_symbol, chain_codes in methods.items():
             crypto = CryptoService.get_by_symbol(crypto_symbol)
             for chain_code in chain_codes:
-                chain = chains_by_code.get(chain_code)
-                if chain is None or chain.type != ChainType.EVM:
-                    continue
+                chain = chains_by_code[chain_code]
                 if not CryptoService.is_supported_on_chain(crypto, chain=chain):
                     raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
 

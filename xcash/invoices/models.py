@@ -66,6 +66,7 @@ class InvoiceBillingMode(models.TextChoices):
 class Invoice(models.Model):
     MAX_ALLOCATION_RETRY = 5
     MAX_ACTIVE_PAY_SLOTS = 2
+    MAX_CONTRACT_COLLECTION_ATTEMPTS = 5
 
     # 保留类属性别名，使 Invoice.InvoiceAllocationError 继续可用。
     InvoiceAllocationError = InvoiceAllocationError
@@ -393,10 +394,14 @@ class Invoice(models.Model):
             )
 
         with db_transaction.atomic():
-            Invoice.objects.select_for_update(of=("self",)).get(pk=self.pk)
+            locked_invoice = (
+                Invoice.objects.select_for_update(of=("self",))
+                .select_related("project__wallet", "transfer")
+                .get(pk=self.pk)
+            )
 
             matched_slot = (
-                self.pay_slots.filter(status=InvoicePaySlotStatus.MATCHED)
+                locked_invoice.pay_slots.filter(status=InvoicePaySlotStatus.MATCHED)
                 .order_by("-matched_at", "-version", "-pk")
                 .first()
             )
@@ -405,20 +410,44 @@ class Invoice(models.Model):
                     f"invoice {self.sys_no} has no matched contract PaySlot"
                 )
 
+            latest_collection = (
+                matched_slot.contract_deploy_collections.order_by(
+                    "-created_at",
+                    "-pk",
+                ).first()
+            )
+            if (
+                matched_slot.contract_deploy_collections.count()
+                >= self.MAX_CONTRACT_COLLECTION_ATTEMPTS
+            ):
+                return latest_collection
+
             chain = matched_slot.chain
             crypto = matched_slot.crypto
-            deployer = self.project.wallet.get_address(
+            deployer = locked_invoice.project.wallet.get_address(
                 chain_type=ChainType.EVM,
                 usage=AddressUsage.Vault,
             )
             salt = keccak(
-                self.sys_no.encode() + chain.code.encode() + crypto.symbol.encode()
+                locked_invoice.sys_no.encode()
+                + chain.code.encode()
+                + crypto.symbol.encode()
             )[:32]
             token_address = crypto.address(chain) or None
             gas = GAS_NATIVE_COLLECTOR if token_address is None else GAS_ERC20_COLLECTOR
-            expected_collect_value_raw = int(
-                matched_slot.pay_amount * Decimal(10) ** crypto.decimals
-            )
+            if locked_invoice.transfer_id:
+                if (
+                    locked_invoice.transfer.chain_id != chain.id
+                    or locked_invoice.transfer.crypto_id != crypto.id
+                ):
+                    raise InvoiceCollectionError(
+                        f"invoice {locked_invoice.sys_no} transfer does not match PaySlot"
+                    )
+                expected_collect_value_raw = int(locked_invoice.transfer.value)
+            else:
+                expected_collect_value_raw = int(
+                    matched_slot.pay_amount * Decimal(10) ** crypto.get_decimals(chain)
+                )
 
             result = ContractDeployCollectionService.create_and_schedule(
                 deployer=deployer,

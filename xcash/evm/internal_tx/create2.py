@@ -32,12 +32,26 @@ def create2_matcher(
 
     decimals = collection.crypto.get_decimals(chain)
     expected_value = Decimal(collection.expected_collect_value_raw)
+    token_address = collection.crypto.address(chain)
+    if not token_address:
+        # NativeCollector 通过 selfdestruct 归集原生币；标准 receipt 不包含内部
+        # 原生币转账 log。这里基于已成功的部署交易和确定性的 collector init_code
+        # 生成内部转账事实，避免依赖非标准 tracing RPC。
+        return MatchedTransferFact(
+            event_id="native:selfdestruct",
+            from_address=collection.collector_address,
+            to_address=collection.recipient_address,
+            crypto=collection.crypto,
+            value=expected_value,
+            amount=expected_value.scaleb(-decimals),
+        )
+
     matches = [
         log
         for log in receipt.get("logs") or []
         if matches_transfer_log(
             log,
-            token=collection.crypto.address(chain),
+            token=token_address,
             from_address=collection.collector_address,
             to_address=collection.recipient_address,
             value=expected_value,

@@ -579,6 +579,54 @@ class Create2InternalLifecycleTests(TestCase):
         assert collection.status == ContractDeployCollectionStatus.BROADCASTED
         assert transfer.type == OnchainActionType.ContractDeployCollect
 
+    def test_native_success_creates_transfer_without_erc20_log(self):
+        chain = make_evm_chain(code="eth-c2-native", chain_id=42913)
+        chain.create2_factory_address = Web3.to_checksum_address("0x" + "21" * 20)
+        chain.save(update_fields=["create2_factory_address"])
+        deployer = make_evm_system_address(suffix="e4", usage=AddressUsage.Vault)
+        recipient_address = Web3.to_checksum_address("0x" + "54" * 20)
+        value_raw = 2_500_000_000_000_000_000
+        result = ContractDeployCollectionService.create_and_schedule(
+            deployer=deployer,
+            chain=chain,
+            crypto=chain.native_coin,
+            salt=b"\x11" * 32,
+            recipient_address=recipient_address,
+            expected_collect_value_raw=value_raw,
+            gas=84_000,
+        )
+        collection = result.collection
+        base_task = collection.broadcast_task
+        base_task.tx_hash = make_tx_hash("c2a1")
+        base_task.stage = BroadcastTaskStage.PENDING_CHAIN
+        base_task.save(update_fields=["tx_hash", "stage", "updated_at"])
+
+        receipt = {
+            "status": 1,
+            "logs": [],
+            "blockNumber": 1235,
+            "blockHash": make_tx_hash("c2c"),
+        }
+        tx = {"hash": base_task.tx_hash, "from": deployer.address}
+        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
+            ts.return_value = (1_700_000_001, timezone.now())
+            process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
+
+        transfer = OnchainTransfer.objects.get(
+            chain=chain,
+            hash=base_task.tx_hash,
+            event_id="native:selfdestruct",
+        )
+        assert transfer.from_address == collection.collector_address
+        assert transfer.to_address == collection.recipient_address
+        assert transfer.value == Decimal(value_raw)
+        transfer.process()
+
+        collection.refresh_from_db()
+        assert collection.transfer_id == transfer.pk
+        assert collection.status == ContractDeployCollectionStatus.BROADCASTED
+        assert transfer.type == OnchainActionType.ContractDeployCollect
+
     def test_dropped_collection_cannot_be_confirmed_by_stale_transfer(self):
         chain = make_evm_chain(code="eth-c2-drop", chain_id=42904)
         chain.create2_factory_address = Web3.to_checksum_address("0x" + "12" * 20)
