@@ -258,11 +258,16 @@ class EvmErc20TransferScanner:
             tx_hash = parsed["tx_hash"]
             if tx_hash in processed_internal_hashes:
                 continue
-            if cls._process_internal_log_transaction_if_known(
-                chain=chain,
-                rpc_client=rpc_client,
-                tx_hash=tx_hash,
-            ):
+            internal_handled, internal_created = (
+                cls._process_internal_log_transaction_if_known(
+                    chain=chain,
+                    rpc_client=rpc_client,
+                    tx_hash=tx_hash,
+                )
+            )
+            if internal_handled:
+                if internal_created:
+                    created_transfers += 1
                 processed_internal_hashes.add(tx_hash)
                 continue
 
@@ -303,7 +308,7 @@ class EvmErc20TransferScanner:
         chain: Chain,
         rpc_client: EvmScannerRpcClient,
         tx_hash: str,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         from chains.models import BroadcastTask  # noqa: PLC0415
         from evm.internal_tx.exceptions import (
             UnknownInternalBroadcastError,  # noqa: PLC0415
@@ -313,7 +318,7 @@ class EvmErc20TransferScanner:
         )
 
         if BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash) is None:
-            return False
+            return False, False
 
         tx = rpc_client.get_transaction(tx_hash=tx_hash)
         if tx is None:
@@ -324,7 +329,7 @@ class EvmErc20TransferScanner:
             raise EvmScannerRpcError(f"已知内部交易缺少交易回执: tx_hash={tx_hash}")
 
         try:
-            process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
+            result = process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
         except UnknownInternalBroadcastError as exc:
             logger.warning(
                 "EVM ERC20 扫描命中内部交易哈希但处理器找不到 BroadcastTask",
@@ -332,7 +337,8 @@ class EvmErc20TransferScanner:
                 tx_hash=exc.tx_hash,
                 from_address=exc.from_address,
             )
-        return True
+            return True, False
+        return True, bool(result is not None and result.created)
 
     @staticmethod
     def _parse_log(

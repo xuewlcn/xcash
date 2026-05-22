@@ -479,6 +479,57 @@ class EvmErc20ScannerTests(TestCase):
             BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING,
         )
 
+    def test_erc20_scanner_counts_known_internal_hash_created_by_processor(self):
+        tx_hash = "0x" + "5a" * 32
+        recipient = Web3.to_checksum_address("0x" + "5b" * 20)
+        value_raw = 123_000_000
+        _, encoded_args = self._build_internal_erc20_task(
+            tx_hash=tx_hash,
+            recipient=recipient,
+            value_raw=value_raw,
+        )
+        log = self._build_transfer_log(
+            from_address=self.addr.address,
+            to_address=recipient,
+            value=value_raw,
+            log_index=11,
+            block_number=100,
+        )
+        log["transactionHash"] = bytes.fromhex("5a" * 32)
+        receipt = {
+            "status": 1,
+            "blockNumber": 100,
+            "blockHash": "0x" + "61" * 32,
+            "logs": [log],
+        }
+        rpc_client = Mock()
+        rpc_client.get_transaction.return_value = {
+            "hash": tx_hash,
+            "from": self.addr.address,
+            "to": self.token_deployment.address,
+            "input": f"0xa9059cbb{encoded_args}",
+        }
+        rpc_client.get_transaction_receipt.return_value = receipt
+        watch_set = EvmWatchSet(
+            watched_addresses=frozenset({self.addr.address, recipient}),
+            tokens_by_address={self.token_deployment.address: self.token_deployment},
+        )
+
+        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
+            ts.return_value = (1_700_000_000, timezone.now())
+            created = EvmErc20TransferScanner._persist_logs(
+                chain=self.chain,
+                logs=[log],
+                rpc_client=rpc_client,
+                watch_set=watch_set,
+            )
+
+        transfer = OnchainTransfer.objects.get(hash=tx_hash)
+        self.assertEqual(created, 1)
+        self.assertEqual(transfer.event_id, "erc20:11")
+        self.assertEqual(transfer.from_address, self.addr.address)
+        self.assertEqual(transfer.to_address, recipient)
+
     def test_erc20_scanner_raises_when_known_internal_hash_missing_tx(self):
         tx_hash = "0x" + "54" * 32
         self._build_internal_erc20_task(tx_hash=tx_hash)

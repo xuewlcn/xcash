@@ -11,6 +11,7 @@ from web3 import Web3
 from chains.models import BroadcastTask
 from chains.models import BroadcastTaskFailureReason
 from chains.models import Chain
+from chains.service import ObservedTransferCreateResult
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from evm.internal_tx.exceptions import UnknownInternalBroadcastError
@@ -76,7 +77,7 @@ def process_internal_transaction(
     receipt: dict,
     block_timestamp: int | None = None,
     occurred_at: datetime | None = None,
-) -> None:
+) -> ObservedTransferCreateResult | None:
     """处理 tx.from 已确认是系统地址的 EVM 交易。"""
     tx_hash = _normalize_tx_hash(tx["hash"])
     from_address = _normalize_address(tx["from"])
@@ -95,7 +96,7 @@ def process_internal_transaction(
             broadcast_task=broadcast_task,
             reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
         )
-        return
+        return None
 
     matcher = get_matcher(broadcast_task.action_type)
     fact = matcher(chain=chain, broadcast_task=broadcast_task, receipt=receipt, tx=tx)
@@ -111,7 +112,7 @@ def process_internal_transaction(
             action_type=broadcast_task.action_type,
             broadcast_task_id=broadcast_task.pk,
         )
-        return
+        return None
 
     block_number = int(receipt["blockNumber"])
     if block_timestamp is None or occurred_at is None:
@@ -134,4 +135,4 @@ def process_internal_transaction(
         block_hash=_block_hash_from_receipt(receipt),
         source="evm-internal-tx",
     )
-    TransferService.create_observed_transfer(observed=payload)
+    return TransferService.create_observed_transfer(observed=payload)

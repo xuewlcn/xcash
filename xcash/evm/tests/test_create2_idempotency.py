@@ -99,6 +99,12 @@ class Create2IdempotencyConcurrencyTests(TransactionTestCase):
             "expected_collect_value_raw": 1_000_000,
             "gas": 200_000,
         }
+        ContractDeployCollectionService.create_and_schedule(
+            **{
+                **kwargs,
+                "salt": b"\x9c" * 32,
+            },
+        )
 
         def create_one():
             return ContractDeployCollectionService.create_and_schedule(
@@ -109,4 +115,11 @@ class Create2IdempotencyConcurrencyTests(TransactionTestCase):
             results = list(pool.map(lambda _: create_one(), range(2)))
 
         assert len(set(results)) == 1
-        assert ContractDeployCollection.objects.count() == 1
+        assert (
+            ContractDeployCollection.objects.filter(
+                chain=chain,
+                factory_address=chain.create2_factory_address,
+                salt=kwargs["salt"],
+            ).count()
+            == 1
+        )

@@ -267,7 +267,7 @@ class EvmNativeDirectScanner:
 
             if internal_txs:
                 receipts_map = rpc_client.get_block_receipts(block_number=block_number)
-                cls._process_internal_transactions(
+                internal_observed, internal_created = cls._process_internal_transactions(
                     chain=chain,
                     block_number=block_number,
                     timestamp=timestamp,
@@ -276,6 +276,8 @@ class EvmNativeDirectScanner:
                     rpc_client=rpc_client,
                     txs=internal_txs,
                 )
+                observed_transfers += internal_observed
+                created_transfers += internal_created
 
             if not matched_parsed:
                 continue
@@ -340,10 +342,12 @@ class EvmNativeDirectScanner:
         receipts_map: dict[str, dict] | None,
         rpc_client: EvmScannerRpcClient,
         txs: list[dict[str, Any]],
-    ) -> None:
+    ) -> tuple[int, int]:
         from evm.internal_tx.exceptions import UnknownInternalBroadcastError
         from evm.internal_tx.processor import process_internal_transaction
 
+        observed_transfers = 0
+        created_transfers = 0
         for tx in txs:
             tx_hash = f"0x{cls._to_hex(tx['hash']).lower()}"
             receipt = (
@@ -354,13 +358,17 @@ class EvmNativeDirectScanner:
             if receipt is None:
                 continue
             try:
-                process_internal_transaction(
+                result = process_internal_transaction(
                     chain=chain,
                     tx=dict(tx),
                     receipt=receipt,
                     block_timestamp=timestamp,
                     occurred_at=occurred_at,
                 )
+                if result is not None and not result.conflict:
+                    observed_transfers += 1
+                    if result.created:
+                        created_transfers += 1
             except UnknownInternalBroadcastError as exc:
                 logger.warning(
                     "EVM 扫描到系统地址发出的交易但找不到 BroadcastTask",
@@ -369,6 +377,7 @@ class EvmNativeDirectScanner:
                     from_address=exc.from_address,
                     block_number=block_number,
                 )
+        return observed_transfers, created_transfers
 
     @staticmethod
     def _parse_transaction(

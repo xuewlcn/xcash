@@ -197,7 +197,7 @@ def _create_create2(
         deployer_address=address,
         factory_address=Web3.to_checksum_address("0x" + "51" * 20),
         collector_address=Web3.to_checksum_address("0x" + collector_suffix * 20),
-        recipient_address=Web3.to_checksum_address("0x" + "52" * 20),
+        vault_address=Web3.to_checksum_address("0x" + "52" * 20),
         salt=salt,
         collector_init_code_hash=b"\x53" * 32,
         expected_collect_value_raw=1_000_000,
