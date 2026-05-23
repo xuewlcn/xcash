@@ -36,19 +36,19 @@ def test_payment_collector_factory_abi_keeps_failure_error_without_event():
 
 def test_invalid_sentinel_count_raises_import_error():
     with pytest.raises(ImportError):
-        codec._check_sentinel(b"", codec.VAULT_SENTINEL, 1, "NativeCollector")
+        codec._check_sentinel(b"", codec.RECIPIENT_SENTINEL, 1, "NativeCollector")
 
 
 def test_native_and_erc20_template_sentinel_distribution():
-    assert codec._NATIVE_TEMPLATE.count(codec.VAULT_SENTINEL) == 1
+    assert codec._NATIVE_TEMPLATE.count(codec.RECIPIENT_SENTINEL) == 1
     assert codec._NATIVE_TEMPLATE.count(codec.TOKEN_SENTINEL) == 0
-    assert codec._ERC20_TEMPLATE.count(codec.VAULT_SENTINEL) == 1
+    assert codec._ERC20_TEMPLATE.count(codec.RECIPIENT_SENTINEL) == 1
     assert codec._ERC20_TEMPLATE.count(codec.TOKEN_SENTINEL) == 1
 
 
 def test_build_native_init_code_matches_foundry_fixture(fixtures):
     case = fixtures["case_native"]
-    assert codec.build_collector_init_code(to=case["vault"]) == _hex_to_bytes(
+    assert codec.build_collector_init_code(to=case["recipient"]) == _hex_to_bytes(
         case["init_code"]
     )
 
@@ -56,49 +56,49 @@ def test_build_native_init_code_matches_foundry_fixture(fixtures):
 def test_build_erc20_init_code_matches_foundry_fixture(fixtures):
     case = fixtures["case_erc20"]
     got = codec.build_collector_init_code(
-        to=case["vault"],
+        to=case["recipient"],
         token=case["token"],
     )
     assert got == _hex_to_bytes(case["init_code"])
 
 
-def test_build_edge_vault_init_code_matches_foundry_fixture(fixtures):
+def test_build_edge_recipient_init_code_matches_foundry_fixture(fixtures):
     case = fixtures["case_edge"]
     got = codec.build_collector_init_code(
-        to=case["vault"],
+        to=case["recipient"],
         token=case["token"],
     )
     assert got == _hex_to_bytes(case["init_code"])
 
 
 def test_none_or_zero_token_uses_native_template():
-    vault = "0x1111111111111111111111111111111111111111"
-    native = codec.build_collector_init_code(to=vault)
+    recipient = "0x1111111111111111111111111111111111111111"
+    native = codec.build_collector_init_code(to=recipient)
     assert (
         codec.build_collector_init_code(
-            to=vault,
+            to=recipient,
             token=None,
         )
         == native
     )
     assert (
         codec.build_collector_init_code(
-            to=vault,
+            to=recipient,
             token="0x0000000000000000000000000000000000000000",
         )
         == native
     )
 
 
-def test_rejects_zero_vault_address():
-    with pytest.raises(ValueError, match="vault address must not be zero"):
+def test_rejects_zero_recipient_address():
+    with pytest.raises(ValueError, match="recipient address must not be zero"):
         codec.build_collector_init_code(
             to="0x0000000000000000000000000000000000000000"
         )
 
 
-def test_rejects_token_equal_to_vault():
-    with pytest.raises(ValueError, match="token address must differ from vault"):
+def test_rejects_token_equal_to_recipient():
+    with pytest.raises(ValueError, match="token address must differ from recipient"):
         codec.build_collector_init_code(
             to="0x1111111111111111111111111111111111111111",
             token="0x1111111111111111111111111111111111111111",
@@ -120,11 +120,11 @@ def test_patched_init_code_no_longer_contains_sentinels():
         to="0x1111111111111111111111111111111111111111",
         token="0x2222222222222222222222222222222222222222",
     )
-    assert codec.VAULT_SENTINEL not in init_code
+    assert codec.RECIPIENT_SENTINEL not in init_code
     assert codec.TOKEN_SENTINEL not in init_code
 
 
-def test_init_code_hash_is_32_bytes_and_changes_with_vault():
+def test_init_code_hash_is_32_bytes_and_changes_with_recipient():
     h1 = codec.collector_init_code_hash(to="0x1111111111111111111111111111111111111111")
     h2 = codec.collector_init_code_hash(to="0x2222222222222222222222222222222222222222")
     assert isinstance(h1, bytes)
@@ -137,7 +137,7 @@ def test_predict_native_address_matches_foundry_fixture(fixtures):
     got = codec.predict_collector_address(
         factory=fixtures["factory"],
         salt=_hex_to_bytes(fixtures["salt"]),
-        to=case["vault"],
+        to=case["recipient"],
     )
     assert got.lower() == case["predicted"].lower()
 
@@ -147,7 +147,7 @@ def test_predict_erc20_address_matches_foundry_fixture(fixtures):
     got = codec.predict_collector_address(
         factory=fixtures["factory"],
         salt=_hex_to_bytes(fixtures["salt"]),
-        to=case["vault"],
+        to=case["recipient"],
         token=case["token"],
     )
     assert got.lower() == case["predicted"].lower()
@@ -158,7 +158,7 @@ def test_predict_edge_address_matches_foundry_fixture(fixtures):
     got = codec.predict_collector_address(
         factory=fixtures["factory"],
         salt=_hex_to_bytes(fixtures["salt"]),
-        to=case["vault"],
+        to=case["recipient"],
         token=case["token"],
     )
     assert got.lower() == case["predicted"].lower()

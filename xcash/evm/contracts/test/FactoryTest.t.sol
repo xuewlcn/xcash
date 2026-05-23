@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {PaymentCollectorFactory} from "../src/PaymentCollectorFactory.sol";
@@ -11,70 +11,70 @@ import {YulLoader} from "./helpers/YulLoader.sol";
 
 contract FactoryTest is Test {
     PaymentCollectorFactory internal factory;
-    address payable internal vault = payable(address(0xBEEF));
+    address payable internal recipient = payable(address(0xBEEF));
 
     function setUp() public {
         factory = new PaymentCollectorFactory();
     }
 
-    function test_deploy_native_collects_all_eth_to_vault() public {
+    function test_deploy_native_collects_all_eth_to_recipient() public {
         bytes32 salt = keccak256("order-001");
-        bytes memory initCode = YulLoader.loadNativeInitCode(vault);
+        bytes memory initCode = YulLoader.loadNativeInitCode(recipient);
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         vm.deal(predicted, 2 ether);
 
         address deployed = factory.deploy(salt, initCode);
 
         assertEq(deployed, predicted);
-        assertEq(vault.balance, 2 ether);
+        assertEq(recipient.balance, 2 ether);
         assertEq(predicted.code.length, 0);
     }
 
     function test_deploy_erc20_collects_standard_token() public {
         MockERC20 token = new MockERC20();
         bytes32 salt = keccak256("order-002");
-        bytes memory initCode = YulLoader.loadERC20InitCode(vault, address(token));
+        bytes memory initCode = YulLoader.loadERC20InitCode(recipient, address(token));
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         token.mint(predicted, 1000e18);
 
         address deployed = factory.deploy(salt, initCode);
 
         assertEq(deployed, predicted);
-        assertEq(token.balanceOf(vault), 1000e18);
+        assertEq(token.balanceOf(recipient), 1000e18);
         assertEq(predicted.code.length, 0);
     }
 
     function test_deploy_erc20_collects_usdt_like_token() public {
         MockUsdtLike token = new MockUsdtLike();
         bytes32 salt = keccak256("order-usdt");
-        bytes memory initCode = YulLoader.loadERC20InitCode(vault, address(token));
+        bytes memory initCode = YulLoader.loadERC20InitCode(recipient, address(token));
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         token.mint(predicted, 500e6);
 
         address deployed = factory.deploy(salt, initCode);
 
         assertEq(deployed, predicted);
-        assertEq(token.balanceOf(vault), 500e6);
+        assertEq(token.balanceOf(recipient), 500e6);
         assertEq(predicted.code.length, 0);
     }
 
     function test_deploy_erc20_reverts_when_token_returns_false() public {
         MockFalseReturnERC20 token = new MockFalseReturnERC20();
         bytes32 salt = keccak256("order-false");
-        bytes memory initCode = YulLoader.loadERC20InitCode(vault, address(token));
+        bytes memory initCode = YulLoader.loadERC20InitCode(recipient, address(token));
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         token.mint(predicted, 1);
 
         vm.expectRevert(PaymentCollectorFactory.DeployFailed.selector);
         factory.deploy(salt, initCode);
 
-        assertEq(token.balanceOf(vault), 0);
+        assertEq(token.balanceOf(recipient), 0);
     }
 
     function test_deploy_erc20_reverts_when_token_returns_malformed_bool() public {
         MockMalformedReturnERC20 token = new MockMalformedReturnERC20();
         bytes32 salt = keccak256("order-malformed");
-        bytes memory initCode = YulLoader.loadERC20InitCode(vault, address(token));
+        bytes memory initCode = YulLoader.loadERC20InitCode(recipient, address(token));
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         token.mint(predicted, 1);
 
@@ -84,7 +84,7 @@ contract FactoryTest is Test {
 
     function test_duplicate_salt_and_same_init_code_reverts() public {
         bytes32 salt = keccak256("order-003");
-        bytes memory initCode = YulLoader.loadNativeInitCode(vault);
+        bytes memory initCode = YulLoader.loadNativeInitCode(recipient);
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         vm.deal(predicted, 1 ether);
         factory.deploy(salt, initCode);
@@ -95,7 +95,7 @@ contract FactoryTest is Test {
 
     function test_predicted_address_formula_matches_deploy() public {
         bytes32 salt = bytes32(uint256(0x1234));
-        bytes memory initCode = YulLoader.loadNativeInitCode(vault);
+        bytes memory initCode = YulLoader.loadNativeInitCode(recipient);
         bytes32 hash =
             keccak256(abi.encodePacked(bytes1(0xff), address(factory), salt, keccak256(initCode)));
         address predicted = address(uint160(uint256(hash)));

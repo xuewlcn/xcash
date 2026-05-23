@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 /// @notice 测试用极简 ERC20：成功返回 true，失败 revert。
 contract MockERC20 {

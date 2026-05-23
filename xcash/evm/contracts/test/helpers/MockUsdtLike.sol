@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 /// @notice 模拟 USDT 的非标行为：transfer 成功但不返回 bool。
 contract MockUsdtLike {

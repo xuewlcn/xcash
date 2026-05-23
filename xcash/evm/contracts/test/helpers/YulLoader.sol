@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 import {Vm} from "forge-std/Vm.sol";
 
@@ -7,22 +7,22 @@ import {Vm} from "forge-std/Vm.sol";
 library YulLoader {
     Vm internal constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    bytes20 internal constant VAULT_SENTINEL =
+    bytes20 internal constant RECIPIENT_SENTINEL =
         hex"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     bytes20 internal constant TOKEN_SENTINEL =
         hex"cafebabecafebabecafebabecafebabecafebabe";
-    function loadNativeInitCode(address vault) internal view returns (bytes memory) {
+    function loadNativeInitCode(address recipient) internal view returns (bytes memory) {
         bytes memory template = _loadHexArtifact("artifacts/NativeCollector.bin");
-        return _replace20(template, VAULT_SENTINEL, bytes20(vault));
+        return _replace20(template, RECIPIENT_SENTINEL, bytes20(recipient));
     }
 
-    function loadERC20InitCode(address vault, address token)
+    function loadERC20InitCode(address recipient, address token)
         internal
         view
         returns (bytes memory)
     {
         bytes memory template = _loadHexArtifact("artifacts/ERC20Collector.bin");
-        bytes memory patched = _replace20(template, VAULT_SENTINEL, bytes20(vault));
+        bytes memory patched = _replace20(template, RECIPIENT_SENTINEL, bytes20(recipient));
         return _replace20(patched, TOKEN_SENTINEL, bytes20(token));
     }
 

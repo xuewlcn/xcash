@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.35;
 
 /// @notice 模拟 transfer 返回 false 的 ERC20，用于验证 collector 不会吞掉失败转账。
 contract MockFalseReturnERC20 {

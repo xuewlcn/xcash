@@ -10,7 +10,7 @@ from eth_utils import to_checksum_address
 
 _ARTIFACTS_DIR = Path(__file__).parent / "contracts" / "artifacts"
 
-VAULT_SENTINEL: bytes = bytes.fromhex(
+RECIPIENT_SENTINEL: bytes = bytes.fromhex(
     "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 )
 TOKEN_SENTINEL: bytes = bytes.fromhex(
@@ -53,9 +53,9 @@ def _check_sentinel(
 _NATIVE_TEMPLATE: bytes = _load_template("NativeCollector.bin")
 _ERC20_TEMPLATE: bytes = _load_template("ERC20Collector.bin")
 
-_check_sentinel(_NATIVE_TEMPLATE, VAULT_SENTINEL, 1, "NativeCollector")
+_check_sentinel(_NATIVE_TEMPLATE, RECIPIENT_SENTINEL, 1, "NativeCollector")
 _check_sentinel(_NATIVE_TEMPLATE, TOKEN_SENTINEL, 0, "NativeCollector")
-_check_sentinel(_ERC20_TEMPLATE, VAULT_SENTINEL, 1, "ERC20Collector")
+_check_sentinel(_ERC20_TEMPLATE, RECIPIENT_SENTINEL, 1, "ERC20Collector")
 _check_sentinel(_ERC20_TEMPLATE, TOKEN_SENTINEL, 1, "ERC20Collector")
 
 
@@ -66,17 +66,17 @@ def build_collector_init_code(
     """构造 collector init_code，to/token 写死为字节码立即数。"""
     to_bytes = to_canonical_address(to)
     if to_bytes == ZERO_ADDRESS:
-        raise ValueError("vault address must not be zero")
+        raise ValueError("recipient address must not be zero")
     if token is None:
-        return _NATIVE_TEMPLATE.replace(VAULT_SENTINEL, to_bytes)
+        return _NATIVE_TEMPLATE.replace(RECIPIENT_SENTINEL, to_bytes)
 
     token_bytes = to_canonical_address(token)
     if token_bytes == ZERO_ADDRESS:
-        return _NATIVE_TEMPLATE.replace(VAULT_SENTINEL, to_bytes)
+        return _NATIVE_TEMPLATE.replace(RECIPIENT_SENTINEL, to_bytes)
     if token_bytes == to_bytes:
-        raise ValueError("token address must differ from vault")
+        raise ValueError("token address must differ from recipient")
 
-    patched = _ERC20_TEMPLATE.replace(VAULT_SENTINEL, to_bytes)
+    patched = _ERC20_TEMPLATE.replace(RECIPIENT_SENTINEL, to_bytes)
     return patched.replace(TOKEN_SENTINEL, token_bytes)
 
 
