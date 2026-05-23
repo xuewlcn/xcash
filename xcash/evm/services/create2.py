@@ -92,6 +92,7 @@ class ContractDeployCollectionService:
                 and Web3.to_checksum_address(existing.collector_address)
                 == collector_address
                 and Web3.to_checksum_address(existing.recipient_address) == recipient_checksum
+                and bytes(existing.collector_init_code) == bytes(collector_init_code)
                 and bytes(existing.collector_init_code_hash)
                 == bytes(collector_init_code_hash)
                 and int(existing.expected_collect_value_raw)
@@ -110,6 +111,7 @@ class ContractDeployCollectionService:
             collector_address=collector_address,
             recipient_address=recipient_checksum,
             salt=salt,
+            collector_init_code=collector_init_code,
             collector_init_code_hash=collector_init_code_hash,
             expected_collect_value_raw=expected_collect_value_raw,
             status=ContractDeployCollectionStatus.CREATED,

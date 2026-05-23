@@ -5,6 +5,7 @@ from django.test import TransactionTestCase
 from web3 import Web3
 
 from chains.models import AddressUsage
+from evm.contracts_codec import build_collector_init_code
 from evm.models import ContractDeployCollection
 from evm.services.create2 import ContractDeployCollectionService
 from evm.tests._fixtures import make_erc20_token
@@ -49,6 +50,23 @@ class Create2IdempotencyTests(TestCase):
         assert Web3.is_checksum_address(second.factory_address)
         assert Web3.is_checksum_address(second.recipient_address)
         assert ContractDeployCollection.objects.count() == 1
+
+    def test_create_and_schedule_persists_collector_init_code(self):
+        result = ContractDeployCollectionService.create_and_schedule(
+            deployer=self.deployer,
+            chain=self.chain,
+            crypto=self.crypto,
+            salt=b"\xa1" * 32,
+            recipient_address=self.vault,
+            expected_collect_value_raw=1_000_000,
+            gas=200_000,
+        )
+
+        expected_init_code = build_collector_init_code(
+            to=Web3.to_checksum_address(self.vault),
+            token=self.crypto.address(self.chain),
+        )
+        assert bytes(result.collection.collector_init_code) == expected_init_code
 
     def test_same_chain_factory_salt_with_different_value_is_rejected(self):
         kwargs = {

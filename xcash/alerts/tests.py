@@ -370,6 +370,7 @@ class ContractCollectionStalledAlertTest(TestCase):
                 "0x00000000000000000000000000000000000000d1"
             ),
             salt=bytes([suffix]) * 32,
+            collector_init_code=bytes([suffix + 2]) * 2,
             collector_init_code_hash=bytes([suffix + 1]) * 32,
             expected_collect_value_raw=1_000_000,
             pay_slot=slot,

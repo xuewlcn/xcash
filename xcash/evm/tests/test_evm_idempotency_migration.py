@@ -3,6 +3,8 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from web3 import Web3
 
+from evm.contracts_codec import build_collector_init_code
+
 
 @pytest.mark.django_db(transaction=True)
 def test_unbroadcast_duplicate_groups_are_marked_dropped_before_constraints():
@@ -152,6 +154,62 @@ def test_broadcasted_duplicate_group_aborts_migration():
         MigrationExecutor(connection).migrate(leaf_targets)
 
 
+@pytest.mark.django_db(transaction=True)
+def test_collector_init_code_is_backfilled_before_not_null_constraint():
+    executor = MigrationExecutor(connection)
+    leaf_targets = executor.loader.graph.leaf_nodes()
+    target_before = _targets_with_evm(
+        executor,
+        "0009_contractdeploycollection_pay_slot",
+    )
+    try:
+        executor.migrate(target_before)
+        old_apps = executor.loader.project_state(target_before).apps
+
+        chain = _create_minimal_chain(old_apps, suffix="init-code")
+        crypto = _create_minimal_crypto(old_apps, suffix="init-code")
+        token_address = Web3.to_checksum_address("0x" + "54" * 20)
+        _create_chain_token(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=token_address,
+        )
+        deployer = _create_minimal_address(old_apps, suffix="init-code")
+        recipient_address = Web3.to_checksum_address("0x" + "55" * 20)
+        expected_init_code = build_collector_init_code(
+            to=recipient_address,
+            token=token_address,
+        )
+        collection = _create_create2_v0009(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=deployer,
+            salt=b"\x56" * 32,
+            collector_address=Web3.to_checksum_address("0x" + "57" * 20),
+            recipient_address=recipient_address,
+            collector_init_code_hash=Web3.keccak(expected_init_code),
+        )
+
+        executor = MigrationExecutor(connection)
+        target_after = _targets_with_evm(
+            executor,
+            "0010_contractdeploycollection_collector_init_code",
+        )
+        executor.migrate(target_after)
+        new_apps = executor.loader.project_state(target_after).apps
+        ContractDeployCollection = new_apps.get_model(
+            "evm",
+            "ContractDeployCollection",
+        )
+
+        migrated = ContractDeployCollection.objects.get(pk=collection.pk)
+        assert bytes(migrated.collector_init_code) == expected_init_code
+    finally:
+        MigrationExecutor(connection).migrate(leaf_targets)
+
+
 def _create_x402(
     apps,
     *,
@@ -191,17 +249,47 @@ def _create_create2(
     status="created",
 ):
     ContractDeployCollection = apps.get_model("evm", "ContractDeployCollection")
+    vault_address = Web3.to_checksum_address("0x" + "52" * 20)
     return ContractDeployCollection.objects.create(
         chain=chain,
         crypto=crypto,
         deployer_address=address,
         factory_address=Web3.to_checksum_address("0x" + "51" * 20),
         collector_address=Web3.to_checksum_address("0x" + collector_suffix * 20),
-        vault_address=Web3.to_checksum_address("0x" + "52" * 20),
+        vault_address=vault_address,
         salt=salt,
-        collector_init_code_hash=b"\x53" * 32,
+        collector_init_code_hash=Web3.keccak(
+            build_collector_init_code(to=vault_address),
+        ),
         expected_collect_value_raw=1_000_000,
         status=status,
+        failure_reason="expected_transfer_missing",
+    )
+
+
+def _create_create2_v0009(
+    apps,
+    *,
+    chain,
+    crypto,
+    address,
+    salt,
+    collector_address,
+    recipient_address,
+    collector_init_code_hash,
+):
+    ContractDeployCollection = apps.get_model("evm", "ContractDeployCollection")
+    return ContractDeployCollection.objects.create(
+        chain=chain,
+        crypto=crypto,
+        deployer_address=address,
+        factory_address=Web3.to_checksum_address("0x" + "51" * 20),
+        collector_address=collector_address,
+        recipient_address=recipient_address,
+        salt=salt,
+        collector_init_code_hash=collector_init_code_hash,
+        expected_collect_value_raw=1_000_000,
+        status="created",
         failure_reason="expected_transfer_missing",
     )
 
@@ -243,6 +331,15 @@ def _create_minimal_address(apps, *, suffix):
         bip44_account=0,
         address_index=0,
         address=Web3.to_checksum_address("0x" + f"{len(suffix):040x}"),
+    )
+
+
+def _create_chain_token(apps, *, chain, crypto, address):
+    ChainToken = apps.get_model("currencies", "ChainToken")
+    return ChainToken.objects.create(
+        chain=chain,
+        crypto=crypto,
+        address=address,
     )
 
 

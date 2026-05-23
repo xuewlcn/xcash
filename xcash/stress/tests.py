@@ -1977,15 +1977,15 @@ class FinalizeInvoiceCollectionVerificationTests(TestCase):
         billing_mode,
         collection_status=None,
     ):
+        from chains.models import AddressUsage
+        from chains.models import ChainType
+        from chains.models import Wallet
+        from evm.models import ContractDeployCollection
         from invoices.models import Invoice
         from invoices.models import InvoicePaySlot
         from invoices.models import InvoicePaySlotStatus
         from invoices.models import InvoiceStatus
         from projects.models import Project
-        from chains.models import Wallet
-        from chains.models import ChainType
-        from chains.models import AddressUsage
-        from evm.models import ContractDeployCollection
 
         wallet = Wallet.objects.create()
         project = Project.objects.create(
@@ -2047,6 +2047,7 @@ class FinalizeInvoiceCollectionVerificationTests(TestCase):
                 collector_address=Web3.to_checksum_address("0x" + "44" * 20),
                 recipient_address=recipient_address,
                 salt=b"\x00" * 32,
+                collector_init_code=b"\x60\x00",
                 collector_init_code_hash=b"\x00" * 32,
                 expected_collect_value_raw=Decimal("1"),
                 pay_slot=slot,
