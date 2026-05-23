@@ -24,25 +24,6 @@
     "stateMutability": "nonpayable"
   },
   {
-    "type": "event",
-    "name": "Deployed",
-    "inputs": [
-      {
-        "name": "collector",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "salt",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      }
-    ],
-    "anonymous": false
-  },
-  {
     "type": "error",
     "name": "DeployFailed",
     "inputs": []

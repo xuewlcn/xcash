@@ -9,6 +9,12 @@ from eth_utils import is_checksum_address
 import evm.contracts_codec as codec
 
 FIXTURES_PATH = Path(__file__).parent / "fixtures" / "collector_init_code_fixtures.json"
+FACTORY_ARTIFACT_PATH = (
+    Path(__file__).parents[1]
+    / "contracts"
+    / "artifacts"
+    / "PaymentCollectorFactory.json"
+)
 
 
 @pytest.fixture(scope="module")
@@ -18,6 +24,14 @@ def fixtures():
 
 def _hex_to_bytes(value: str) -> bytes:
     return bytes.fromhex(value[2:] if value.startswith("0x") else value)
+
+
+def test_payment_collector_factory_abi_keeps_failure_error_without_event():
+    abi = json.loads(FACTORY_ARTIFACT_PATH.read_text())["abi"]
+    names_by_type = {(item["type"], item.get("name")) for item in abi}
+
+    assert ("error", "DeployFailed") in names_by_type
+    assert ("event", "Deployed") not in names_by_type
 
 
 def test_invalid_sentinel_count_raises_import_error():

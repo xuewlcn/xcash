@@ -23,9 +23,6 @@ contract FactoryTest is Test {
         address predicted = computeCreate2Address(salt, keccak256(initCode), address(factory));
         vm.deal(predicted, 2 ether);
 
-        vm.expectEmit(true, true, false, false);
-        emit PaymentCollectorFactory.Deployed(predicted, salt);
-
         address deployed = factory.deploy(salt, initCode);
 
         assertEq(deployed, predicted);
