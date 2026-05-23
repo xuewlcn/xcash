@@ -263,8 +263,6 @@ class EvmBroadcastTask(UndeletableModel):
             or base_task.result != BroadcastTaskResult.UNKNOWN
         ):
             return False
-        if not self._known_tx_hashes():
-            return False
 
         tx_hash, receipt = self._find_receipt_for_known_hashes()
         if receipt is None or tx_hash is None:
@@ -410,8 +408,6 @@ class EvmBroadcastTask(UndeletableModel):
 
     def has_lower_queued_nonce(self) -> bool:
         """同账户更低 nonce 尚未提交到节点（QUEUED）时阻断，保证 nonce 按顺序进入 mempool。"""
-        if not self.address_id or not self.chain_id:
-            return False
         return EvmBroadcastTask.objects.filter(
             address=self.address,
             chain=self.chain,
@@ -422,8 +418,6 @@ class EvmBroadcastTask(UndeletableModel):
 
     def is_pipeline_full(self) -> bool:
         """同地址同链已有 >=EVM_PIPELINE_DEPTH 笔在 mempool 中等待确认时阻断。"""
-        if not self.address_id or not self.chain_id:
-            return False
         return (
             EvmBroadcastTask.objects.filter(
                 address=self.address,
