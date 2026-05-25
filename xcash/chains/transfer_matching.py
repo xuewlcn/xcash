@@ -7,7 +7,7 @@ from web3 import Web3
 
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 
 if TYPE_CHECKING:
     from currencies.models import Crypto
@@ -33,7 +33,7 @@ def raw_amount(*, amount: Decimal, crypto: Crypto, chain: Chain) -> Decimal:
 
 
 def transfer_matches(
-    transfer: OnchainTransfer,
+    transfer: Transfer,
     *,
     chain: Chain,
     crypto: Crypto,

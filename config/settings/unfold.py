@@ -133,23 +133,9 @@ SIDEBAR_UNFOLD = {
                         "link": reverse_lazy("admin:deposits_deposit_changelist"),
                     },
                     {
-                        "title": _("归集记录"),
-                        "icon": "call_split",
-                        "link": reverse_lazy(
-                            "admin:deposits_depositcollection_changelist"
-                        ),
-                    },
-                    {
-                        "title": _("Gas 补充"),
-                        "icon": "local_gas_station",
-                        "link": reverse_lazy("admin:deposits_gasrecharge_changelist"),
-                    },
-                    {
-                        "title": _("充币地址"),
+                        "title": _("DepositSlot"),
                         "icon": "add_card",
-                        "link": reverse_lazy(
-                            "admin:deposits_depositaddress_changelist"
-                        ),
+                        "link": reverse_lazy("admin:evm_depositslot_changelist"),
                     },
                 ],
             },
@@ -238,12 +224,12 @@ SIDEBAR_UNFOLD = {
                     {
                         "title": _("链上转账"),
                         "icon": "sync_alt",
-                        "link": reverse_lazy("admin:chains_onchaintransfer_changelist"),
+                        "link": reverse_lazy("admin:chains_transfer_changelist"),
                     },
                     {
                         "title": _("EVM 上链任务"),
                         "icon": "bolt",
-                        "link": reverse_lazy("admin:evm_evmbroadcasttask_changelist"),
+                        "link": reverse_lazy("admin:evm_evmtxtask_changelist"),
                     },
                     {
                         "title": _("EVM 扫描游标"),

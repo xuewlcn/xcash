@@ -23,14 +23,14 @@ from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import TxTaskType
+from chains.models import TransferType
+from chains.models import Transfer
 from chains.models import Wallet
 from currencies.models import ChainToken
 from currencies.models import Crypto
@@ -38,7 +38,7 @@ from evm.choices import TxKind
 from evm.coordinator import InternalEvmTaskCoordinator
 from evm.internal_tx._log_utils import matches_transfer_log
 from evm.internal_tx._log_utils import normalize_log_index
-from evm.models import EvmBroadcastTask
+from evm.models import EvmTxTask
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 
 # ---------------------------------------------------------------------------
@@ -214,14 +214,14 @@ class ObserveConfirmedNativeTest(TestCase):
             address_index=0,
             address=_VAULT_HEX,
         )
-        self.base_task = BroadcastTask.objects.create(
+        self.base_task = TxTask.objects.create(
             chain=self.chain,
             address=self.address,
-            action_type=OnchainActionType.Withdrawal,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
+            tx_type=TxTaskType.Withdrawal,
+            stage=TxTaskStage.PENDING_CHAIN,
+            result=TxTaskResult.UNKNOWN,
         )
-        self.evm_task = EvmBroadcastTask.objects.create(
+        self.evm_task = EvmTxTask.objects.create(
             base_task=self.base_task,
             address=self.address,
             chain=self.chain,
@@ -315,15 +315,15 @@ class ObserveConfirmedErc20Test(TestCase):
             address_index=0,
             address=_VAULT_HEX,
         )
-        self.base_task = BroadcastTask.objects.create(
+        self.base_task = TxTask.objects.create(
             chain=self.chain,
             address=self.address,
-            action_type=OnchainActionType.Withdrawal,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
+            tx_type=TxTaskType.Withdrawal,
+            stage=TxTaskStage.PENDING_CHAIN,
+            result=TxTaskResult.UNKNOWN,
         )
         # ERC-20 发送时 value=0，data 包含 transfer calldata
-        self.evm_task = EvmBroadcastTask.objects.create(
+        self.evm_task = EvmTxTask.objects.create(
             base_task=self.base_task,
             address=self.address,
             chain=self.chain,
@@ -411,7 +411,7 @@ class ObserveConfirmedErc20Test(TestCase):
 # 集成测试：reconcile_chain → TransferService → process() 完整管线
 # ---------------------------------------------------------------------------
 class CoordinatorIntegrationTest(TestCase):
-    """协调器兜底路径集成测试：scanner 漏扫时，协调器作为兜底创建 OnchainTransfer 并完成匹配。"""
+    """协调器兜底路径集成测试：scanner 漏扫时，协调器作为兜底创建 Transfer 并完成匹配。"""
 
     def setUp(self):
         self.wallet = Wallet.objects.create()
@@ -466,18 +466,18 @@ class CoordinatorIntegrationTest(TestCase):
             wallet=self.wallet,
             webhook="https://example.com/wh",
         )
-        base_task = BroadcastTask.objects.create(
+        base_task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.PENDING_CHAIN,
+            result=TxTaskResult.UNKNOWN,
         )
         TxHash.objects.create(
-            broadcast_task=base_task, chain=self.chain, hash=tx_hash, version=0,
+            tx_task=base_task, chain=self.chain, hash=tx_hash, version=0,
         )
-        evm_task = EvmBroadcastTask.objects.create(
+        evm_task = EvmTxTask.objects.create(
             base_task=base_task,
             address=self.addr,
             chain=self.chain,
@@ -498,7 +498,7 @@ class CoordinatorIntegrationTest(TestCase):
             worth=Decimal("100"),
             out_no=f"out-{tx_hash[-6:]}",
             to=_RECEIVER_HEX,
-            broadcast_task=base_task,
+            tx_task=base_task,
             status=WithdrawalStatus.PENDING,
             hash=tx_hash,
         )
@@ -516,18 +516,18 @@ class CoordinatorIntegrationTest(TestCase):
             wallet=self.wallet,
             webhook="https://example.com/wh",
         )
-        base_task = BroadcastTask.objects.create(
+        base_task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.PENDING_CHAIN,
+            result=TxTaskResult.UNKNOWN,
         )
         TxHash.objects.create(
-            broadcast_task=base_task, chain=self.chain, hash=tx_hash, version=0,
+            tx_task=base_task, chain=self.chain, hash=tx_hash, version=0,
         )
-        evm_task = EvmBroadcastTask.objects.create(
+        evm_task = EvmTxTask.objects.create(
             base_task=base_task,
             address=self.addr,
             chain=self.chain,
@@ -548,7 +548,7 @@ class CoordinatorIntegrationTest(TestCase):
             worth=Decimal("1.5"),
             out_no=f"out-native-{tx_hash[-6:]}",
             to=_RECEIVER_HEX,
-            broadcast_task=base_task,
+            tx_task=base_task,
             status=WithdrawalStatus.PENDING,
             hash=tx_hash,
         )
@@ -614,7 +614,7 @@ class CoordinatorIntegrationTest(TestCase):
         process_mock,
         webhook_mock,
     ):
-        """ERC-20 提币超时后，协调器创建 OnchainTransfer 并派发 process 任务。"""
+        """ERC-20 提币超时后，协调器创建 Transfer 并派发 process 任务。"""
         tx_hash = "0x" + "a1" * 32
         withdrawal, base_task, evm_task = self._create_erc20_withdrawal(tx_hash=tx_hash)
         self._make_overdue(evm_task)
@@ -623,11 +623,11 @@ class CoordinatorIntegrationTest(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
 
-        # 验证 OnchainTransfer 被创建且字段正确
+        # 验证 Transfer 被创建且字段正确
         self.assertEqual(
-            OnchainTransfer.objects.filter(chain=self.chain, hash=tx_hash).count(), 1,
+            Transfer.objects.filter(chain=self.chain, hash=tx_hash).count(), 1,
         )
-        transfer = OnchainTransfer.objects.get(chain=self.chain, hash=tx_hash)
+        transfer = Transfer.objects.get(chain=self.chain, hash=tx_hash)
         self.assertEqual(transfer.event_id, "erc20:3")
         self.assertEqual(transfer.from_address, _VAULT_HEX)
         self.assertEqual(transfer.to_address, _RECEIVER_HEX)
@@ -637,9 +637,9 @@ class CoordinatorIntegrationTest(TestCase):
         # process_transfer.apply_async 应被调用一次（on_commit 回调）
         process_mock.assert_called_once()
 
-        # BroadcastTask 应已被推进到 PENDING_CONFIRM
+        # TxTask 应已被推进到 PENDING_CONFIRM
         base_task.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CONFIRM)
 
     # ---- Test 2 ----
 
@@ -664,14 +664,14 @@ class CoordinatorIntegrationTest(TestCase):
             InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
 
         # 手动调用 process()（模拟 Celery worker 执行）
-        transfer = OnchainTransfer.objects.get(chain=self.chain, hash=tx_hash)
+        transfer = Transfer.objects.get(chain=self.chain, hash=tx_hash)
         transfer.process()
 
         withdrawal.refresh_from_db()
         transfer.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
         self.assertEqual(withdrawal.transfer, transfer)
-        self.assertEqual(transfer.type, OnchainActionType.Withdrawal)
+        self.assertEqual(transfer.type, TransferType.Withdrawal)
         self.assertIsNotNone(transfer.processed_at)
 
     def test_process_ignores_internal_withdrawal_when_transfer_value_mismatches(self):
@@ -682,7 +682,7 @@ class CoordinatorIntegrationTest(TestCase):
         withdrawal, base_task, _evm_task = self._create_erc20_withdrawal(
             tx_hash=tx_hash
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=100,
             hash=tx_hash,
@@ -703,7 +703,7 @@ class CoordinatorIntegrationTest(TestCase):
         transfer.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertIsNone(withdrawal.transfer_id)
-        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CHAIN)
         self.assertEqual(transfer.type, "")
         self.assertIsNotNone(transfer.processed_at)
 
@@ -729,7 +729,7 @@ class CoordinatorIntegrationTest(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
 
-        transfer = OnchainTransfer.objects.get(chain=self.chain, hash=tx_hash)
+        transfer = Transfer.objects.get(chain=self.chain, hash=tx_hash)
         self.assertEqual(transfer.event_id, "native:tx")
 
         # 手动调用 process()
@@ -739,7 +739,7 @@ class CoordinatorIntegrationTest(TestCase):
         transfer.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
         self.assertEqual(withdrawal.transfer, transfer)
-        self.assertEqual(transfer.type, OnchainActionType.Withdrawal)
+        self.assertEqual(transfer.type, TransferType.Withdrawal)
         self.assertIsNotNone(transfer.processed_at)
 
     # ---- Test 4 ----
@@ -758,8 +758,8 @@ class CoordinatorIntegrationTest(TestCase):
         withdrawal, base_task, evm_task = self._create_erc20_withdrawal(tx_hash=tx_hash)
         self._make_overdue(evm_task)
 
-        # 预先创建 OnchainTransfer，模拟 scanner 已处理
-        OnchainTransfer.objects.create(
+        # 预先创建 Transfer，模拟 scanner 已处理
+        Transfer.objects.create(
             chain=self.chain,
             block=100,
             hash=tx_hash,
@@ -780,11 +780,11 @@ class CoordinatorIntegrationTest(TestCase):
 
         # 不应产生重复记录
         self.assertEqual(
-            OnchainTransfer.objects.filter(chain=self.chain, hash=tx_hash).count(), 1,
+            Transfer.objects.filter(chain=self.chain, hash=tx_hash).count(), 1,
         )
-        # BroadcastTask 仍被推进到 PENDING_CONFIRM（幂等路径也会调用 mark_pending_confirm）
+        # TxTask 仍被推进到 PENDING_CONFIRM（幂等路径也会调用 mark_pending_confirm）
         base_task.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CONFIRM)
         # 幂等路径不应派发 process（created=False）
         process_mock.assert_not_called()
 
@@ -797,7 +797,7 @@ class CoordinatorIntegrationTest(TestCase):
         chain_w3_mock,
         webhook_mock,
     ):
-        """链上 receipt status=0 时，协调器标记 BroadcastTask 失败、提币失败。"""
+        """链上 receipt status=0 时，协调器标记 TxTask 失败、提币失败。"""
         from withdrawals.models import WithdrawalStatus
 
         tx_hash = "0x" + "a5" * 32
@@ -815,16 +815,12 @@ class CoordinatorIntegrationTest(TestCase):
 
         base_task.refresh_from_db()
         withdrawal.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            base_task.failure_reason,
-            BroadcastTaskFailureReason.EXECUTION_REVERTED,
-        )
+        self.assertEqual(base_task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(base_task.result, TxTaskResult.FAILED)
         self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
-        # 失败交易不应创建 OnchainTransfer
+        # 失败交易不应创建 Transfer
         self.assertEqual(
-            OnchainTransfer.objects.filter(hash=tx_hash).count(), 0,
+            Transfer.objects.filter(hash=tx_hash).count(), 0,
         )
 
     @patch.object(Chain, "w3", new_callable=PropertyMock)
@@ -832,16 +828,16 @@ class CoordinatorIntegrationTest(TestCase):
         self,
         chain_w3_mock,
     ):
-        def create_evm_task(*, tx_hash: str, nonce: int) -> EvmBroadcastTask:
-            base_task = BroadcastTask.objects.create(
+        def create_evm_task(*, tx_hash: str, nonce: int) -> EvmTxTask:
+            base_task = TxTask.objects.create(
                 chain=self.chain,
                 address=self.addr,
-                action_type=OnchainActionType.Withdrawal,
+                tx_type=TxTaskType.Withdrawal,
                 tx_hash=tx_hash,
-                stage=BroadcastTaskStage.PENDING_CHAIN,
-                result=BroadcastTaskResult.UNKNOWN,
+                stage=TxTaskStage.PENDING_CHAIN,
+                result=TxTaskResult.UNKNOWN,
             )
-            return EvmBroadcastTask.objects.create(
+            return EvmTxTask.objects.create(
                 base_task=base_task,
                 address=self.addr,
                 chain=self.chain,

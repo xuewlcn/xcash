@@ -7,7 +7,7 @@ from projects.models import RecipientAddress
 class RecipientAddressCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = RecipientAddress
-        fields = ["name", "chain_type", "address", "usage"]
+        fields = ["name", "chain_type", "address"]
         # 禁用自动生成的唯一约束校验器，改用 validate 提供可读错误信息
         validators = []
 
@@ -24,4 +24,4 @@ class RecipientAddressCreateSerializer(serializers.ModelSerializer):
 class RecipientAddressDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = RecipientAddress
-        fields = ["id", "name", "chain_type", "address", "usage", "created_at"]
+        fields = ["id", "name", "chain_type", "address", "created_at"]

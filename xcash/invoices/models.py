@@ -21,13 +21,12 @@ from common.fields import SysNoField
 from common.permission_check import filter_saas_allowed_methods
 from currencies.service import CryptoService
 from currencies.service import FiatService
+from evm.contracts_codec import predict_xcash_deposit_slot_address
+from evm.deployments import get_xcash_deposit_deployment
 from projects.models import Project
 from projects.service import ProjectService
 
 from .exceptions import InvoiceAllocationError
-from .exceptions import InvoiceBillingModeError
-from .exceptions import InvoiceCollectionError
-from .exceptions import InvoiceStatusError
 
 if TYPE_CHECKING:
     from chains.models import Chain
@@ -66,7 +65,6 @@ class InvoiceBillingMode(models.TextChoices):
 class Invoice(models.Model):
     MAX_ALLOCATION_RETRY = 5
     MAX_ACTIVE_PAY_SLOTS = 2
-    MAX_CONTRACT_COLLECTION_ATTEMPTS = 5
 
     # 保留类属性别名，使 Invoice.InvoiceAllocationError 继续可用。
     InvoiceAllocationError = InvoiceAllocationError
@@ -134,7 +132,7 @@ class Invoice(models.Model):
         default=0,
     )
     transfer = models.OneToOneField(
-        "chains.OnchainTransfer",
+        "chains.Transfer",
         on_delete=models.SET_NULL,
         verbose_name=_("链上转账"),
         blank=True,
@@ -258,44 +256,32 @@ class Invoice(models.Model):
         chain: "Chain",
         crypto_amount: Decimal,
     ) -> tuple[str, str, Decimal]:
-        """合约账单:派生 CREATE2 collector 地址并锁定 recipient 地址。
+        """合约账单：按 XcashDepositFactory 预测 DepositSlot 地址。"""
+        from chains.models import AddressUsage  # noqa: PLC0415
+        from chains.models import ChainType  # noqa: PLC0415
 
-        同一账单切换回相同 chain+crypto 时优先复用历史 PaySlot,避免商户后续
-        修改 INVOICE 收款地址导致 collector 地址漂移。
-        """
-        from evm.contracts_codec import predict_collector_address
-
-        historical = (
-            self.pay_slots.filter(
-                billing_mode=InvoiceBillingMode.CONTRACT,
-                crypto=crypto,
-                chain=chain,
-            )
-            .order_by("-version", "-created_at", "-pk")
-            .first()
+        deployment = get_xcash_deposit_deployment(chain.code)
+        vault = self.project.wallet.get_address(
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
         )
-        if historical is not None and historical.recipient_address:
-            return historical.pay_address, historical.recipient_address, crypto_amount
-
-        recipient = ProjectService.primary_invoice_recipient(
-            project=self.project,
-            chain_type=chain.type,
-        )
-        if recipient is None:
-            raise self.InvoiceAllocationError(
-                f"no INVOICE recipient on {chain.type} for project={self.project_id}"
-            )
-
         salt = keccak(
-            self.sys_no.encode() + chain.code.encode() + crypto.symbol.encode()
-        )[:32]
-        collector_address = predict_collector_address(
-            factory=chain.create2_factory_address,
-            salt=salt,
-            to=recipient.address,
-            token=crypto.address(chain) or None,
+            b"xcash:deposit-slot:invoice:"
+            + str(self.project_id).encode()
+            + b":"
+            + self.sys_no.encode()
+            + b":"
+            + chain.code.encode()
+            + b":"
+            + crypto.symbol.encode()
         )
-        return collector_address, recipient.address, crypto_amount
+        pay_address = predict_xcash_deposit_slot_address(
+            factory=deployment.deposit_factory,
+            deposit_template=deployment.deposit_template,
+            vault=vault.address,
+            salt=salt,
+        )
+        return pay_address, vault.address, crypto_amount
 
     @db_transaction.atomic
     def select_method(self, crypto: "Crypto", chain: "Chain"):
@@ -370,98 +356,6 @@ class Invoice(models.Model):
                 continue
 
         raise self.InvoiceAllocationError(f"{detail} (alloc retry exceeded)")
-
-    def trigger_contract_collection(self):
-        """合约账单完成后调度部署 collector 完成归集。
-
-        幂等性由 ContractDeployCollectionService.create_and_schedule 保证；这里
-        只负责校验账单状态、锁定已命中的 PaySlot，并把 collection 关联回来源槽位。
-        """
-        from chains.models import AddressUsage
-        from chains.models import ChainType
-        from evm.constants import GAS_ERC20_COLLECTOR
-        from evm.constants import GAS_NATIVE_COLLECTOR
-        from evm.models import ContractDeployCollection
-        from evm.services.create2 import ContractDeployCollectionService
-
-        if self.billing_mode != InvoiceBillingMode.CONTRACT:
-            raise InvoiceBillingModeError(
-                f"invoice {self.sys_no} is not contract billing"
-            )
-        if self.status != InvoiceStatus.COMPLETED:
-            raise InvoiceStatusError(
-                f"invoice {self.sys_no} must be COMPLETED, got {self.status}"
-            )
-
-        with db_transaction.atomic():
-            locked_invoice = (
-                Invoice.objects.select_for_update(of=("self",))
-                .select_related("project__wallet", "transfer")
-                .get(pk=self.pk)
-            )
-
-            matched_slot = (
-                locked_invoice.pay_slots.filter(status=InvoicePaySlotStatus.MATCHED)
-                .order_by("-matched_at", "-version", "-pk")
-                .first()
-            )
-            if matched_slot is None or not matched_slot.recipient_address:
-                raise InvoiceCollectionError(
-                    f"invoice {self.sys_no} has no matched contract PaySlot"
-                )
-
-            latest_collection = (
-                matched_slot.contract_deploy_collections.order_by(
-                    "-created_at",
-                    "-pk",
-                ).first()
-            )
-            if (
-                matched_slot.contract_deploy_collections.count()
-                >= self.MAX_CONTRACT_COLLECTION_ATTEMPTS
-            ):
-                return latest_collection
-
-            chain = matched_slot.chain
-            crypto = matched_slot.crypto
-            deployer = locked_invoice.project.wallet.get_address(
-                chain_type=ChainType.EVM,
-                usage=AddressUsage.Vault,
-            )
-            salt = keccak(
-                locked_invoice.sys_no.encode()
-                + chain.code.encode()
-                + crypto.symbol.encode()
-            )[:32]
-            token_address = crypto.address(chain) or None
-            gas = GAS_NATIVE_COLLECTOR if token_address is None else GAS_ERC20_COLLECTOR
-            if locked_invoice.transfer_id:
-                if (
-                    locked_invoice.transfer.chain_id != chain.id
-                    or locked_invoice.transfer.crypto_id != crypto.id
-                ):
-                    raise InvoiceCollectionError(
-                        f"invoice {locked_invoice.sys_no} transfer does not match PaySlot"
-                    )
-                expected_collect_value_raw = int(locked_invoice.transfer.value)
-            else:
-                expected_collect_value_raw = int(
-                    matched_slot.pay_amount * Decimal(10) ** crypto.get_decimals(chain)
-                )
-
-            result = ContractDeployCollectionService.create_and_schedule(
-                deployer=deployer,
-                chain=chain,
-                crypto=crypto,
-                salt=salt,
-                recipient_address=matched_slot.recipient_address,
-                expected_collect_value_raw=expected_collect_value_raw,
-                gas=gas,
-            )
-            ContractDeployCollection.objects.filter(pk=result.collection.pk).update(
-                pay_slot=matched_slot,
-            )
-            return result.collection
 
     @classmethod
     def get_pay_differ(
@@ -643,7 +537,9 @@ class InvoicePaySlot(models.Model):
         blank=True,
         null=True,
         verbose_name=_("派生 collector 时使用的归集目标地址"),
-        help_text=_("仅合约账单填写,差额账单留空。后续部署 collector 时使用此值,保证地址不漂移。"),
+        help_text=_(
+            "仅合约账单填写,差额账单留空。后续部署 collector 时使用此值,保证地址不漂移。"
+        ),
     )
     status = models.CharField(
         choices=InvoicePaySlotStatus,

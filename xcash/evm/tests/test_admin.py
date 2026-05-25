@@ -3,15 +3,15 @@ from unittest.mock import Mock
 from django.contrib.admin.sites import AdminSite
 from django.test import SimpleTestCase
 
-from evm.admin import EvmBroadcastTaskAdmin
+from evm.admin import EvmTxTaskAdmin
 from evm.admin import EvmScanCursorAdmin
-from evm.models import EvmBroadcastTask
+from evm.models import EvmTxTask
 from evm.models import EvmScanCursor
 
 
-class EvmBroadcastTaskAdminTests(SimpleTestCase):
-    def test_broadcast_task_admin_excludes_signed_payload(self):
-        model_admin = EvmBroadcastTaskAdmin(EvmBroadcastTask, AdminSite())
+class EvmTxTaskAdminTests(SimpleTestCase):
+    def test_tx_task_admin_excludes_signed_payload(self):
+        model_admin = EvmTxTaskAdmin(EvmTxTask, AdminSite())
 
         self.assertIn("signed_payload", model_admin.get_exclude(Mock(), obj=None))
 

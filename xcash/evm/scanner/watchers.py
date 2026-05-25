@@ -10,12 +10,11 @@ from chains.models import Address
 from chains.models import Chain
 from chains.models import ChainType
 from currencies.models import ChainToken
+from evm.models import DepositSlot
 from invoices.models import InvoiceBillingMode
 from invoices.models import InvoicePaySlot
 from invoices.models import InvoicePaySlotStatus
 from invoices.models import InvoiceStatus
-from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 
 
 @dataclass(frozen=True)
@@ -150,17 +149,9 @@ def _chain_tokens_cache_key(*, chain: Chain) -> str:
 
 def _load_evm_watched_addresses_from_db() -> frozenset[str]:
     system_addresses = _load_evm_system_addresses_from_db()
-    recipient_addresses = (
-        RecipientAddress.objects.filter(
-            chain_type=ChainType.EVM,
-            usage__in=(
-                RecipientAddressUsage.INVOICE,
-                RecipientAddressUsage.DEPOSIT_COLLECTION,
-            ),
-        )
-        .values_list("address", flat=True)
-        .iterator(chunk_size=EVM_WATCH_SET_ITERATOR_CHUNK_SIZE)
-    )
+    deposit_slot_addresses = DepositSlot.objects.filter(
+        chain__type=ChainType.EVM,
+    ).values_list("address", flat=True)
     contract_pay_slot_addresses = (
         InvoicePaySlot.objects.filter(
             chain__type=ChainType.EVM,
@@ -176,7 +167,7 @@ def _load_evm_watched_addresses_from_db() -> frozenset[str]:
         _normalize_address(address)
         for address in iter_chain(
             system_addresses,
-            recipient_addresses,
+            deposit_slot_addresses,
             contract_pay_slot_addresses,
         )
     )

@@ -16,23 +16,22 @@ from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import TransferStatus
+from chains.models import TransferType
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
+from chains.models import TxTaskType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from core.models import PLATFORM_SETTINGS_CACHE_KEY
-from core.models import PlatformSettings
 from currencies.models import Crypto
 from evm.choices import TxKind
-from evm.models import EvmBroadcastTask
+from evm.models import EvmTxTask
 from projects.models import Project
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
@@ -45,7 +44,7 @@ from withdrawals.service import WithdrawalService
 from withdrawals.viewsets import WithdrawalViewSet
 
 
-class WithdrawalBroadcastTaskTests(TestCase):
+class WithdrawalTxTaskTests(TestCase):
     def test_build_webhook_payload_omits_uid_when_customer_missing(self):
         project = Project.objects.create(
             name="DemoPayload",
@@ -85,11 +84,11 @@ class WithdrawalBroadcastTaskTests(TestCase):
         self.assertNotIn("uid", payload["data"])
 
     @patch("chains.tasks.process_transfer.apply_async")
-    def test_try_match_withdrawal_requires_broadcast_task_anchor(
+    def test_try_match_withdrawal_requires_tx_task_anchor(
         self,
         _process_transfer_mock,
     ):
-        # 提币单必须通过 broadcast_task 关联链上任务，不再允许按旧 hash 字段兜底匹配。
+        # 提币单必须通过 tx_task 关联链上任务，不再允许按旧 hash 字段兜底匹配。
         # User 的 post_save 会触发项目初始化；测试里用 bulk_create 绕过副作用，专注验证提币匹配逻辑。
         User.objects.bulk_create([User(username="merchant")])
         wallet = Wallet.objects.create()
@@ -116,16 +115,16 @@ class WithdrawalBroadcastTaskTests(TestCase):
             address_index=0,
             address="0x0000000000000000000000000000000000000001",
         )
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=chain,
             address=addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "2" * 64,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.QUEUED,
+            result=TxTaskResult.UNKNOWN,
         )
-        EvmBroadcastTask.objects.create(
-            base_task=broadcast_task,
+        EvmTxTask.objects.create(
+            base_task=tx_task,
             address=addr,
             chain=chain,
             nonce=0,
@@ -141,9 +140,9 @@ class WithdrawalBroadcastTaskTests(TestCase):
             crypto=crypto,
             amount="1",
             to="0x0000000000000000000000000000000000000002",
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
             hash="0x" + "2" * 64,
@@ -158,17 +157,17 @@ class WithdrawalBroadcastTaskTests(TestCase):
             status=TransferStatus.CONFIRMING,
         )
 
-        matched = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        matched = WithdrawalService.try_match_withdrawal(transfer, tx_task)
 
         withdrawal.refresh_from_db()
         transfer.refresh_from_db()
-        broadcast_task.refresh_from_db()
+        tx_task.refresh_from_db()
         self.assertTrue(matched)
         self.assertEqual(withdrawal.transfer_id, transfer.id)
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-        self.assertEqual(transfer.type, OnchainActionType.Withdrawal)
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
-        self.assertEqual(broadcast_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(transfer.type, TransferType.Withdrawal)
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
+        self.assertEqual(tx_task.result, TxTaskResult.UNKNOWN)
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_confirm_withdrawal_emits_completed_webhook(self, create_event_mock):
@@ -191,7 +190,7 @@ class WithdrawalBroadcastTaskTests(TestCase):
             rpc="http://localhost:8545",
             active=True,
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
             hash="0x" + "3" * 64,
@@ -204,7 +203,7 @@ class WithdrawalBroadcastTaskTests(TestCase):
             timestamp=1,
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMED,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
         )
         withdrawal = Withdrawal.objects.create(
             project=project,
@@ -226,7 +225,7 @@ class WithdrawalBroadcastTaskTests(TestCase):
         create_event_mock.assert_called_once()
 
     def test_drop_withdrawal_reverts_pending_to_pending(self):
-        # OnchainTransfer 被 drop 仅意味着链上观测消失，提币应回退到 PENDING 等待重新匹配，不发 webhook。
+        # Transfer 被 drop 仅意味着链上观测消失，提币应回退到 PENDING 等待重新匹配，不发 webhook。
         project = Project.objects.create(
             name="DemoDrop",
             wallet=Wallet.objects.create(),
@@ -245,7 +244,7 @@ class WithdrawalBroadcastTaskTests(TestCase):
             rpc="http://localhost:8545",
             active=True,
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
             hash="0x" + "5" * 64,
@@ -258,7 +257,7 @@ class WithdrawalBroadcastTaskTests(TestCase):
             timestamp=1,
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMING,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
         )
         withdrawal = Withdrawal.objects.create(
             project=project,
@@ -595,74 +594,6 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
         )
         has_balance_mock.assert_not_called()
 
-    def test_validate_rejects_evm_native_when_global_native_scanner_closed(self):
-        wallet = Wallet.objects.create()
-        project = Project.objects.create(
-            name="EVM Native Withdrawal Guard Project",
-            wallet=wallet,
-        )
-        native = Crypto.objects.create(
-            name="Ethereum Native Withdrawal Guard",
-            symbol="ETHWGUARD",
-            coingecko_id="ethereum-native-withdrawal-guard",
-        )
-        chain = Chain.objects.create(
-            name="Ethereum Native Withdrawal Guard",
-            code="eth-native-withdrawal-guard",
-            type=ChainType.EVM,
-            native_coin=native,
-            chain_id=803,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-        request = APIRequestFactory().post(
-            "/v1/withdrawal",
-            {},
-            format="json",
-            HTTP_XC_APPID=project.appid,
-        )
-        serializer = CreateWithdrawalSerializer(
-            context={"request": request},
-        )
-
-        with (
-            patch("withdrawals.serializers.Project.retrieve", return_value=project),
-            patch(
-                "withdrawals.serializers.AdapterFactory.get_adapter",
-                return_value=SimpleNamespace(validate_address=Mock(return_value=True)),
-            ),
-            patch(
-                "withdrawals.serializers.AddressService.find_by_address",
-                side_effect=AssertionError("地址保护不应执行"),
-            ),
-            patch.object(
-                CreateWithdrawalSerializer,
-                "_is_valid_address",
-                side_effect=AssertionError("地址格式校验不应执行"),
-            ),
-            patch(
-                "withdrawals.serializers.WithdrawalService.has_sufficient_balance",
-                side_effect=AssertionError("余额检查不应执行"),
-            ) as has_balance_mock,
-            self.assertRaises(APIError) as ctx,
-        ):
-            serializer.validate(
-                {
-                    "out_no": "evm-native-order",
-                    "to": "0x0000000000000000000000000000000000000803",
-                    "uid": None,
-                    "crypto": native.symbol,
-                    "chain": chain.code,
-                    "amount": Decimal("1"),
-                }
-            )
-
-        self.assertEqual(
-            ctx.exception.error_code.code,
-            ErrorCode.INVALID_CHAIN.code,
-        )
-        has_balance_mock.assert_not_called()
-
 
 class WithdrawalPolicyTests(TestCase):
     def setUp(self):
@@ -765,9 +696,6 @@ class WithdrawalViewSetTests(TestCase):
         patcher = patch("withdrawals.viewsets.check_saas_permission")
         self.mock_check_saas = patcher.start()
         self.addCleanup(patcher.stop)
-        # 创建提币的前置硬门：必须打开原生币扫描；这里关注 viewset 自身的业务路径，
-        # 全局开关相关的拒绝行为放在专门的扫描器关闭用例里覆盖。
-        PlatformSettings.objects.create(open_native_scanner=True)
 
     def test_viewset_create_translates_unique_conflict_to_api_error(self):
         # 提币创建命中数据库唯一约束时必须返回业务错误，而不是数据库异常或 500。
@@ -1451,7 +1379,7 @@ class WithdrawalReviewTests(TestCase):
 class WithdrawalRemoteSignerFlowTests(TestCase):
     @patch("evm.models.get_signer_backend")
     @patch("chains.signer.get_signer_backend")
-    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
+    @patch.object(EvmTxTask, "_next_nonce", return_value=0)
     @patch.object(
         WithdrawalService, "_make_balance_verify_fn", return_value=lambda: None
     )
@@ -1506,7 +1434,7 @@ class WithdrawalRemoteSignerFlowTests(TestCase):
         submitted.refresh_from_db()
         self.assertEqual(submitted.status, WithdrawalStatus.PENDING)
         self.assertIsNone(submitted.hash)
-        self.assertIsNotNone(submitted.broadcast_task_id)
+        self.assertIsNotNone(submitted.tx_task_id)
         signer_backend.derive_address.assert_called_once()
         signer_backend.sign_evm_transaction.assert_not_called()
 
@@ -1673,7 +1601,7 @@ class WithdrawalRejectTests(TestCase):
 class WithdrawalStateTransitionTests(TestCase):
     """覆盖 confirm_withdrawal / drop_withdrawal 对非法状态的保护。"""
 
-    # 测试用 hash 计数器，确保每个 OnchainTransfer 拥有唯一且合法的 hash
+    # 测试用 hash 计数器，确保每个 Transfer 拥有唯一且合法的 hash
     _hash_counter = 0
 
     def setUp(self):
@@ -1704,7 +1632,7 @@ class WithdrawalStateTransitionTests(TestCase):
     def _make_withdrawal_with_transfer(self, *, status, out_no):
         """创建带 transfer 的提币单，用于 confirm/drop 测试。"""
         tx_hash = self._next_hash()
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=1,
             hash=tx_hash,
@@ -1820,8 +1748,8 @@ class WithdrawalStateTransitionTests(TestCase):
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertIsNone(withdrawal.transfer_id)
 
-    def test_drop_withdrawal_does_not_finalize_broadcast_task(self):
-        """drop_withdrawal 不应修改 BroadcastTask 状态, 由 OnchainTransfer.drop() 统一管理。"""
+    def test_drop_withdrawal_does_not_finalize_tx_task(self):
+        """drop_withdrawal 不应修改 TxTask 状态, 由 Transfer.drop() 统一管理。"""
         tx_hash = self._next_hash()
         addr = Address.objects.create(
             wallet=self.wallet,
@@ -1831,7 +1759,7 @@ class WithdrawalStateTransitionTests(TestCase):
             address_index=0,
             address="0x0000000000000000000000000000000000000099",
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=1,
             hash=tx_hash,
@@ -1845,12 +1773,12 @@ class WithdrawalStateTransitionTests(TestCase):
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMING,
         )
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=self.chain,
             address=addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CONFIRM,
+            stage=TxTaskStage.PENDING_CONFIRM,
         )
         withdrawal = Withdrawal.objects.create(
             project=self.project,
@@ -1861,7 +1789,7 @@ class WithdrawalStateTransitionTests(TestCase):
             to="0x0000000000000000000000000000000000000002",
             status=WithdrawalStatus.PENDING,
             transfer=transfer,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
         )
 
         WithdrawalService.drop_withdrawal(transfer)
@@ -1871,16 +1799,15 @@ class WithdrawalStateTransitionTests(TestCase):
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertIsNone(withdrawal.transfer_id)
 
-        # BroadcastTask 状态不应被 drop_withdrawal 修改, 保持原状
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
-        self.assertEqual(broadcast_task.result, BroadcastTaskResult.UNKNOWN)
-        self.assertEqual(broadcast_task.failure_reason, "")
+        # TxTask 状态不应被 drop_withdrawal 修改, 保持原状
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
+        self.assertEqual(tx_task.result, TxTaskResult.UNKNOWN)
 
     # --- fail_withdrawal 测试 ---
 
-    def _make_withdrawal_with_broadcast_task(self, *, status, out_no):
-        """创建带 broadcast_task 的提币单，用于 fail_withdrawal 测试。"""
+    def _make_withdrawal_with_tx_task(self, *, status, out_no):
+        """创建带 tx_task 的提币单，用于 fail_withdrawal 测试。"""
         tx_hash = self._next_hash()
         addr = Address.objects.create(
             wallet=self.wallet,
@@ -1890,14 +1817,13 @@ class WithdrawalStateTransitionTests(TestCase):
             address_index=0,
             address="0x00000000000000000000000000000000000000A1",
         )
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=self.chain,
             address=addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.FINALIZED,
-            result=BroadcastTaskResult.FAILED,
-            failure_reason=BroadcastTaskFailureReason.RPC_REJECTED,
+            stage=TxTaskStage.FINALIZED,
+            result=TxTaskResult.FAILED,
         )
         withdrawal = Withdrawal.objects.create(
             project=self.project,
@@ -1907,18 +1833,18 @@ class WithdrawalStateTransitionTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             status=status,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
         )
-        return withdrawal, broadcast_task
+        return withdrawal, tx_task
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_fail_pending_sets_failed(self, webhook_mock):
-        """PENDING 状态的提币在 BroadcastTask 确认失败后应终局为 FAILED，且不发 Webhook。"""
-        withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
+        """PENDING 状态的提币在 TxTask 确认失败后应终局为 FAILED，且不发 Webhook。"""
+        withdrawal, tx_task = self._make_withdrawal_with_tx_task(
             status=WithdrawalStatus.PENDING, out_no="fail-pending"
         )
         with self.captureOnCommitCallbacks(execute=True):
-            WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+            WithdrawalService.fail_withdrawal(tx_task=tx_task)
 
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
@@ -1927,12 +1853,12 @@ class WithdrawalStateTransitionTests(TestCase):
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_fail_confirming_sets_failed(self, webhook_mock):
-        """CONFIRMING 状态的提币在 BroadcastTask 确认失败后应终局为 FAILED，且不发 Webhook。"""
-        withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
+        """CONFIRMING 状态的提币在 TxTask 确认失败后应终局为 FAILED，且不发 Webhook。"""
+        withdrawal, tx_task = self._make_withdrawal_with_tx_task(
             status=WithdrawalStatus.CONFIRMING, out_no="fail-confirming"
         )
         with self.captureOnCommitCallbacks(execute=True):
-            WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+            WithdrawalService.fail_withdrawal(tx_task=tx_task)
 
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
@@ -1940,33 +1866,33 @@ class WithdrawalStateTransitionTests(TestCase):
 
     def test_fail_completed_is_idempotent(self):
         """已完成的提币收到 fail 应幂等跳过。"""
-        withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
+        withdrawal, tx_task = self._make_withdrawal_with_tx_task(
             status=WithdrawalStatus.COMPLETED, out_no="fail-completed"
         )
-        WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+        WithdrawalService.fail_withdrawal(tx_task=tx_task)
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
 
     def test_fail_already_failed_is_idempotent(self):
         """已失败的提币收到重复 fail 应幂等跳过。"""
-        withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
+        withdrawal, tx_task = self._make_withdrawal_with_tx_task(
             status=WithdrawalStatus.FAILED, out_no="fail-already-failed"
         )
-        WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+        WithdrawalService.fail_withdrawal(tx_task=tx_task)
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
 
     def test_fail_rejected_is_idempotent(self):
         """已审核拒绝的提币收到 fail 应幂等跳过。"""
-        withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
+        withdrawal, tx_task = self._make_withdrawal_with_tx_task(
             status=WithdrawalStatus.REJECTED, out_no="fail-rejected"
         )
-        WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+        WithdrawalService.fail_withdrawal(tx_task=tx_task)
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.REJECTED)
 
     def test_fail_no_matching_withdrawal_is_noop(self):
-        """BroadcastTask 无对应提币时 fail_withdrawal 应静默跳过。"""
+        """TxTask 无对应提币时 fail_withdrawal 应静默跳过。"""
         tx_hash = self._next_hash()
         addr = Address.objects.create(
             wallet=self.wallet,
@@ -1976,25 +1902,24 @@ class WithdrawalStateTransitionTests(TestCase):
             address_index=0,
             address="0x00000000000000000000000000000000000000A2",
         )
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=self.chain,
             address=addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.FINALIZED,
-            result=BroadcastTaskResult.FAILED,
-            failure_reason=BroadcastTaskFailureReason.RPC_REJECTED,
+            stage=TxTaskStage.FINALIZED,
+            result=TxTaskResult.FAILED,
         )
         # 不应抛异常
-        WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+        WithdrawalService.fail_withdrawal(tx_task=tx_task)
 
     def test_fail_reviewing_raises_value_error(self):
         """REVIEWING 状态的提币不应通过 fail_withdrawal 处理。"""
-        withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
+        withdrawal, tx_task = self._make_withdrawal_with_tx_task(
             status=WithdrawalStatus.REVIEWING, out_no="fail-reviewing"
         )
         with self.assertRaises(ValueError):
-            WithdrawalService.fail_withdrawal(broadcast_task=broadcast_task)
+            WithdrawalService.fail_withdrawal(tx_task=tx_task)
 
 
 # ---------------------------------------------------------------------------
@@ -2048,8 +1973,8 @@ class WithdrawalTryMatchTests(TestCase):
         return "0x" + hex(self._hash_counter)[2:].zfill(64)
 
     def _make_transfer(self, *, chain=None, tx_hash=None, event_id="native:0"):
-        """创建完整的 OnchainTransfer 对象。"""
-        return OnchainTransfer.objects.create(
+        """创建完整的 Transfer 对象。"""
+        return Transfer.objects.create(
             chain=chain or self.chain,
             block=1,
             hash=tx_hash or self._next_hash(),
@@ -2064,19 +1989,19 @@ class WithdrawalTryMatchTests(TestCase):
             status=TransferStatus.CONFIRMED,
         )
 
-    def _make_broadcast_task(self, *, tx_hash, stage=BroadcastTaskStage.PENDING_CHAIN):
-        """创建完整的 BroadcastTask 对象。"""
+    def _make_tx_task(self, *, tx_hash, stage=TxTaskStage.PENDING_CHAIN):
+        """创建完整的 TxTask 对象。"""
         recipient = "0x0000000000000000000000000000000000000002"
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             stage=stage,
-            result=BroadcastTaskResult.UNKNOWN,
+            result=TxTaskResult.UNKNOWN,
         )
-        EvmBroadcastTask.objects.create(
-            base_task=broadcast_task,
+        EvmTxTask.objects.create(
+            base_task=tx_task,
             address=self.addr,
             chain=self.chain,
             nonce=0,
@@ -2085,19 +2010,19 @@ class WithdrawalTryMatchTests(TestCase):
             gas=21_000,
             tx_kind=TxKind.NATIVE_TRANSFER,
         )
-        return broadcast_task
+        return tx_task
 
     def test_match_returns_false_when_no_withdrawal_found(self):
         """链上转账没有对应提币单时应返回 False。"""
-        broadcast_task = self._make_broadcast_task(tx_hash=self._next_hash())
+        tx_task = self._make_tx_task(tx_hash=self._next_hash())
         transfer = self._make_transfer(event_id="native:no-match")
-        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        result = WithdrawalService.try_match_withdrawal(transfer, tx_task)
         self.assertFalse(result)
 
     def test_match_returns_false_when_chain_mismatch(self):
         """链上转账的链与提币单的链不一致时应返回 False，记录 warning。"""
         tx_hash = self._next_hash()
-        broadcast_task = self._make_broadcast_task(tx_hash=tx_hash)
+        tx_task = self._make_tx_task(tx_hash=tx_hash)
         Withdrawal.objects.create(
             project=self.project,
             out_no="match-chain-mismatch",
@@ -2106,7 +2031,7 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             status=WithdrawalStatus.PENDING,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
             hash=tx_hash,
         )
         # 链上转账来自另一条链
@@ -2114,15 +2039,13 @@ class WithdrawalTryMatchTests(TestCase):
             chain=self.other_chain, tx_hash=tx_hash, event_id="native:mismatch"
         )
 
-        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        result = WithdrawalService.try_match_withdrawal(transfer, tx_task)
         self.assertFalse(result)
 
     def test_match_returns_false_when_not_pending(self):
         """非 PENDING 状态的提币收到重复匹配事件应静默跳过。"""
         tx_hash = self._next_hash()
-        broadcast_task = self._make_broadcast_task(
-            tx_hash=tx_hash, stage=BroadcastTaskStage.PENDING_CONFIRM
-        )
+        tx_task = self._make_tx_task(tx_hash=tx_hash, stage=TxTaskStage.PENDING_CONFIRM)
         transfer = self._make_transfer(tx_hash=tx_hash, event_id="native:not-pending")
         Withdrawal.objects.create(
             project=self.project,
@@ -2132,19 +2055,19 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             status=WithdrawalStatus.CONFIRMING,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
             hash=tx_hash,
             transfer=transfer,
         )
 
-        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        result = WithdrawalService.try_match_withdrawal(transfer, tx_task)
         self.assertFalse(result)
 
     @patch("chains.tasks.process_transfer.apply_async")
     def test_match_success_sets_confirming_and_updates_task(self, _process_mock):
-        """正常匹配成功时：PENDING → CONFIRMING，BroadcastTask 更新为 PENDING_CONFIRM。"""
+        """正常匹配成功时：PENDING → CONFIRMING，TxTask 更新为 PENDING_CONFIRM。"""
         tx_hash = self._next_hash()
-        broadcast_task = self._make_broadcast_task(tx_hash=tx_hash)
+        tx_task = self._make_tx_task(tx_hash=tx_hash)
         Withdrawal.objects.create(
             project=self.project,
             out_no="match-success",
@@ -2153,29 +2076,29 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             status=WithdrawalStatus.PENDING,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
             hash=tx_hash,
         )
         transfer = self._make_transfer(tx_hash=tx_hash, event_id="native:success")
 
-        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        result = WithdrawalService.try_match_withdrawal(transfer, tx_task)
         self.assertTrue(result)
 
         withdrawal = Withdrawal.objects.get(out_no="match-success")
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
         self.assertEqual(withdrawal.transfer, transfer)
 
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
 
         transfer.refresh_from_db()
-        self.assertEqual(transfer.type, OnchainActionType.Withdrawal)
+        self.assertEqual(transfer.type, TransferType.Withdrawal)
 
     @patch("chains.tasks.process_transfer.apply_async")
     def test_match_backfills_chain_when_null(self, _process_mock):
         """提币单 chain 为 None 时，匹配成功后应从 transfer 回填链信息。"""
         tx_hash = self._next_hash()
-        broadcast_task = self._make_broadcast_task(tx_hash=tx_hash)
+        tx_task = self._make_tx_task(tx_hash=tx_hash)
         Withdrawal.objects.create(
             project=self.project,
             out_no="match-backfill-chain",
@@ -2184,12 +2107,12 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             status=WithdrawalStatus.PENDING,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
             hash=tx_hash,
         )
         transfer = self._make_transfer(tx_hash=tx_hash, event_id="native:backfill")
 
-        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        result = WithdrawalService.try_match_withdrawal(transfer, tx_task)
         self.assertTrue(result)
 
         withdrawal = Withdrawal.objects.get(out_no="match-backfill-chain")
@@ -2198,9 +2121,9 @@ class WithdrawalTryMatchTests(TestCase):
     @patch("chains.tasks.process_transfer.apply_async")
     def test_match_success_with_old_tx_hash_history(self, _process_mock):
         old_hash = self._next_hash()
-        broadcast_task = self._make_broadcast_task(tx_hash=old_hash)
-        broadcast_task.append_tx_hash(old_hash)
-        broadcast_task.append_tx_hash(self._next_hash())
+        tx_task = self._make_tx_task(tx_hash=old_hash)
+        tx_task.append_tx_hash(old_hash)
+        tx_task.append_tx_hash(self._next_hash())
         Withdrawal.objects.create(
             project=self.project,
             out_no="match-old-hash",
@@ -2209,18 +2132,18 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             status=WithdrawalStatus.PENDING,
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
             hash=old_hash,
         )
         transfer = self._make_transfer(tx_hash=old_hash, event_id="native:old-hash")
 
-        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
+        result = WithdrawalService.try_match_withdrawal(transfer, tx_task)
 
         self.assertTrue(result)
         withdrawal = Withdrawal.objects.get(out_no="match-old-hash")
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.tx_hash, old_hash)
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.tx_hash, old_hash)
 
 
 # ---------------------------------------------------------------------------
@@ -2542,8 +2465,6 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
     """v2 SaaS 模式：提币创建入口调用 check_saas_permission。"""
 
     def setUp(self):
-        # 走到链/币级 SaaS 权限校验必须先过原生币扫描开关，否则会在入口被直接拒绝。
-        PlatformSettings.objects.create(open_native_scanner=True)
         self.wallet = Wallet.objects.create()
         self.project = Project.objects.create(
             name="PermissionCheckProject",

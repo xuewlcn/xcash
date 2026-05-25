@@ -18,13 +18,13 @@ def merge_placeholder_crypto(modeladmin, request, queryset):
 
     在单个事务内原子完成：
     1. 占位符的所有 ChainToken 改指向目标代币
-    2. 占位符关联的全部 OnchainTransfer.crypto（含 CONFIRMING 状态）更新为目标代币
+    2. 占位符关联的全部 Transfer.crypto（含 CONFIRMING 状态）更新为目标代币
     3. 删除占位符
     """
     from django.contrib import messages
     from django.db import transaction
 
-    from chains.models import OnchainTransfer
+    from chains.models import Transfer
 
     targets = queryset.filter(active=True)
     placeholders = queryset.filter(active=False)
@@ -64,7 +64,7 @@ def merge_placeholder_crypto(modeladmin, request, queryset):
                     ChainToken.objects.filter(pk=ct.pk).update(crypto=target)
 
                 # 步骤 2：全量更新 Transfer（含 CONFIRMING），确保后续重归类使用目标币种
-                OnchainTransfer.objects.filter(crypto=placeholder).update(crypto=target)
+                Transfer.objects.filter(crypto=placeholder).update(crypto=target)
 
                 # 步骤 3：删除占位符
                 placeholder.delete()

@@ -13,7 +13,7 @@ class VaultFunding(models.Model):
         verbose_name=_("项目"),
     )
     transfer = models.OneToOneField(
-        "chains.OnchainTransfer",
+        "chains.Transfer",
         on_delete=models.SET_NULL,
         verbose_name=_("链上转账"),
         blank=True,
@@ -39,7 +39,7 @@ class WithdrawalStatus(models.TextChoices):
     COMPLETED = "completed", _("已完成")
     # 人工审核拒绝（管理员在 REVIEWING 阶段主动拒绝）
     REJECTED = "rejected", _("已拒绝")
-    # 链上交易最终失败（BroadcastTask 确认 FINALIZED + FAILED）
+    # 链上交易最终失败（TxTask 确认 FINALIZED + FAILED）
     FAILED = "failed", _("已失败")
 
 
@@ -80,9 +80,9 @@ class Withdrawal(models.Model):
     to = AddressField(verbose_name=_("收币地址"))
     # 审核态提币尚未签名，因此 hash 允许为空；真正上链后再回填真实交易哈希。
     hash = HashField(verbose_name=_("哈希"), unique=False, blank=True, null=True)
-    # 提币统一锚定跨链 BroadcastTask；hash 仅保留对外展示，不再承担主关联职责。
-    broadcast_task = models.OneToOneField(
-        "chains.BroadcastTask",
+    # 提币统一锚定跨链 TxTask；hash 仅保留对外展示，不再承担主关联职责。
+    tx_task = models.OneToOneField(
+        "chains.TxTask",
         on_delete=models.PROTECT,
         verbose_name=_("链上任务"),
         blank=True,
@@ -103,7 +103,7 @@ class Withdrawal(models.Model):
     )
     reviewed_at = models.DateTimeField(_("审核时间"), blank=True, null=True)
     transfer = models.OneToOneField(
-        "chains.OnchainTransfer",
+        "chains.Transfer",
         on_delete=models.SET_NULL,
         verbose_name=_("链上转账"),
         blank=True,

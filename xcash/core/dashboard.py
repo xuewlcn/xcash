@@ -26,7 +26,9 @@ class HomeView(RedirectView):
     pattern_name = "admin:index"
 
 
-def _build_environment_badge(signer_summary: dict | None, risk_summary: dict) -> list[str]:
+def _build_environment_badge(
+    signer_summary: dict | None, risk_summary: dict
+) -> list[str]:
     """为后台顶部角标生成轻量状态摘要，避免复用完整首页聚合。"""
     if not signer_summary or not signer_summary.get("available"):
         return [_("Signer异常"), "danger"]
@@ -38,10 +40,7 @@ def _build_environment_badge(signer_summary: dict | None, risk_summary: dict) ->
     if risk_summary["stalled_webhook_event_count"] > 0:
         return [_("存在高风险告警"), "danger"]
 
-    pending_count = (
-        risk_summary["stalled_withdrawal_count"]
-        + risk_summary["stalled_deposit_collection_count"]
-    )
+    pending_count = risk_summary["stalled_withdrawal_count"]
     if pending_count > 0:
         return [_("%(count)s项待处理") % {"count": pending_count}, "warning"]
 
@@ -156,34 +155,6 @@ def _build_operational_inspection_payload(metrics, signer_summary):
     )
     attention_items.extend(stalled_withdrawal_rows)
 
-    stalled_deposit_rows = [
-        {
-            "level": _("中"),
-            "title": _("归集长时间未完成"),
-            "description": _("%(project)s / %(sys_no)s / %(crypto)s-%(chain)s")
-            % {
-                "project": (
-                    deposit.customer.project.name if deposit.customer_id else "-"
-                ),
-                "sys_no": deposit.sys_no,
-                "crypto": deposit.transfer.crypto.symbol,
-                "chain": deposit.transfer.chain.code,
-            },
-            "href": reverse("admin:deposits_deposit_change", args=[deposit.pk]),
-        }
-        for deposit in metrics["recent_stalled_deposit_collections"]
-    ]
-    inspection_sections.append(
-        {
-            "title": _("归集巡检"),
-            "subtitle": _("长时间未完成的归集任务"),
-            "count": len(stalled_deposit_rows),
-            "rows": stalled_deposit_rows,
-            "empty_text": _("当前没有卡住的归集任务"),
-        }
-    )
-    attention_items.extend(stalled_deposit_rows)
-
     stalled_webhook_rows = [
         {
             "level": _("高"),
@@ -279,13 +250,6 @@ def _build_operational_inspection_summary_cards(snapshot, signer_summary):
                 "reviewing": snapshot["reviewing_withdrawal_count"],
             },
             "tone": "bg-rose-50",
-        },
-        {
-            "title": _("归集巡检"),
-            "metric": snapshot["stalled_deposit_collection_count"],
-            "subtitle": _("长时间未完成归集 %(count)s 笔")
-            % {"count": snapshot["stalled_deposit_collection_count"]},
-            "tone": "bg-orange-50",
         },
         {
             "title": _("Webhook 巡检"),
@@ -448,13 +412,12 @@ def dashboard_callback(request, context):
         },
         {
             "title": _("任务巡检"),
-            "metric": _("%(wdr)s / %(dep)s / %(wh)s")
+            "metric": _("%(wdr)s / %(wh)s")
             % {
                 "wdr": snapshot["stalled_withdrawal_count"],
-                "dep": snapshot["stalled_deposit_collection_count"],
                 "wh": snapshot["stalled_webhook_event_count"],
             },
-            "subtitle": _("卡住提币 / 卡住归集 / 超时回调"),
+            "subtitle": _("卡住提币 / 超时回调"),
         },
     ]
     if signer_summary:

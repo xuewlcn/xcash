@@ -14,7 +14,7 @@ from chains.models import ChainType
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from deposits.models import Deposit
-from deposits.models import DepositAddress
+from evm.models import DepositSlot
 from projects.models import Project
 from users.models import Customer
 
@@ -38,11 +38,9 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
 
     @action(detail=False, methods=["get"])
     def address(self, request, project_appid=None):
-        """获取充币地址，复用现有 DepositAddress.get_address 逻辑。
+        """获取 DepositSlot 充币地址。
 
-        支持两种查链方式（二选一）：
-        - chain_type: 按链类型查（如 evm），取该类型下任意活跃链
-        - chain: 按链 code 精确查（如 ethereum-local）
+        DepositSlot 按具体 EVM 链预测，不再支持只传 chain_type。
         """
         uid = request.query_params.get("uid", "")
         chain_type = request.query_params.get("chain_type", "")
@@ -56,7 +54,10 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
             raise APIError(ErrorCode.PROJECT_NOT_FOUND)
 
         if chain_type:
-            if chain_type not in ChainType.values:
+            if chain_type != ChainType.EVM:
+                raise APIError(ErrorCode.INVALID_CHAIN)
+            chain = Chain.objects.filter(type=ChainType.EVM, active=True).first()
+            if chain is None:
                 raise APIError(ErrorCode.INVALID_CHAIN)
         elif chain_code:
             try:
@@ -67,11 +68,5 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
             raise APIError(ErrorCode.INVALID_CHAIN)
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
-        if chain_type:
-            deposit_address = DepositAddress.get_address_by_chain_type(
-                chain_type=chain_type,
-                customer=customer,
-            )
-        else:
-            deposit_address = DepositAddress.get_address(chain=chain, customer=customer)
+        deposit_address = DepositSlot.get_address(chain=chain, customer=customer)
         return Response({"deposit_address": deposit_address})

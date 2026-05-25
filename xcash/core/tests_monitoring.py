@@ -13,7 +13,7 @@ from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import TransferStatus
 from chains.models import Wallet
 from chains.signer import SignerAdminSummary
@@ -28,8 +28,6 @@ from core.monitoring import OperationalRiskService
 from core.tasks import scan_operational_risks
 from currencies.models import Crypto
 from deposits.models import Deposit
-from deposits.models import DepositCollection
-from deposits.models import DepositStatus
 from users.models import Customer
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
@@ -68,9 +66,8 @@ class OperationalRiskServiceTests(TestCase):
             active=True,
         )
 
-    def test_build_summary_collects_stalled_withdrawal_deposit_and_webhook(self):
-        # 巡检需要把提币卡单、归集卡单和回调超时统一收口成一份运营概览。
-        transfer = OnchainTransfer.objects.create(
+    def test_build_summary_collects_stalled_withdrawal_and_webhook(self):
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=1,
             hash="0x" + "1" * 64,
@@ -93,12 +90,9 @@ class OperationalRiskServiceTests(TestCase):
             to="0x0000000000000000000000000000000000000012",
             status=WithdrawalStatus.REVIEWING,
         )
-        collection = DepositCollection.objects.create(collection_hash="0x" + "2" * 64)
         Deposit.objects.create(
             customer=self.customer,
             transfer=transfer,
-            status=DepositStatus.COMPLETED,
-            collection=collection,
         )
         WebhookEvent.objects.create(
             project=self.project,
@@ -108,18 +102,14 @@ class OperationalRiskServiceTests(TestCase):
 
         old_time = timezone.now() - timedelta(hours=1)
         Withdrawal.objects.filter(pk=withdrawal.pk).update(updated_at=old_time)
-        # stalled 判断基于 DepositCollection.updated_at，需更新归集记录的时间戳。
-        DepositCollection.objects.filter(pk=collection.pk).update(updated_at=old_time)
         WebhookEvent.objects.filter(project=self.project).update(created_at=old_time)
 
         summary = OperationalRiskService.build_summary()
 
         self.assertEqual(summary["reviewing_withdrawal_count"], 1)
         self.assertEqual(summary["stalled_withdrawal_count"], 1)
-        self.assertEqual(summary["stalled_deposit_collection_count"], 1)
         self.assertEqual(summary["stalled_webhook_event_count"], 1)
         self.assertEqual(len(summary["recent_stalled_withdrawals"]), 1)
-        self.assertEqual(len(summary["recent_stalled_deposit_collections"]), 1)
         self.assertEqual(len(summary["recent_stalled_webhook_events"]), 1)
 
     def test_build_summary_uses_platform_timeout_override(self):
@@ -128,7 +118,6 @@ class OperationalRiskServiceTests(TestCase):
             reviewing_withdrawal_timeout_minutes=5,
             pending_withdrawal_timeout_minutes=5,
             confirming_withdrawal_timeout_minutes=5,
-            deposit_collection_timeout_minutes=5,
             webhook_event_timeout_minutes=5,
         )
         withdrawal = Withdrawal.objects.create(
@@ -165,10 +154,8 @@ class OperationalRiskTaskTests(TestCase):
             "pending_withdrawal_count": 1,
             "confirming_withdrawal_count": 0,
             "stalled_withdrawal_count": 2,
-            "stalled_deposit_collection_count": 1,
             "stalled_webhook_event_count": 1,
             "recent_stalled_withdrawals": [],
-            "recent_stalled_deposit_collections": [],
             "recent_stalled_webhook_events": [],
         }
 
@@ -214,7 +201,6 @@ class DashboardSignerSummaryTests(TestCase):
                 "expiring_soon_count": 1,
                 "reviewing_withdrawal_count": 3,
                 "stalled_withdrawal_count": 1,
-                "stalled_deposit_collection_count": 1,
                 "pending_events_count": 4,
                 "failed_events_count": 2,
                 "stalled_webhook_event_count": 1,
@@ -222,7 +208,6 @@ class DashboardSignerSummaryTests(TestCase):
             "recent_failed_attempts": [],
             "recent_stalled_invoices": [],
             "recent_stalled_withdrawals": [],
-            "recent_stalled_deposit_collections": [],
             "recent_stalled_webhook_events": [],
             "signer_summary": signer_summary,
         }
@@ -335,7 +320,6 @@ class DashboardEnvironmentStatusTests(TestCase):
         }
         build_summary_mock.return_value = {
             "stalled_withdrawal_count": 0,
-            "stalled_deposit_collection_count": 0,
             "stalled_webhook_event_count": 0,
         }
 
@@ -359,7 +343,6 @@ class DashboardEnvironmentStatusTests(TestCase):
         }
         build_summary_mock.return_value = {
             "stalled_withdrawal_count": 0,
-            "stalled_deposit_collection_count": 0,
             "stalled_webhook_event_count": 1,
         }
 
@@ -383,7 +366,6 @@ class DashboardEnvironmentStatusTests(TestCase):
         }
         build_summary_mock.return_value = {
             "stalled_withdrawal_count": 2,
-            "stalled_deposit_collection_count": 1,
             "stalled_webhook_event_count": 0,
         }
 
@@ -407,7 +389,6 @@ class DashboardEnvironmentStatusTests(TestCase):
         }
         build_summary_mock.return_value = {
             "stalled_withdrawal_count": 0,
-            "stalled_deposit_collection_count": 0,
             "stalled_webhook_event_count": 0,
         }
 
@@ -443,7 +424,6 @@ class DashboardCallbackPresentationTests(TestCase):
                 "failed_events_count": 5,
                 "webhook_attempt_failed_7d": 3,
                 "stalled_withdrawal_count": 1,
-                "stalled_deposit_collection_count": 0,
                 "stalled_webhook_event_count": 2,
                 "completed_withdrawal_worth_30d": Decimal("66"),
                 "completed_withdrawal_count_30d": 6,
@@ -458,7 +438,6 @@ class DashboardCallbackPresentationTests(TestCase):
             "recent_failed_attempts": [],
             "recent_stalled_invoices": [],
             "recent_stalled_withdrawals": [],
-            "recent_stalled_deposit_collections": [],
             "recent_stalled_webhook_events": [],
             "signer_summary": None,
         }

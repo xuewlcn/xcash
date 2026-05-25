@@ -8,12 +8,12 @@ from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
+from chains.models import TxTaskType
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
 from chains.models import Wallet
 from currencies.models import Crypto
 
@@ -94,22 +94,22 @@ def make_tx_hash(suffix: str) -> str:
     return "0x" + suffix.rjust(64, "0")
 
 
-def make_broadcast_task(
+def make_tx_task(
     *,
     chain: Chain,
     address: Address,
-    action_type: OnchainActionType = OnchainActionType.Withdrawal,
+    tx_type: TxTaskType = TxTaskType.Withdrawal,
     crypto: Crypto | None = None,
     amount: Decimal = Decimal("1.0"),
     recipient_suffix: str = "ff",
     tx_hash_suffix: str = "01",
-    stage: BroadcastTaskStage = BroadcastTaskStage.PENDING_CHAIN,
-    result: BroadcastTaskResult = BroadcastTaskResult.UNKNOWN,
-) -> BroadcastTask:
-    return BroadcastTask.objects.create(
+    stage: TxTaskStage = TxTaskStage.PENDING_CHAIN,
+    result: TxTaskResult = TxTaskResult.UNKNOWN,
+) -> TxTask:
+    return TxTask.objects.create(
         chain=chain,
         address=address,
-        action_type=action_type,
+        tx_type=tx_type,
         tx_hash=make_tx_hash(tx_hash_suffix),
         stage=stage,
         result=result,

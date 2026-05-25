@@ -14,17 +14,15 @@ from web3.exceptions import TransactionNotFound
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import TxTaskType
 from chains.models import TxHash
 from chains.models import Wallet
 from core.models import PLATFORM_SETTINGS_CACHE_KEY
-from core.models import PlatformSettings
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 
@@ -79,22 +77,22 @@ class EvmReconcilePendingChainTests(TestCase):
         self,
         *,
         tx_hash: str,
-        stage: str = BroadcastTaskStage.PENDING_CHAIN,
-        result: str = BroadcastTaskResult.UNKNOWN,
+        stage: str = TxTaskStage.PENDING_CHAIN,
+        result: str = TxTaskResult.UNKNOWN,
         aged_seconds: int = 0,
-    ) -> BroadcastTask:
-        task = BroadcastTask.objects.create(
+    ) -> TxTask:
+        task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             stage=stage,
             result=result,
         )
         if aged_seconds:
-            # BroadcastTask.updated_at 是 auto_now，手动回写确保落到阈值之外/内。
+            # TxTask.updated_at 是 auto_now，手动回写确保落到阈值之外/内。
             aged = timezone.now() - timedelta(seconds=aged_seconds)
-            BroadcastTask.objects.filter(pk=task.pk).update(updated_at=aged)
+            TxTask.objects.filter(pk=task.pk).update(updated_at=aged)
             task.refresh_from_db()
         return task
 
@@ -190,7 +188,7 @@ class EvmReconcilePendingChainTests(TestCase):
         # 防御：把 cursor 写入一个固定值，断言扫描器没有偷偷改动它。
         cursor = EvmScanCursor.objects.create(
             chain=self.chain,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
             last_scanned_block=99,
         )
 
@@ -224,19 +222,19 @@ class EvmReconcilePendingChainTests(TestCase):
         third_hash = "0x" + "c3" * 32
         task = self._make_task(tx_hash=third_hash, aged_seconds=300)
         TxHash.objects.create(
-            broadcast_task=task,
+            tx_task=task,
             chain=self.chain,
             hash=first_hash,
             version=1,
         )
         TxHash.objects.create(
-            broadcast_task=task,
+            tx_task=task,
             chain=self.chain,
             hash=second_hash,
             version=2,
         )
         TxHash.objects.create(
-            broadcast_task=task,
+            tx_task=task,
             chain=self.chain,
             hash=third_hash,
             version=3,
@@ -278,7 +276,7 @@ class EvmReconcilePendingChainTests(TestCase):
         stable_hash = "0x" + "d1" * 32
         task = self._make_task(tx_hash=stable_hash, aged_seconds=600)
         TxHash.objects.create(
-            broadcast_task=task,
+            tx_task=task,
             chain=self.chain,
             hash=stable_hash,
             version=1,
@@ -295,8 +293,8 @@ class EvmReconcilePendingChainTests(TestCase):
 
         scan_blocks_mock.assert_not_called()
         task.refresh_from_db()
-        self.assertEqual(task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertEqual(task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(task.stage, TxTaskStage.PENDING_CHAIN)
+        self.assertEqual(task.result, TxTaskResult.UNKNOWN)
 
 
 @override_settings(DEBUG=False)
@@ -305,9 +303,6 @@ class EvmScanBlocksForReconcileTests(TestCase):
 
     def setUp(self):
         cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
-        self.platform_settings = PlatformSettings.objects.create(
-            open_native_scanner=True,
-        )
         self.native = crypto_create("Ether Recon Scan", "ETHRS", "ethereum-recon-scan")
         self.chain = Chain.objects.create(
             code="eth-recon-scan",
@@ -334,7 +329,7 @@ class EvmScanBlocksForReconcileTests(TestCase):
         # 固定 cursor，断言复扫前后不发生推进。
         self.cursor = EvmScanCursor.objects.create(
             chain=self.chain,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
             last_scanned_block=100,
         )
 
@@ -342,147 +337,17 @@ class EvmScanBlocksForReconcileTests(TestCase):
         cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
         super().tearDown()
 
-    @staticmethod
-    def _native_tx(
-        *, from_address: str, to_address: str, value: int, tx_hash_hex: str
-    ) -> dict:
-        return {
-            "hash": bytes.fromhex(tx_hash_hex * 32),
-            "from": from_address,
-            "to": to_address,
-            "value": value,
-            "input": "0x",
-        }
-
-    @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
-    @patch("chains.service.TransferService.enqueue_processing")
-    @patch(
-        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
-        return_value=None,
-    )
-    @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
-    @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
-    def test_scan_blocks_for_reconcile_creates_onchain_transfer_without_touching_cursor(
-        self,
-        get_full_block_mock,
-        get_receipt_status_mock,
-        _get_block_receipts_status_mock,
-        _enqueue_processing_mock,
-        _mark_pending_confirm_mock,
-    ):
-        # 兜底复扫必须复用主扫描的落库路径——OnchainTransfer 能被创建，
-        # 但 EvmScanCursor 不应被 reconcile 路径改动，否则会污染主扫描。
-        from evm.scanner.service import EvmChainScannerService
-
-        target_block = 250
-        get_receipt_status_mock.return_value = 1
-        get_full_block_mock.side_effect = lambda *, block_number: {
-            "number": block_number,
-            "timestamp": 1_700_000_123,
-            "transactions": [
-                self._native_tx(
-                    from_address=Web3.to_checksum_address(
-                        "0x00000000000000000000000000000000000000cc"
-                    ),
-                    to_address=self.addr.address,
-                    value=10**18,
-                    tx_hash_hex="a1",
-                )
-            ]
-            if block_number == target_block
-            else [],
-        }
-
-        cursor_last_scanned_before = self.cursor.last_scanned_block
-
-        result = EvmChainScannerService.scan_blocks_for_reconcile(
-            chain=self.chain,
-            block_numbers={target_block},
-        )
-
-        self.cursor.refresh_from_db()
-        self.assertEqual(self.cursor.last_scanned_block, cursor_last_scanned_before)
-
-        self.assertEqual(result.created_native, 1)
-        self.assertTrue(
-            OnchainTransfer.objects.filter(
-                chain=self.chain, hash="0x" + "a1" * 32
-            ).exists()
-        )
-
-    @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
-    @patch("chains.service.TransferService.enqueue_processing")
-    @patch(
-        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
-        return_value=None,
-    )
-    @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
-    @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
-    def test_reconcile_is_idempotent_when_onchain_transfer_already_exists(
-        self,
-        get_full_block_mock,
-        get_receipt_status_mock,
-        _get_block_receipts_status_mock,
-        _enqueue_processing_mock,
-        _mark_pending_confirm_mock,
-    ):
-        # 多次兜底调用必须幂等；(chain, hash, event_id) 唯一键保证不会重复落库，
-        # 也不应抛 IntegrityError 中断任务。
-        from evm.scanner.service import EvmChainScannerService
-
-        target_block = 260
-        get_receipt_status_mock.return_value = 1
-        get_full_block_mock.side_effect = lambda *, block_number: {
-            "number": block_number,
-            "timestamp": 1_700_000_123,
-            "transactions": [
-                self._native_tx(
-                    from_address=Web3.to_checksum_address(
-                        "0x00000000000000000000000000000000000000cc"
-                    ),
-                    to_address=self.addr.address,
-                    value=10**18,
-                    tx_hash_hex="a2",
-                )
-            ]
-            if block_number == target_block
-            else [],
-        }
-
-        first = EvmChainScannerService.scan_blocks_for_reconcile(
-            chain=self.chain,
-            block_numbers={target_block},
-        )
-        second = EvmChainScannerService.scan_blocks_for_reconcile(
-            chain=self.chain,
-            block_numbers={target_block},
-        )
-
-        self.assertEqual(first.created_native, 1)
-        self.assertEqual(second.created_native, 0)
-        self.assertEqual(
-            OnchainTransfer.objects.filter(
-                chain=self.chain, hash="0x" + "a2" * 32
-            ).count(),
-            1,
-        )
-
     @patch(
         "evm.scanner.service.EvmErc20TransferScanner.scan_range_without_cursor",
     )
-    @patch(
-        "evm.scanner.service.EvmNativeDirectScanner.scan_range_without_cursor",
-    )
     def test_reconcile_sparse_blocks_scans_contiguous_segments(
         self,
-        native_scan_mock,
         erc20_scan_mock,
     ):
         # 多个 stale 任务命中相距很远的块时，兜底只能扫命中的连续块段，
         # 不能扩成 [min..max] 巨大区间拖垮 RPC。
         from evm.scanner.service import EvmChainScannerService
 
-        native_scan_mock.side_effect = [(2, 1), (2, 1), (1, 1)]
         erc20_scan_mock.side_effect = [
             ([object(), object()], 1),
             ([object(), object()], 1),
@@ -494,38 +359,27 @@ class EvmScanBlocksForReconcileTests(TestCase):
             block_numbers={10, 11, 500, 501, 900},
         )
 
-        native_ranges = [
-            (call.kwargs["from_block"], call.kwargs["to_block"])
-            for call in native_scan_mock.call_args_list
-        ]
         erc20_ranges = [
             (call.kwargs["from_block"], call.kwargs["to_block"])
             for call in erc20_scan_mock.call_args_list
         ]
-        self.assertEqual(native_ranges, [(10, 11), (500, 501), (900, 900)])
         self.assertEqual(erc20_ranges, [(10, 11), (500, 501), (900, 900)])
         self.assertEqual(result.from_block, 10)
         self.assertEqual(result.to_block, 900)
-        self.assertEqual(result.observed_native, 5)
         self.assertEqual(result.observed_erc20, 5)
-        self.assertEqual(result.created_native, 3)
         self.assertEqual(result.created_erc20, 3)
 
     @patch(
         "evm.scanner.service.EvmErc20TransferScanner.scan_range_without_cursor",
     )
-    @patch(
-        "evm.scanner.service.EvmNativeDirectScanner.scan_range_without_cursor",
-    )
-    def test_reconcile_skips_native_scan_when_global_native_scanner_is_closed(
+    def test_reconcile_skips_erc20_scan_when_cursor_disabled(
         self,
-        native_scan_mock,
         erc20_scan_mock,
     ):
         from evm.scanner.service import EvmChainScannerService
 
-        self.platform_settings.open_native_scanner = False
-        self.platform_settings.save(update_fields=["open_native_scanner"])
+        self.cursor.enabled = False
+        self.cursor.save(update_fields=["enabled"])
         erc20_scan_mock.return_value = ([object()], 1)
 
         result = EvmChainScannerService.scan_blocks_for_reconcile(
@@ -533,12 +387,9 @@ class EvmScanBlocksForReconcileTests(TestCase):
             block_numbers={10},
         )
 
-        native_scan_mock.assert_not_called()
-        erc20_scan_mock.assert_called_once()
-        self.assertEqual(result.observed_native, 0)
-        self.assertEqual(result.created_native, 0)
-        self.assertEqual(result.observed_erc20, 1)
-        self.assertEqual(result.created_erc20, 1)
+        erc20_scan_mock.assert_not_called()
+        self.assertEqual(result.observed_erc20, 0)
+        self.assertEqual(result.created_erc20, 0)
 
 
 def crypto_create(name: str, symbol: str, coingecko_id: str):

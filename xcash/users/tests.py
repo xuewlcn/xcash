@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.cache import cache as _cache
-from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import Client
 from django.test import TestCase
@@ -15,7 +14,6 @@ from django_otp.oath import TOTP
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from chains.test_signer import build_test_remote_signer_backend
-from projects.models import RecipientAddress
 from users.models import AdminAccessLog
 from users.models import Customer
 from users.models import User
@@ -322,23 +320,6 @@ class AdminOTPTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
-
-
-@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
-class RecipientAddressAdminTests(TestCase):
-    def test_recipient_address_rejects_unknown_usage(self):
-        from projects.models import Project
-
-        project = Project.objects.create(name="Recipient Validate Project")
-
-        with self.assertRaises(ValidationError):
-            RecipientAddress.objects.create(
-                name="非法双用途地址",
-                project=project,
-                chain_type="evm",
-                address="0x5AAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
-                usage="unknown",
-            )
 
 
 class VerifyOtpTokenTests(TestCase):

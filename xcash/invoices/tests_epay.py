@@ -31,7 +31,6 @@ from invoices.models import InvoiceProtocol
 from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 
 
 class EpaySignatureTests(TestCase):
@@ -392,7 +391,6 @@ class EpaySubmitServiceTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000C1"
             ),
-            usage=RecipientAddressUsage.INVOICE,
         )
 
     def _signed_params(self, **overrides):
@@ -458,7 +456,9 @@ class EpaySubmitServiceTests(TestCase):
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
     def test_submit_defaults_to_cny_when_currency_omitted(
-        self, mock_check, mock_initialize,
+        self,
+        mock_check,
+        mock_initialize,
     ):
         # EPay V1 标准协议没有 currency 字段（typecho/wordpress/discuz 插件都不会传），
         # 缺省时按协议事实默认 CNY 落库；签名也基于不含 currency 的原始参数计算。
@@ -1072,7 +1072,9 @@ class EpayNotifyTests(TestCase):
 
         mock_initialize.side_effect = lambda invoice: invoice
         invoice = EpaySubmitService.submit(
-            self._signed_params(return_url="https://merchant.example.com/return?source=xcash")
+            self._signed_params(
+                return_url="https://merchant.example.com/return?source=xcash"
+            )
         )
         Invoice.objects.filter(pk=invoice.pk).update(status=InvoiceStatus.COMPLETED)
         invoice.refresh_from_db()
@@ -1213,7 +1215,9 @@ class EpayNotifyTests(TestCase):
         # notify_url 是账单级投递目标事实；EpayOrder 中的原始 notify_url 不再参与投递决策。
         mock_initialize.side_effect = lambda invoice: invoice
         invoice = EpaySubmitService.submit(
-            self._signed_params(notify_url="https://merchant.example.com/invoice-notify")
+            self._signed_params(
+                notify_url="https://merchant.example.com/invoice-notify"
+            )
         )
         EpayOrder.objects.filter(pk=invoice.epay_order.pk).update(
             notify_url="https://merchant.example.com/stale-notify"
@@ -1222,7 +1226,9 @@ class EpayNotifyTests(TestCase):
 
         event = EpaySubmitService.enqueue_paid_notify(invoice)
 
-        self.assertEqual(event.delivery_url, "https://merchant.example.com/invoice-notify")
+        self.assertEqual(
+            event.delivery_url, "https://merchant.example.com/invoice-notify"
+        )
         enqueue_mock.assert_called_once_with(event)
 
     @patch("invoices.service.send_internal_callback")

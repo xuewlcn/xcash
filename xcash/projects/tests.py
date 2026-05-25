@@ -5,7 +5,6 @@ from unittest.mock import patch
 from django.contrib import admin
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.exceptions import PermissionDenied
-from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.test import override_settings
 from django.test.client import RequestFactory
@@ -22,7 +21,6 @@ from projects.admin import PaymentAddressInline
 from projects.admin import ProjectAdmin
 from projects.models import Project
 from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 
@@ -144,7 +142,7 @@ class ProjectAdminTests(TestCase):
         otp_mock.assert_not_called()
         save_model_mock.assert_called_once()
 
-    def test_payment_address_inline_form_validates_without_usage_field(self):
+    def test_payment_address_inline_form_validates(self):
         request = self.factory.get("/admin/projects/project/add/")
         request.user = self.user
 
@@ -166,32 +164,17 @@ class RecipientAddressCapabilityTests(TestCase):
     def setUp(self):
         self.project = Project.objects.create(name="Recipient Capability Project")
 
-    def test_clean_allows_tron_invoice_address(self):
+    def test_clean_allows_tron_recipient_address(self):
         recipient = RecipientAddress(
-            name="Tron Invoice",
+            name="Tron Recipient",
             project=self.project,
             chain_type=ChainType.TRON,
             address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            usage=RecipientAddressUsage.INVOICE,
         )
 
         recipient.clean()
 
-    def test_clean_rejects_tron_collection_address(self):
-        recipient = RecipientAddress(
-            name="Tron Collection",
-            project=self.project,
-            chain_type=ChainType.TRON,
-            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-
-        with self.assertRaises(ValidationError) as ctx:
-            recipient.clean()
-
-        self.assertIn("chain_type", ctx.exception.message_dict)
-
-    def test_invoice_recipient_queryset_filters_by_usage(self):
+    def test_invoice_recipient_queryset_returns_project_recipients(self):
         from projects.service import ProjectService
 
         RecipientAddress.objects.create(
@@ -199,20 +182,22 @@ class RecipientAddressCapabilityTests(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x52908400098527886E0F7030069857D2E4169EE7",
-            usage=RecipientAddressUsage.INVOICE,
         )
-        RecipientAddress.objects.create(
-            name="Collection Recipient",
+        recipient = RecipientAddress(
+            name="Other Chain Recipient",
             project=self.project,
-            chain_type=ChainType.EVM,
-            address="0x8617E340B3D01FA5F11F306F4090FD50E238070D",
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+            chain_type=ChainType.TRON,
+            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
         )
+        recipient.save()
 
-        qs = ProjectService.invoice_recipients(self.project)
+        qs = ProjectService.invoice_recipients(
+            self.project,
+            chain_type=ChainType.EVM,
+        )
 
         self.assertEqual(qs.count(), 1)
-        self.assertEqual(qs.first().usage, RecipientAddressUsage.INVOICE)
+        self.assertEqual(qs.first().chain_type, ChainType.EVM)
 
 
 class PrimaryInvoiceRecipientTest(TestCase):
@@ -237,14 +222,12 @@ class PrimaryInvoiceRecipientTest(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x52908400098527886E0F7030069857D2E4169EE7",
-            usage=RecipientAddressUsage.INVOICE,
         )
         RecipientAddress.objects.create(
             name="Second Invoice",
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x8617E340B3D01FA5F11F306F4090FD50E238070D",
-            usage=RecipientAddressUsage.INVOICE,
         )
 
         result = ProjectService.primary_invoice_recipient(
@@ -253,21 +236,3 @@ class PrimaryInvoiceRecipientTest(TestCase):
         )
 
         self.assertEqual(result.pk, first.pk)
-
-    def test_excludes_deposit_collection_usage(self):
-        from projects.service import ProjectService
-
-        RecipientAddress.objects.create(
-            name="Collection",
-            project=self.project,
-            chain_type=ChainType.EVM,
-            address="0xde709f2102306220921060314715629080e2fb77",
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-
-        result = ProjectService.primary_invoice_recipient(
-            project=self.project,
-            chain_type=ChainType.EVM,
-        )
-
-        self.assertIsNone(result)

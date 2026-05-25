@@ -1,4 +1,4 @@
-"""evm.contracts_codec 的 sentinel 校验、init_code 拼装与地址预测。"""
+"""evm.contracts_codec 的 XcashDeposit slot init_code 与地址预测。"""
 
 import json
 from pathlib import Path
@@ -8,13 +8,7 @@ from eth_utils import is_checksum_address
 
 import evm.contracts_codec as codec
 
-FIXTURES_PATH = Path(__file__).parent / "fixtures" / "collector_init_code_fixtures.json"
-FACTORY_ARTIFACT_PATH = (
-    Path(__file__).parents[1]
-    / "contracts"
-    / "artifacts"
-    / "PaymentCollectorFactory.json"
-)
+FIXTURES_PATH = Path(__file__).parent / "fixtures" / "xcash_deposit_slot_fixtures.json"
 
 
 @pytest.fixture(scope="module")
@@ -26,157 +20,78 @@ def _hex_to_bytes(value: str) -> bytes:
     return bytes.fromhex(value[2:] if value.startswith("0x") else value)
 
 
-def test_payment_collector_factory_abi_keeps_failure_error_without_event():
-    abi = json.loads(FACTORY_ARTIFACT_PATH.read_text())["abi"]
-    names_by_type = {(item["type"], item.get("name")) for item in abi}
-
-    assert ("error", "DeployFailed") in names_by_type
-    assert ("event", "Deployed") not in names_by_type
-
-
-def test_invalid_sentinel_count_raises_import_error():
-    with pytest.raises(ImportError):
-        codec._check_sentinel(b"", codec.RECIPIENT_SENTINEL, 1, "NativeCollector")
-
-
-def test_native_and_erc20_template_sentinel_distribution():
-    assert codec._NATIVE_TEMPLATE.count(codec.RECIPIENT_SENTINEL) == 1
-    assert codec._NATIVE_TEMPLATE.count(codec.TOKEN_SENTINEL) == 0
-    assert codec._ERC20_TEMPLATE.count(codec.RECIPIENT_SENTINEL) == 1
-    assert codec._ERC20_TEMPLATE.count(codec.TOKEN_SENTINEL) == 1
-
-
-def test_build_native_init_code_matches_foundry_fixture(fixtures):
-    case = fixtures["case_native"]
-    assert codec.build_collector_init_code(to=case["recipient"]) == _hex_to_bytes(
-        case["init_code"]
+def test_build_xcash_deposit_slot_init_code_matches_foundry_fixture(fixtures):
+    case = fixtures["xcash_deposit_slot"]
+    got = codec.build_xcash_deposit_slot_init_code(
+        deposit_template=case["deposit_template"],
+        vault=case["vault"],
     )
+    assert got == _hex_to_bytes(case["slot_init_code"])
 
 
-def test_build_erc20_init_code_matches_foundry_fixture(fixtures):
-    case = fixtures["case_erc20"]
-    got = codec.build_collector_init_code(
-        to=case["recipient"],
-        token=case["token"],
-    )
-    assert got == _hex_to_bytes(case["init_code"])
-
-
-def test_build_edge_recipient_init_code_matches_foundry_fixture(fixtures):
-    case = fixtures["case_edge"]
-    got = codec.build_collector_init_code(
-        to=case["recipient"],
-        token=case["token"],
-    )
-    assert got == _hex_to_bytes(case["init_code"])
-
-
-def test_none_or_zero_token_uses_native_template():
-    recipient = "0x1111111111111111111111111111111111111111"
-    native = codec.build_collector_init_code(to=recipient)
-    assert (
-        codec.build_collector_init_code(
-            to=recipient,
-            token=None,
-        )
-        == native
-    )
-    assert (
-        codec.build_collector_init_code(
-            to=recipient,
-            token="0x0000000000000000000000000000000000000000",
-        )
-        == native
-    )
-
-
-def test_rejects_zero_recipient_address():
-    with pytest.raises(ValueError, match="recipient address must not be zero"):
-        codec.build_collector_init_code(
-            to="0x0000000000000000000000000000000000000000"
-        )
-
-
-def test_rejects_token_equal_to_recipient():
-    with pytest.raises(ValueError, match="token address must differ from recipient"):
-        codec.build_collector_init_code(
-            to="0x1111111111111111111111111111111111111111",
-            token="0x1111111111111111111111111111111111111111",
-        )
-
-
-def test_invalid_to_or_token_address_raises_value_error():
-    with pytest.raises(ValueError, match="hex string"):
-        codec.build_collector_init_code(to="not-an-address")
-    with pytest.raises(ValueError, match="hex string"):
-        codec.build_collector_init_code(
-            to="0x1111111111111111111111111111111111111111",
-            token="not-an-address",
-        )
-
-
-def test_patched_init_code_no_longer_contains_sentinels():
-    init_code = codec.build_collector_init_code(
-        to="0x1111111111111111111111111111111111111111",
-        token="0x2222222222222222222222222222222222222222",
-    )
-    assert codec.RECIPIENT_SENTINEL not in init_code
-    assert codec.TOKEN_SENTINEL not in init_code
-
-
-def test_init_code_hash_is_32_bytes_and_changes_with_recipient():
-    h1 = codec.collector_init_code_hash(to="0x1111111111111111111111111111111111111111")
-    h2 = codec.collector_init_code_hash(to="0x2222222222222222222222222222222222222222")
-    assert isinstance(h1, bytes)
-    assert len(h1) == 32
-    assert h1 != h2
-
-
-def test_predict_native_address_matches_foundry_fixture(fixtures):
-    case = fixtures["case_native"]
-    got = codec.predict_collector_address(
-        factory=fixtures["factory"],
+def test_predict_xcash_deposit_slot_address_matches_foundry_fixture(fixtures):
+    case = fixtures["xcash_deposit_slot"]
+    got = codec.predict_xcash_deposit_slot_address(
+        factory=case["factory"],
+        deposit_template=case["deposit_template"],
+        vault=case["vault"],
         salt=_hex_to_bytes(fixtures["salt"]),
-        to=case["recipient"],
     )
     assert got.lower() == case["predicted"].lower()
 
 
-def test_predict_erc20_address_matches_foundry_fixture(fixtures):
-    case = fixtures["case_erc20"]
-    got = codec.predict_collector_address(
-        factory=fixtures["factory"],
+def test_predict_xcash_deposit_slot_address_changes_with_vault(fixtures):
+    first = fixtures["xcash_deposit_slot"]
+    second = fixtures["xcash_deposit_slot_second_vault"]
+
+    assert first["predicted"].lower() != second["predicted"].lower()
+    assert codec.predict_xcash_deposit_slot_address(
+        factory=second["factory"],
+        deposit_template=second["deposit_template"],
+        vault=second["vault"],
         salt=_hex_to_bytes(fixtures["salt"]),
-        to=case["recipient"],
-        token=case["token"],
-    )
-    assert got.lower() == case["predicted"].lower()
+    ).lower() == second["predicted"].lower()
 
 
-def test_predict_edge_address_matches_foundry_fixture(fixtures):
-    case = fixtures["case_edge"]
-    got = codec.predict_collector_address(
-        factory=fixtures["factory"],
+def test_predict_xcash_deposit_slot_address_returns_checksum(fixtures):
+    case = fixtures["xcash_deposit_slot"]
+    addr = codec.predict_xcash_deposit_slot_address(
+        factory=case["factory"],
+        deposit_template=case["deposit_template"],
+        vault=case["vault"],
         salt=_hex_to_bytes(fixtures["salt"]),
-        to=case["recipient"],
-        token=case["token"],
-    )
-    assert got.lower() == case["predicted"].lower()
-
-
-def test_predict_returns_checksum_address():
-    addr = codec.predict_collector_address(
-        factory="0xF1A0F1A0F1A0F1A0F1A0F1A0F1A0F1A0F1A0F1A0",
-        salt=b"\x00" * 32,
-        to="0x1111111111111111111111111111111111111111",
     )
     assert is_checksum_address(addr)
 
 
-def test_predict_requires_32_byte_salt():
+def test_predict_xcash_deposit_slot_address_rejects_zero_vault(fixtures):
+    case = fixtures["xcash_deposit_slot"]
+    with pytest.raises(ValueError, match="vault address must not be zero"):
+        codec.predict_xcash_deposit_slot_address(
+            factory=case["factory"],
+            deposit_template=case["deposit_template"],
+            vault="0x0000000000000000000000000000000000000000",
+            salt=_hex_to_bytes(fixtures["salt"]),
+        )
+
+
+def test_predict_xcash_deposit_slot_address_rejects_zero_template(fixtures):
+    case = fixtures["xcash_deposit_slot"]
+    with pytest.raises(ValueError, match="deposit_template address must not be zero"):
+        codec.predict_xcash_deposit_slot_address(
+            factory=case["factory"],
+            deposit_template="0x0000000000000000000000000000000000000000",
+            vault=case["vault"],
+            salt=_hex_to_bytes(fixtures["salt"]),
+        )
+
+
+def test_predict_xcash_deposit_slot_address_requires_32_byte_salt(fixtures):
+    case = fixtures["xcash_deposit_slot"]
     with pytest.raises(ValueError, match="salt must be 32 bytes"):
-        codec.predict_collector_address(
-            factory="0xF1A0F1A0F1A0F1A0F1A0F1A0F1A0F1A0F1A0F1A0",
+        codec.predict_xcash_deposit_slot_address(
+            factory=case["factory"],
+            deposit_template=case["deposit_template"],
+            vault=case["vault"],
             salt=b"\x00" * 31,
-            to="0x1111111111111111111111111111111111111111",
         )

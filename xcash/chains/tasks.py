@@ -6,7 +6,7 @@ from chains.adapters import TxCheckResult
 from chains.adapters import TxCheckStatus
 from chains.models import Chain
 from chains.models import ConfirmMode
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import TransferStatus
 from common.decorators import singleton_task
 from common.time import ago
@@ -25,13 +25,13 @@ from common.time import ago
 )
 @singleton_task(timeout=5, use_params=True)
 def process_transfer(pk):
-    transfer = OnchainTransfer.objects.get(pk=pk)
+    transfer = Transfer.objects.get(pk=pk)
     transfer.process()
 
 
 @shared_task
 def fallback_process_transfer():
-    for transfer in OnchainTransfer.objects.filter(
+    for transfer in Transfer.objects.filter(
         processed_at__isnull=True,
         created_at__lte=ago(seconds=30),
     ):
@@ -47,9 +47,9 @@ def fallback_process_transfer():
 @singleton_task(timeout=5, use_params=True)
 def confirm_transfer(self, pk):
     try:
-        transfer = OnchainTransfer.objects.get(pk=pk)
-    except OnchainTransfer.DoesNotExist:
-        # OnchainTransfer 已被 drop() 删除，无需再处理
+        transfer = Transfer.objects.get(pk=pk)
+    except Transfer.DoesNotExist:
+        # Transfer 已被 drop() 删除，无需再处理
         return
     if transfer.status == TransferStatus.CONFIRMED:
         return
@@ -83,13 +83,13 @@ def confirm_transfer(self, pk):
         transfer.drop()
     elif result == TxCheckStatus.FAILED:
         raise RuntimeError(
-            "失败交易不应存在 OnchainTransfer 记录；请检查扫描器与内部任务协调器语义"
+            "失败交易不应存在 Transfer 记录；请检查扫描器与内部任务协调器语义"
         )
 
 
 def _refresh_transfer_chain_position_from_receipt(
     *,
-    transfer: OnchainTransfer,
+    transfer: Transfer,
     result: TxCheckResult | None,
 ) -> bool:
     """receipt 的块位置变化时刷新转账，并重新等待确认窗口。
@@ -108,7 +108,7 @@ def _refresh_transfer_chain_position_from_receipt(
     if not updates:
         return False
 
-    OnchainTransfer.objects.filter(pk=transfer.pk).update(**updates)
+    Transfer.objects.filter(pk=transfer.pk).update(**updates)
     return True
 
 
@@ -118,7 +118,7 @@ def block_number_updated(chain_pk):
     chain = Chain.objects.only("confirm_block_count", "latest_block_number").get(
         pk=chain_pk
     )
-    base_qs = OnchainTransfer.objects.filter(
+    base_qs = Transfer.objects.filter(
         chain=chain,
         status=TransferStatus.CONFIRMING,
         processed_at__isnull=False,

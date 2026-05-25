@@ -13,10 +13,9 @@ from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.permission_check import check_saas_permission
-from common.throttles import DepositAddressThrottle
-from core.runtime_settings import get_open_native_scanner
+from common.throttles import DepositSlotThrottle
 from currencies.service import CryptoService
-from deposits.models import DepositAddress
+from evm.models import DepositSlot
 from projects.models import Project
 from users.models import Customer
 
@@ -33,7 +32,7 @@ class DepositViewSet(viewsets.GenericViewSet):
         methods=["get"],
         detail=False,
         permission_classes=[AllowAny],
-        throttle_classes=[DepositAddressThrottle],
+        throttle_classes=[DepositSlotThrottle],
     )
     def address(self, request: Request):
         """
@@ -46,10 +45,6 @@ class DepositViewSet(viewsets.GenericViewSet):
         project = Project.retrieve(appid=appid)
         if project is None:
             raise APIError(ErrorCode.INVALID_APPID)
-
-        # 充币依赖原生币扫描（Gas 分发等交易必须通过扫描才能感知），未开启时拒绝服务。
-        if not get_open_native_scanner():
-            raise APIError(ErrorCode.NATIVE_SCANNER_NOT_ENABLED)
 
         # v2 SaaS 模式：校验该 tier 是否开放 deposit 功能
         check_saas_permission(appid=appid, action="deposit")
@@ -94,5 +89,5 @@ class DepositViewSet(viewsets.GenericViewSet):
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
 
-        deposit_address = DepositAddress.get_address(chain, customer)
+        deposit_address = DepositSlot.get_address(chain, customer)
         return Response({"deposit_address": deposit_address})

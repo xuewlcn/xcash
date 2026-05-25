@@ -3,19 +3,34 @@ from unfold.decorators import display
 
 from common.admin import ReadOnlyModelAdmin
 from common.admin_scan_cursor import SyncScanCursorToLatestActionMixin
-from evm.models import ContractDeployCollection
-from evm.models import EvmBroadcastTask
+from evm.models import DepositSlot
 from evm.models import EvmScanCursor
+from evm.models import EvmTxTask
 
 
-@admin.register(EvmBroadcastTask)
-class EvmBroadcastTaskAdmin(ReadOnlyModelAdmin):
+@admin.register(DepositSlot)
+class DepositSlotAdmin(ReadOnlyModelAdmin):
+    list_display = ("customer", "chain", "address", "vault_address", "created_at")
+    list_filter = ("chain",)
+    search_fields = ("customer__uid", "address", "vault_address")
+    readonly_fields = (
+        "customer",
+        "chain",
+        "address",
+        "vault_address",
+        "salt",
+        "created_at",
+    )
+
+
+@admin.register(EvmTxTask)
+class EvmTxTaskAdmin(ReadOnlyModelAdmin):
     ordering = ("-created_at",)
     exclude = ("signed_payload",)
     list_display = (
         "display_address",
         "display_chain",
-        "action_type",
+        "tx_type",
         "tx_kind",
         "to",
         "value",
@@ -30,7 +45,7 @@ class EvmBroadcastTaskAdmin(ReadOnlyModelAdmin):
     search_fields = ("base_task__tx_hash", "address__address", "to")
 
     @admin.display(ordering="last_attempt_at", description="执行时间")
-    def formatted_last_attempt_at(self, obj: EvmBroadcastTask):
+    def formatted_last_attempt_at(self, obj: EvmTxTask):
         if obj.last_attempt_at:
             return obj.last_attempt_at.strftime("%-m月%-d日 %H:%M:%S")
         return None
@@ -43,61 +58,27 @@ class EvmBroadcastTaskAdmin(ReadOnlyModelAdmin):
             "确认中": "info",
             "成功": "success",
             "失败": "danger",
-            "已终结": "info",
+            "已完结": "info",
         },
     )
-    def display_status(self, instance: EvmBroadcastTask):
+    def display_status(self, instance: EvmTxTask):
         return instance.status
 
-    @admin.display(description="类型", ordering="base_task__action_type")
-    def action_type(self, obj: EvmBroadcastTask):  # pragma: no cover
-        return obj.base_task.get_action_type_display() if obj.base_task_id else "—"
+    @admin.display(description="类型", ordering="base_task__tx_type")
+    def tx_type(self, obj: EvmTxTask):  # pragma: no cover
+        return obj.base_task.get_tx_type_display() if obj.base_task_id else "—"
 
     @admin.display(ordering="address__address", description="地址")
-    def display_address(self, obj: EvmBroadcastTask):  # pragma: no cover
+    def display_address(self, obj: EvmTxTask):  # pragma: no cover
         return obj.address
 
     @admin.display(ordering="chain__name", description="网络")
-    def display_chain(self, obj: EvmBroadcastTask):  # pragma: no cover
+    def display_chain(self, obj: EvmTxTask):  # pragma: no cover
         return obj.chain
 
     @admin.display(ordering="nonce", description="Nonce")
-    def display_nonce(self, obj: EvmBroadcastTask):  # pragma: no cover
+    def display_nonce(self, obj: EvmTxTask):  # pragma: no cover
         return obj.nonce
-
-
-@admin.register(ContractDeployCollection)
-class ContractDeployCollectionAdmin(ReadOnlyModelAdmin):
-    ordering = ("-created_at",)
-    list_display = (
-        "collector_address",
-        "_pay_slot_invoice",
-        "chain",
-        "crypto",
-        "recipient_address",
-        "status",
-        "created_at",
-        "updated_at",
-    )
-    list_filter = ("status", "chain", "crypto")
-    search_fields = (
-        "collector_address",
-        "recipient_address",
-        "pay_slot__invoice__sys_no",
-        "broadcast_task__tx_hash",
-    )
-    list_select_related = (
-        "chain",
-        "crypto",
-        "pay_slot__invoice",
-        "broadcast_task",
-    )
-
-    @admin.display(description="账单单号", ordering="pay_slot__invoice__sys_no")
-    def _pay_slot_invoice(self, obj: ContractDeployCollection):
-        if obj.pay_slot_id:
-            return obj.pay_slot.invoice.sys_no
-        return "-"
 
 
 @admin.register(EvmScanCursor)

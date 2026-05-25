@@ -18,7 +18,7 @@ DECLARE
 BEGIN
     SELECT MAX(nonce)
       INTO max_nonce
-      FROM evm_evmbroadcasttask
+      FROM evm_evmtxtask
      WHERE address_id = NEW.address_id
        AND chain_id   = NEW.chain_id;
 
@@ -44,10 +44,10 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_trigger
-        WHERE tgname = 'trg_evm_broadcast_task_nonce_sequential'
+        WHERE tgname = 'trg_evm_tx_task_nonce_sequential'
     ) THEN
-        CREATE TRIGGER trg_evm_broadcast_task_nonce_sequential
-            BEFORE INSERT ON evm_evmbroadcasttask
+        CREATE TRIGGER trg_evm_tx_task_nonce_sequential
+            BEFORE INSERT ON evm_evmtxtask
             FOR EACH ROW
             EXECUTE FUNCTION evm_check_nonce_sequential();
     END IF;

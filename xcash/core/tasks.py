@@ -18,7 +18,6 @@ def scan_operational_risks() -> None:
     if not any(
         (
             summary["stalled_withdrawal_count"],
-            summary["stalled_deposit_collection_count"],
             summary["stalled_webhook_event_count"],
         )
     ):
@@ -29,13 +28,9 @@ def scan_operational_risks() -> None:
         stalled_reviewing_withdrawals=summary["reviewing_withdrawal_count"],
         stalled_pending_withdrawals=summary["pending_withdrawal_count"],
         stalled_confirming_withdrawals=summary["confirming_withdrawal_count"],
-        stalled_deposit_collections=summary["stalled_deposit_collection_count"],
         stalled_webhook_events=summary["stalled_webhook_event_count"],
         sample_withdrawal_ids=[
             withdrawal.pk for withdrawal in summary["recent_stalled_withdrawals"]
-        ],
-        sample_deposit_ids=[
-            deposit.pk for deposit in summary["recent_stalled_deposit_collections"]
         ],
         sample_event_ids=[
             event.pk for event in summary["recent_stalled_webhook_events"]

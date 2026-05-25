@@ -17,11 +17,9 @@ from common.consts import MIN_INVOICE_DURATION
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.serializers import StrippedDecimalField
-from core.runtime_settings import get_open_native_scanner
 from currencies.service import CryptoService
 from currencies.service import FiatService
-from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
+from evm.deployments import get_xcash_deposit_deployment
 from projects.service import ProjectService
 
 from .models import Invoice
@@ -185,15 +183,13 @@ class InvoiceCreateSerializer(Serializer):
 
         if attrs.get("billing_mode") == InvoiceBillingMode.CONTRACT:
             self._validate_contract_billing(attrs)
+        elif attrs.get("billing_mode") == InvoiceBillingMode.DIFFER:
+            self._validate_differ_billing(attrs)
 
         return attrs
 
     def _validate_contract_billing(self, attrs):
-        project = self._get_project()
         methods = attrs.get("methods") or {}
-
-        if not get_open_native_scanner():
-            raise APIError(ErrorCode.CONTRACT_BILLING_REQUIRES_NATIVE_SCANNER)
 
         chain_codes = {
             chain_code
@@ -214,8 +210,12 @@ class InvoiceCreateSerializer(Serializer):
 
         evm_chains = list(chains_by_code.values())
         for chain in evm_chains:
-            if not chain.create2_factory_address:
-                raise APIError(ErrorCode.CONTRACT_BILLING_FACTORY_NOT_CONFIGURED)
+            try:
+                get_xcash_deposit_deployment(chain.code)
+            except RuntimeError as exc:
+                raise APIError(
+                    ErrorCode.CONTRACT_BILLING_FACTORY_NOT_CONFIGURED
+                ) from exc
 
         for crypto_symbol, chain_codes in methods.items():
             crypto = CryptoService.get_by_symbol(crypto_symbol)
@@ -224,14 +224,28 @@ class InvoiceCreateSerializer(Serializer):
                 if not CryptoService.is_supported_on_chain(crypto, chain=chain):
                     raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
 
-        chain_types = {chain.type for chain in evm_chains}
-        for chain_type in chain_types:
-            if not RecipientAddress.objects.filter(
-                project=project,
-                chain_type=chain_type,
-                usage=RecipientAddressUsage.INVOICE,
-            ).exists():
-                raise APIError(ErrorCode.NO_RECIPIENT_ADDRESS)
+    def _validate_differ_billing(self, attrs):
+        # 差额账单依赖商户配置的 RecipientAddress；新架构下 EVM 一律走 DepositSlot，
+        # 差额模式只对 Tron 这类没有合约收款方案的链有意义。
+        methods = attrs.get("methods") or {}
+
+        chain_codes = {
+            chain_code
+            for chain_codes in methods.values()
+            for chain_code in chain_codes
+        }
+        chains = list(Chain.objects.filter(code__in=chain_codes, active=True))
+        if not chains:
+            raise APIError(ErrorCode.DIFFER_BILLING_TRON_ONLY)
+
+        chains_by_code = {chain.code: chain for chain in chains}
+        if any(
+            chain_code not in chains_by_code
+            or chains_by_code[chain_code].type != ChainType.TRON
+            for chain_code in chain_codes
+        ):
+            raise APIError(ErrorCode.DIFFER_BILLING_TRON_ONLY)
+
 
 
 class InvoicePublicSerializer(serializers.ModelSerializer):

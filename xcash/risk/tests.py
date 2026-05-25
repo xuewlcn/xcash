@@ -22,18 +22,15 @@ from risk.models import RiskSource
 from risk.service import RiskMarkingService
 
 from chains.models import Address
-from chains.models import AddressUsage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import TransferType
+from chains.models import Transfer
 from chains.models import Wallet
 from core.models import PlatformSettings
 from currencies.models import Crypto
 from currencies.models import Fiat
 from deposits.models import Deposit
-from deposits.models import DepositAddress
-from deposits.service import DepositService
 from invoices.models import Invoice
 from invoices.models import InvoicePaySlot
 from invoices.models import InvoiceStatus
@@ -64,7 +61,7 @@ class RiskTestMixin:
         self.wallet = Wallet.objects.create()
         self.project = Project.objects.create(name="Risk Project", wallet=self.wallet)
         self.customer = Customer.objects.create(project=self.project, uid="u-1")
-        self.transfer = OnchainTransfer.objects.create(
+        self.transfer = Transfer.objects.create(
             chain=self.chain,
             block=100,
             block_hash="0x" + "ab" * 32,
@@ -74,7 +71,7 @@ class RiskTestMixin:
             to_address="0x2222222222222222222222222222222222222222",
             value=10**18,
             amount=Decimal("1"),
-            type=OnchainActionType.Invoice,
+            type=TransferType.Invoice,
             timestamp=1_700_000_000,
             datetime=timezone.now(),
         )
@@ -105,7 +102,7 @@ class RiskTestMixin:
         )
 
     def make_deposit(self, *, worth: Decimal = Decimal("50")) -> Deposit:
-        self.transfer.type = OnchainActionType.Deposit
+        self.transfer.type = TransferType.Deposit
         self.transfer.save(update_fields=["type"])
         return Deposit.objects.create(
             customer=self.customer,
@@ -738,30 +735,6 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
         invoice.refresh_from_db()
         delay.assert_called_once_with(invoice.pk)
 
-    @patch("risk.tasks.mark_deposit_risk.delay")
-    def test_deposit_creation_enqueues_risk_after_transaction_commit(self, delay):
-        address = Address.objects.create(
-            wallet=self.wallet,
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
-            bip44_account=1,
-            address_index=0,
-            address=self.transfer.to_address,
-        )
-        DepositAddress.objects.create(
-            customer=self.customer,
-            chain_type=ChainType.EVM,
-            address=address,
-        )
-        self.transfer.type = ""
-        self.transfer.save(update_fields=["type"])
-
-        with self.captureOnCommitCallbacks(execute=True):
-            created = DepositService.try_create_deposit(self.transfer)
-
-        self.assertTrue(created)
-        deposit = Deposit.objects.get(transfer=self.transfer)
-        delay.assert_called_once_with(deposit.pk)
 
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_success_updates_assessment_snapshot_and_cache(self, score):

@@ -32,7 +32,7 @@ logger = structlog.get_logger()
 
 
 class ParsedErc20Log(TypedDict):
-    """描述一条已通过过滤的 ERC20 OnchainTransfer 日志。"""
+    """描述一条已通过过滤的 ERC20 Transfer 日志。"""
 
     block_number: int
     block_hash: str | None
@@ -57,7 +57,7 @@ class EvmErc20ScanResult:
 
 
 class EvmErc20TransferScanner:
-    """按链聚合扫描受支持 ERC20 代币的 OnchainTransfer 日志。"""
+    """按链聚合扫描受支持 ERC20 代币的 Transfer 日志。"""
 
     cursor_type = EvmScanCursorType.ERC20_TRANSFER
 
@@ -308,7 +308,7 @@ class EvmErc20TransferScanner:
         rpc_client: EvmScannerRpcClient,
         tx_hash: str,
     ) -> tuple[bool, bool]:
-        from chains.models import BroadcastTask  # noqa: PLC0415
+        from chains.models import TxTask  # noqa: PLC0415
         from evm.internal_tx.exceptions import (
             UnknownInternalBroadcastError,  # noqa: PLC0415
         )
@@ -316,7 +316,7 @@ class EvmErc20TransferScanner:
             process_internal_transaction,  # noqa: PLC0415
         )
 
-        if BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash) is None:
+        if TxTask.resolve_by_hash(chain=chain, tx_hash=tx_hash) is None:
             return False, False
 
         tx = rpc_client.get_transaction(tx_hash=tx_hash)
@@ -331,7 +331,7 @@ class EvmErc20TransferScanner:
             result = process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
         except UnknownInternalBroadcastError as exc:
             logger.warning(
-                "EVM ERC20 扫描命中内部交易哈希但处理器找不到 BroadcastTask",
+                "EVM ERC20 扫描命中内部交易哈希但处理器找不到 TxTask",
                 chain=chain.code,
                 tx_hash=exc.tx_hash,
                 from_address=exc.from_address,
@@ -385,7 +385,7 @@ class EvmErc20TransferScanner:
             "block_hash": EvmErc20TransferScanner._normalize_hash(
                 log.get("blockHash")
             ),
-            # 统一补齐 0x 前缀，保持与现有 EVM OnchainTransfer.hash 存储语义一致。
+            # 统一补齐 0x 前缀，保持与现有 EVM Transfer.hash 存储语义一致。
             "tx_hash": f"0x{EvmErc20TransferScanner._to_hex(log['transactionHash']).lower()}",
             "event_id": f"erc20:{EvmErc20TransferScanner._parse_int(log.get('logIndex', 0))}",
             "from_address": from_address,

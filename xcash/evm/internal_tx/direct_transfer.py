@@ -17,8 +17,8 @@ from evm.internal_tx._log_utils import normalize_log_index
 from evm.internal_tx.facts import MatchedTransferFact
 
 if TYPE_CHECKING:
-    from chains.models import BroadcastTask
     from chains.models import Chain
+    from chains.models import TxTask
     from currencies.models import Crypto
 
 
@@ -104,7 +104,7 @@ def _crypto_for_token(*, chain: Chain, token_address: str) -> Crypto | None:
 def decode_direct_transfer_fields(
     *,
     chain: Chain,
-    broadcast_task: BroadcastTask,
+    tx_task: TxTask,
 ) -> DirectTransferFields | None:  # noqa: PLR0911
     """从 EVM 执行任务本身解码直接 native/ERC20 transfer 的资产字段。
 
@@ -113,7 +113,7 @@ def decode_direct_transfer_fields(
     独立的业务 matcher。
     """
     try:
-        evm_task = broadcast_task.evm_task
+        evm_task = tx_task.evm_task
     except AttributeError:
         return None
 
@@ -156,15 +156,15 @@ def decode_direct_transfer_fields(
 def match_direct_transfer_fact(
     *,
     chain: Chain,
-    broadcast_task: BroadcastTask,
+    tx_task: TxTask,
     receipt: dict,
     tx: dict | None = None,
 ) -> MatchedTransferFact | None:
-    fields = decode_direct_transfer_fields(chain=chain, broadcast_task=broadcast_task)
+    fields = decode_direct_transfer_fields(chain=chain, tx_task=tx_task)
     if fields is None:
         return None
 
-    from_address = Web3.to_checksum_address(broadcast_task.address.address)
+    from_address = Web3.to_checksum_address(tx_task.address.address)
     if fields.crypto == chain.native_coin:
         if not _native_tx_matches_expected(
             tx=tx,

@@ -53,8 +53,8 @@ class TxCheckResult:
 class AdapterInterface(ABC):
     """链适配器接口：负责地址验证、余额查询、交易结果查询。
 
-    交易签名与广播逻辑已从 Adapter 层移除，统一由各链专属的 XxxBroadcastTask 模型负责：
-    - EVM：evm.EvmBroadcastTask.schedule(intent)
+    交易签名与广播逻辑已从 Adapter 层移除，统一由各链专属的 XxxTxTask 模型负责：
+    - EVM：evm.EvmTxTask.schedule(intent)
     """
 
     @abstractmethod

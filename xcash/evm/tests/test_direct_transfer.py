@@ -4,12 +4,12 @@ import eth_abi
 import pytest
 from web3 import Web3
 
-from chains.models import OnchainActionType
+from chains.models import TxTaskType
 from currencies.models import ChainToken
 from evm.choices import TxKind
 from evm.internal_tx.direct_transfer import decode_direct_transfer_fields
-from evm.models import EvmBroadcastTask
-from evm.tests._fixtures import make_broadcast_task
+from evm.models import EvmTxTask
+from evm.tests._fixtures import make_tx_task
 from evm.tests._fixtures import make_crypto
 from evm.tests._fixtures import make_erc20_token
 from evm.tests._fixtures import make_evm_chain
@@ -32,13 +32,13 @@ def _make_evm_task(
     nonce: int = 0,
     tx_kind: str = TxKind.CONTRACT_CALL,
 ):
-    base_task = make_broadcast_task(
+    base_task = make_tx_task(
         chain=chain,
         address=address,
-        action_type=OnchainActionType.Withdrawal,
+        tx_type=TxTaskType.Withdrawal,
         tx_hash_suffix=f"{nonce + 1:02x}",
     )
-    return EvmBroadcastTask.objects.create(
+    return EvmTxTask.objects.create(
         base_task=base_task,
         address=address,
         chain=chain,
@@ -78,7 +78,7 @@ def test_decode_standard_erc20_transfer_fields_uses_case_insensitive_token_looku
         data=_transfer_calldata(to=recipient, value=1_234_567),
     )
 
-    fields = decode_direct_transfer_fields(chain=chain, broadcast_task=evm_task.base_task)
+    fields = decode_direct_transfer_fields(chain=chain, tx_task=evm_task.base_task)
 
     assert fields is not None
     assert fields.crypto == crypto
@@ -106,7 +106,7 @@ def test_decode_returns_none_for_unknown_token():
     )
 
     assert decode_direct_transfer_fields(
-        chain=chain, broadcast_task=evm_task.base_task
+        chain=chain, tx_task=evm_task.base_task
     ) is None
 
 
@@ -132,7 +132,7 @@ def test_decode_returns_none_for_transfer_from_selector():
     )
 
     assert decode_direct_transfer_fields(
-        chain=chain, broadcast_task=evm_task.base_task
+        chain=chain, tx_task=evm_task.base_task
     ) is None
 
 
@@ -164,4 +164,4 @@ def test_decode_raises_for_malformed_standard_transfer_calldata(
     )
 
     with pytest.raises(ValueError, match="invalid ERC20 transfer calldata"):
-        decode_direct_transfer_fields(chain=chain, broadcast_task=evm_task.base_task)
+        decode_direct_transfer_fields(chain=chain, tx_task=evm_task.base_task)

@@ -100,9 +100,6 @@ class Crypto(models.Model):
     def to_fiat(self, fiat: Fiat, amount: Decimal) -> Decimal:
         return round_decimal(amount * self.price(fiat.code), -4)
 
-    def gather_value(self, project: "Project"):  # noqa
-        return project.gather_worth / self.price("USD") * 10**self.decimals
-
     def support_this_chain(self, chain: Chain) -> bool:
         # 通过 M2M chains 字段统一判断，原生币和合约币均在 ChainToken 中有记录
         return self.chains.filter(pk=chain.pk).exists()

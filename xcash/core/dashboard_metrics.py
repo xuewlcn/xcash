@@ -246,9 +246,6 @@ def build_dashboard_metrics() -> dict:
                 withdrawal_metrics["confirming_count"] or 0
             ),
             "stalled_withdrawal_count": operational_risk["stalled_withdrawal_count"],
-            "stalled_deposit_collection_count": operational_risk[
-                "stalled_deposit_collection_count"
-            ],
             "stalled_webhook_event_count": operational_risk[
                 "stalled_webhook_event_count"
             ],
@@ -277,9 +274,6 @@ def build_dashboard_metrics() -> dict:
         "recent_failed_attempts": recent_failed_attempts,
         "recent_stalled_invoices": recent_stalled_invoices,
         "recent_stalled_withdrawals": operational_risk["recent_stalled_withdrawals"],
-        "recent_stalled_deposit_collections": operational_risk[
-            "recent_stalled_deposit_collections"
-        ],
         "recent_stalled_webhook_events": operational_risk[
             "recent_stalled_webhook_events"
         ],

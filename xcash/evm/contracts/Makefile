@@ -1,37 +1,31 @@
-SOLC ?= solc
 FORGE ?= forge
-SOLC_BIN := $(shell command -v $(SOLC) 2>/dev/null || printf "%s" "$(SOLC)")
+OPENZEPPELIN_CONTRACTS_VERSION := v5.6.1
 
-.PHONY: all build build-yul build-sol test clean fixtures
+.PHONY: all deps build test clean fixtures
 
 all: build fixtures
 
-build: build-yul build-sol
+deps:
+	@test -f lib/openzeppelin-contracts/package.json || \
+		$(FORGE) install OpenZeppelin/openzeppelin-contracts@$(OPENZEPPELIN_CONTRACTS_VERSION) --no-git --shallow
+	@python3 -c "import json; version=json.load(open('lib/openzeppelin-contracts/package.json'))['version']; assert version == '$(OPENZEPPELIN_CONTRACTS_VERSION)'[1:], f'openzeppelin-contracts version mismatch: {version}'"
 
-build-yul:
-	@$(SOLC) --version | grep -q "Version: 0.8.35" || \
-		(echo "build-yul requires solc 0.8.35; set SOLC=/path/to/solc-0.8.35" >&2; exit 1)
+build: deps
+	$(FORGE) build --offline
 	@mkdir -p artifacts
-	$(SOLC) --strict-assembly --bin --optimize --optimize-runs=200 src/NativeCollector.yul \
-		| awk '/Binary representation:/{flag=1;next} flag{printf "0x%s", $$0;exit}' > artifacts/NativeCollector.bin
-	$(SOLC) --strict-assembly --bin --optimize --optimize-runs=200 src/ERC20Collector.yul \
-		| awk '/Binary representation:/{flag=1;next} flag{printf "0x%s", $$0;exit}' > artifacts/ERC20Collector.bin
-	@test -s artifacts/NativeCollector.bin
-	@test -s artifacts/ERC20Collector.bin
+	@cp out/XcashDepositTemplate.sol/XcashDepositTemplate.json artifacts/XcashDepositTemplate.json
+	@python3 -c "import json; d=json.load(open('artifacts/XcashDepositTemplate.json')); print(d['bytecode']['object'])" > artifacts/XcashDepositTemplate.bin
+	@python3 -c "import json; d=json.load(open('artifacts/XcashDepositTemplate.json')); print(json.dumps(d['abi'], indent=2, ensure_ascii=False))" > artifacts/XcashDepositTemplate.abi.json
+	@cp out/XcashDepositFactory.sol/XcashDepositFactory.json artifacts/XcashDepositFactory.json
+	@python3 -c "import json; d=json.load(open('artifacts/XcashDepositFactory.json')); print(d['bytecode']['object'])" > artifacts/XcashDepositFactory.bin
+	@python3 -c "import json; d=json.load(open('artifacts/XcashDepositFactory.json')); print(json.dumps(d['abi'], indent=2, ensure_ascii=False))" > artifacts/XcashDepositFactory.abi.json
 
-build-sol:
-	$(FORGE) build --skip yul --use $(SOLC_BIN) --offline
-	@mkdir -p artifacts
-	@cp out/PaymentCollectorFactory.sol/PaymentCollectorFactory.json artifacts/PaymentCollectorFactory.json
-	@python3 -c "import json; d=json.load(open('artifacts/PaymentCollectorFactory.json')); print(d['bytecode']['object'][2:])" > artifacts/PaymentCollectorFactory.bin
-	@python3 -c "import json; d=json.load(open('artifacts/PaymentCollectorFactory.json')); print(json.dumps(d['abi'], indent=2, ensure_ascii=False))" > artifacts/PaymentCollectorFactory.abi.json
+test: deps
+	$(FORGE) test --offline -vvv
 
-test:
-	$(FORGE) test --skip yul --use $(SOLC_BIN) --offline -vvv
-
-fixtures: build-yul
+fixtures: deps
 	@mkdir -p ../tests/fixtures
-	$(FORGE) script scripts/DumpFixtures.s.sol --tc DumpFixtures --use $(SOLC_BIN) --offline
+	$(FORGE) script scripts/DumpXcashDepositFixtures.s.sol --tc DumpXcashDepositFixtures --offline
 
 clean:
-	rm -rf out/ cache/ artifacts/*.bin artifacts/*.json
+	rm -rf out/ cache/

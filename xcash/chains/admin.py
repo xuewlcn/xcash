@@ -4,10 +4,10 @@ from django.utils.translation import gettext_lazy as _
 from unfold.decorators import display
 
 from chains.models import Address
-from chains.models import BroadcastTask
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
+from chains.models import TxTask
 from chains.models import Wallet
 from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
@@ -65,9 +65,6 @@ class ChainAdmin(ModelAdmin):
                 "fields": (
                     "rpc",
                     "chain_id",
-                    "base_transfer_gas",
-                    "erc20_transfer_gas",
-                    "create2_factory_address",
                     "evm_log_max_block_range",
                 )
             },
@@ -76,11 +73,7 @@ class ChainAdmin(ModelAdmin):
     tron_fieldsets = (
         (
             "Tron",
-            {
-                "fields": (
-                    "tron_api_key",
-                )
-            },
+            {"fields": ("tron_api_key",)},
         ),
     )
 
@@ -121,7 +114,7 @@ class AddressAdmin(ReadOnlyModelAdmin):
     )
 
 
-@admin.register(OnchainTransfer)
+@admin.register(Transfer)
 class TransferAdmin(ReadOnlyModelAdmin):
     search_fields = ("hash",)
     readonly_fields = ("display_crypto", "display_chain")
@@ -152,11 +145,11 @@ class TransferAdmin(ReadOnlyModelAdmin):
     )
 
     @display(description=_("加密货币"))  # noqa
-    def display_crypto(self, obj: OnchainTransfer):
+    def display_crypto(self, obj: Transfer):
         return obj.crypto.symbol
 
     @display(description=_("链"))  # noqa
-    def display_chain(self, obj: OnchainTransfer):
+    def display_chain(self, obj: Transfer):
         return obj.chain.name
 
     @display(
@@ -167,41 +160,40 @@ class TransferAdmin(ReadOnlyModelAdmin):
             "已失效": "",
         },
     )
-    def display_status(self, instance: OnchainTransfer):
+    def display_status(self, instance: Transfer):
         return instance.get_status_display()
 
 
-@admin.register(BroadcastTask)
-class BroadcastTaskAdmin(ReadOnlyModelAdmin):
-    # BroadcastTask 是跨链统一锚点；后台只做观察与排障，禁止人工修改，避免破坏 stage/result/failure_reason 三元一致约束。
+@admin.register(TxTask)
+class TxTaskAdmin(ReadOnlyModelAdmin):
+    # TxTask 是跨链统一锚点；后台只做观察与排障，禁止人工修改，避免破坏 stage/result 二元一致约束。
     ordering = ("-created_at",)
     list_display = (
         "display_address",
         "display_chain",
-        "display_action_type",
+        "display_tx_type",
         "display_tx_hash",
         "display_status",
-        "display_failure_reason",
         "created_at",
     )
-    list_filter = ("stage", "result", "action_type", "chain")
+    list_filter = ("stage", "result", "tx_type", "chain")
     list_select_related = ("address", "chain")
     search_fields = ("tx_hash", "address__address")
 
     @admin.display(ordering="address__address", description=_("地址"))
-    def display_address(self, obj: BroadcastTask):
+    def display_address(self, obj: TxTask):
         return obj.address
 
     @admin.display(ordering="chain__name", description=_("网络"))
-    def display_chain(self, obj: BroadcastTask):
+    def display_chain(self, obj: TxTask):
         return obj.chain
 
-    @admin.display(ordering="action_type", description=_("类型"))
-    def display_action_type(self, obj: BroadcastTask):
-        return obj.get_action_type_display()
+    @admin.display(ordering="tx_type", description=_("类型"))
+    def display_tx_type(self, obj: TxTask):
+        return obj.get_tx_type_display()
 
     @admin.display(ordering="tx_hash", description=_("交易哈希"))
-    def display_tx_hash(self, obj: BroadcastTask):
+    def display_tx_hash(self, obj: TxTask):
         return obj.tx_hash or "—"
 
     @display(
@@ -212,15 +204,10 @@ class BroadcastTaskAdmin(ReadOnlyModelAdmin):
             "确认中": "info",
             "成功": "success",
             "失败": "danger",
-            "已终结": "info",
+            "已完结": "info",
         },
     )
-    def display_status(self, instance: BroadcastTask):
-        # BroadcastTask.display_status 已将 stage/result 融合为面向运营的单字段语义，
+    def display_status(self, instance: TxTask):
+        # TxTask.display_status 已将 stage/result 融合为面向运营的单字段语义，
         # 这里沿用同一来源避免后台与业务代码的展示口径漂移。
         return instance.display_status
-
-    @admin.display(ordering="failure_reason", description=_("失败原因"))
-    def display_failure_reason(self, obj: BroadcastTask):
-        # 仅失败终态任务会有失败原因；UNKNOWN / SUCCESS 情况下返回占位符避免列视觉空白。
-        return obj.get_failure_reason_display() if obj.failure_reason else "—"

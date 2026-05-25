@@ -9,9 +9,10 @@ from django.utils import timezone
 
 from chains.adapters import AdapterFactory
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
 from chains.models import ChainType
-from chains.models import OnchainActionType
+from chains.models import TransferType
+from chains.models import TxTask
+from chains.models import TxTaskType
 from chains.service import AddressService
 from chains.transfer_matching import raw_amount
 from chains.transfer_matching import transfer_matches
@@ -29,7 +30,7 @@ from withdrawals.models import WithdrawalStatus
 logger = structlog.get_logger()
 
 if TYPE_CHECKING:
-    from chains.models import OnchainTransfer
+    from chains.models import Transfer
 
 
 class WithdrawalService:
@@ -51,9 +52,7 @@ class WithdrawalService:
             "out_no": withdrawal.out_no,
             "chain": withdrawal.chain.code if withdrawal.chain else "",
             "hash": (
-                withdrawal.broadcast_task.tx_hash
-                if withdrawal.broadcast_task_id
-                else withdrawal.hash
+                withdrawal.tx_task.tx_hash if withdrawal.tx_task_id else withdrawal.hash
             ),
             "amount": format_decimal_stripped(withdrawal.amount),
             "crypto": withdrawal.crypto.symbol,
@@ -102,10 +101,10 @@ class WithdrawalService:
             project=project,
             chain=chain,
             status__in=[WithdrawalStatus.PENDING, WithdrawalStatus.CONFIRMING],
-            broadcast_task__evm_task__isnull=False,
+            tx_task__evm_task__isnull=False,
         ).values_list(
-            "broadcast_task__evm_task__gas",
-            "broadcast_task__evm_task__gas_price",
+            "tx_task__evm_task__gas",
+            "tx_task__evm_task__gas_price",
         )
         for gas, gas_price in pending_tasks:
             if gas and gas_price:
@@ -293,7 +292,7 @@ class WithdrawalService:
         """EVM 提币写入统一链上任务队列，广播由定时任务异步完成。"""
         from evm.intents import build_erc20_transfer_intent  # noqa: PLC0415
         from evm.intents import build_native_transfer_intent  # noqa: PLC0415
-        from evm.models import EvmBroadcastTask  # noqa: PLC0415
+        from evm.models import EvmTxTask  # noqa: PLC0415
 
         if crypto == chain.native_coin:
             intent = build_native_transfer_intent(
@@ -301,7 +300,7 @@ class WithdrawalService:
                 chain=chain,
                 to=to,
                 value=value_raw,
-                action_type=OnchainActionType.Withdrawal,
+                tx_type=TxTaskType.Withdrawal,
                 verify_fn=verify_fn,
             )
         else:
@@ -311,16 +310,16 @@ class WithdrawalService:
                 crypto=crypto,
                 to=to,
                 value_raw=value_raw,
-                action_type=OnchainActionType.Withdrawal,
+                tx_type=TxTaskType.Withdrawal,
                 verify_fn=verify_fn,
             )
-        task = EvmBroadcastTask.schedule(intent)
+        task = EvmTxTask.schedule(intent)
         return task.base_task
 
     @classmethod
     def submit_withdrawal(cls, *, withdrawal: Withdrawal) -> Withdrawal:
         """把审核通过的提币请求真正送入链上发送队列。"""
-        # 提币含可空外键（如 chain/broadcast_task），这里避免 select_related + FOR UPDATE 触发 PostgreSQL 限制。
+        # 提币含可空外键（如 chain/tx_task），这里避免 select_related + FOR UPDATE 触发 PostgreSQL 限制。
         withdrawal = Withdrawal.objects.select_for_update().get(pk=withdrawal.pk)
         if withdrawal.status not in (
             WithdrawalStatus.REVIEWING,
@@ -330,7 +329,7 @@ class WithdrawalService:
                 "仅审核中/待执行的提币单可以进入链上发送队列："
                 f"withdrawal_id={withdrawal.pk} status={withdrawal.status}"
             )
-        if withdrawal.broadcast_task_id:
+        if withdrawal.tx_task_id:
             return withdrawal
 
         project = withdrawal.project
@@ -362,7 +361,7 @@ class WithdrawalService:
         if chain.type != ChainType.EVM:
             raise APIError(ErrorCode.INVALID_CHAIN)
 
-        broadcast_task = cls._schedule_evm_withdrawal(
+        tx_task = cls._schedule_evm_withdrawal(
             vault_address=vault_address,
             chain=chain,
             crypto=crypto,
@@ -372,12 +371,10 @@ class WithdrawalService:
         )
 
         # 提币请求只有在链上任务创建成功后才切到 PENDING，避免"无任务的待执行单"。
-        withdrawal.broadcast_task = broadcast_task
-        withdrawal.hash = broadcast_task.tx_hash
+        withdrawal.tx_task = tx_task
+        withdrawal.hash = tx_task.tx_hash
         withdrawal.status = WithdrawalStatus.PENDING
-        withdrawal.save(
-            update_fields=["broadcast_task", "hash", "status", "updated_at"]
-        )
+        withdrawal.save(update_fields=["tx_task", "hash", "status", "updated_at"])
         return withdrawal
 
     @staticmethod
@@ -591,14 +588,14 @@ class WithdrawalService:
     @staticmethod
     @db_transaction.atomic
     def try_match_withdrawal(
-        transfer: "OnchainTransfer",
-        broadcast_task: "BroadcastTask",
+        transfer: "Transfer",
+        tx_task: "TxTask",
     ):
         # Withdrawal 不参与 ConfirmMode 判断，始终使用模型默认值 FULL，走完整区块确认流程。
         try:
             # 对 Withdrawal 加行锁，防止重复推送导致并发匹配同一笔提币
             withdrawal = Withdrawal.objects.select_for_update().get(
-                broadcast_task=broadcast_task,
+                tx_task=tx_task,
             )
         except Withdrawal.DoesNotExist:
             return False
@@ -630,14 +627,14 @@ class WithdrawalService:
             transfer,
             chain=expected_chain,
             crypto=withdrawal.crypto,
-            from_address=broadcast_task.address.address,
+            from_address=tx_task.address.address,
             to_address=withdrawal.to,
             value=expected_value,
         ):
             logger.warning(
                 "提币链上转账与提币单不匹配，忽略",
                 withdrawal_id=withdrawal.id,
-                broadcast_task_id=broadcast_task.pk,
+                tx_task_id=tx_task.pk,
                 transfer_id=transfer.pk,
                 tx_hash=transfer.hash,
             )
@@ -660,20 +657,20 @@ class WithdrawalService:
         # 明确 update_fields 防止覆盖其他字段的并发修改
         withdrawal.save(update_fields=update_fields)
         WithdrawalService.notify_status_changed(withdrawal)
-        if withdrawal.broadcast_task_id:
+        if withdrawal.tx_task_id:
             # 提币一旦命中链上转账，就进入"待确认"；真正稳定成功仍要等确认数达标。
-            BroadcastTask.mark_pending_confirm(
+            TxTask.mark_pending_confirm(
                 chain=transfer.chain,
                 tx_hash=transfer.hash,
             )
 
-        transfer.type = OnchainActionType.Withdrawal
+        transfer.type = TransferType.Withdrawal
         transfer.save(update_fields=["type"])
         return True
 
     @classmethod
     @db_transaction.atomic
-    def confirm_withdrawal(cls, transfer: "OnchainTransfer"):
+    def confirm_withdrawal(cls, transfer: "Transfer"):
         # 对 Withdrawal 加行锁，防止 Celery 重试并发确认同一笔提币
         withdrawal = Withdrawal.objects.select_for_update().get(transfer=transfer)
 
@@ -703,12 +700,12 @@ class WithdrawalService:
 
     @staticmethod
     @db_transaction.atomic
-    def drop_withdrawal(transfer: "OnchainTransfer"):
-        """OnchainTransfer 被 drop 仅意味着当前观测到的链上记录消失，不代表交易永久失败。
+    def drop_withdrawal(transfer: "Transfer"):
+        """Transfer 被 drop 仅意味着当前观测到的链上记录消失，不代表交易永久失败。
 
-        BroadcastTask 会被 OnchainTransfer.drop() 回退到 PENDING_CHAIN 继续观察/重广播。
+        TxTask 会被 Transfer.drop() 回退到 PENDING_CHAIN 继续观察/重广播。
         Withdrawal 应同步回退到 PENDING 并清除 transfer 关联，等待交易重新出现在链上。
-        只有 BroadcastTask 真正 FINALIZED + FAILED 时才应由 fail_withdrawal 终局为 FAILED。
+        只有 TxTask 真正 FINALIZED + FAILED 时才应由 fail_withdrawal 终局为 FAILED。
         """
         # 对 Withdrawal 加行锁，防止并发 drop 同一笔提币
         withdrawal = Withdrawal.objects.select_for_update().get(transfer=transfer)
@@ -730,21 +727,21 @@ class WithdrawalService:
                 f"withdrawal_id={withdrawal.id} status={withdrawal.status}"
             )
 
-        # 清除已删除的 OnchainTransfer 关联，回退到 PENDING 等待 BroadcastTask 重广播/重匹配
+        # 清除已删除的 Transfer 关联，回退到 PENDING 等待 TxTask 重广播/重匹配
         withdrawal.transfer = None
         withdrawal.status = WithdrawalStatus.PENDING
         withdrawal.save(update_fields=["transfer", "status", "updated_at"])
 
     @classmethod
-    def fail_withdrawal(cls, *, broadcast_task) -> None:
-        """BroadcastTask 确认链上交易永久失败时，将提币终局为 FAILED。
+    def fail_withdrawal(cls, *, tx_task) -> None:
+        """TxTask 确认链上交易永久失败时，将提币终局为 FAILED。
 
-        调用时机：BroadcastTask 进入 FINALIZED + FAILED 状态后，由链特定模块回调。
+        调用时机：TxTask 进入 FINALIZED + FAILED 状态后，由链特定模块回调。
         与 REJECTED（人工审核拒绝）语义完全不同：FAILED 表示链上执行失败。
         """
         try:
             withdrawal = Withdrawal.objects.select_for_update().get(
-                broadcast_task=broadcast_task,
+                tx_task=tx_task,
             )
         except Withdrawal.DoesNotExist:
             return
@@ -773,7 +770,7 @@ class WithdrawalService:
 
     @staticmethod
     def try_match_withdrawal_funding(
-        transfer: "OnchainTransfer",
+        transfer: "Transfer",
     ) -> bool:
         from django.db import IntegrityError
 
@@ -787,7 +784,7 @@ class WithdrawalService:
                 project=vault.wallet.project,
                 transfer=transfer,
             )
-            transfer.type = OnchainActionType.Prefunding
+            transfer.type = TransferType.Prefunding
             transfer.save(update_fields=["type"])
         except ObjectDoesNotExist:
             return False

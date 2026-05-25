@@ -11,21 +11,20 @@ from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import TxTaskType
+from chains.models import Transfer
 from chains.models import TxHash
 from chains.models import Wallet
 from common.consts import ERC20_TRANSFER_GAS
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from evm.choices import TxKind
-from evm.models import EvmBroadcastTask
+from evm.models import EvmTxTask
 
 
 class EvmInternalTaskConfirmationTests(TestCase):
@@ -92,22 +91,22 @@ class EvmInternalTaskConfirmationTests(TestCase):
             recipient.lower().replace("0x", "").rjust(64, "0")
             + hex(value_raw)[2:].rjust(64, "0")
         )
-        base_task = BroadcastTask.objects.create(
+        base_task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.PENDING_CHAIN,
+            result=TxTaskResult.UNKNOWN,
         )
         # 协调器通过 TxHash 历史记录查链上 receipt，必须有至少一条记录。
         TxHash.objects.create(
-            broadcast_task=base_task,
+            tx_task=base_task,
             chain=self.chain,
             hash=tx_hash,
             version=0,
         )
-        evm_task = EvmBroadcastTask.objects.create(
+        evm_task = EvmTxTask.objects.create(
             base_task=base_task,
             address=self.addr,
             chain=self.chain,
@@ -128,7 +127,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
             worth=Decimal("12.34"),
             out_no=f"out-{tx_hash[-6:]}",
             to=recipient,
-            broadcast_task=base_task,
+            tx_task=base_task,
             status=WithdrawalStatus.PENDING,
             hash=tx_hash,
         )
@@ -170,13 +169,9 @@ class EvmInternalTaskConfirmationTests(TestCase):
         base_task.refresh_from_db()
         evm_task.refresh_from_db()
         self.assertEqual(withdrawal.status, "failed")
-        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            base_task.failure_reason,
-            BroadcastTaskFailureReason.EXECUTION_REVERTED,
-        )
-        self.assertEqual(OnchainTransfer.objects.count(), 0)
+        self.assertEqual(base_task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(base_task.result, TxTaskResult.FAILED)
+        self.assertEqual(Transfer.objects.count(), 0)
         # 当前契约：FAILED 不发 webhook（与 withdrawals.tests 一致）。
         webhook_mock.assert_not_called()
 
@@ -206,8 +201,8 @@ class EvmInternalTaskConfirmationTests(TestCase):
         base_task.refresh_from_db()
         evm_task.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
-        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CHAIN)
+        self.assertEqual(base_task.result, TxTaskResult.UNKNOWN)
         webhook_mock.assert_not_called()
 
     @patch.object(Chain, "w3", new_callable=PropertyMock)
@@ -274,7 +269,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         evm_task.refresh_from_db()
         base_task.refresh_from_db()
         self.assertGreater(evm_task.last_attempt_at, old_attempt_at)
-        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CHAIN)
         send_raw_mock.assert_called_once()
 
     @patch.object(Chain, "w3", new_callable=PropertyMock)
@@ -294,7 +289,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         )
         # 模拟 gas 提升重签产生的历史 hash
         TxHash.objects.create(
-            broadcast_task=base_task,
+            tx_task=base_task,
             chain=self.chain,
             hash=old_hash,
             version=1,
@@ -355,4 +350,4 @@ class EvmInternalTaskConfirmationTests(TestCase):
         InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
 
         evm_task.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CHAIN)

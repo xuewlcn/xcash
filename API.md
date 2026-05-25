@@ -566,7 +566,7 @@ GET /v1/deposit/address?uid=user123&chain=ethereum-mainnet&crypto=USDT
 | `confirming` | 已广播，链上确认中 |
 | `completed` | 完成 |
 | `rejected` | 已拒绝 |
-| `failed` | 广播失败 |
+| `failed` | 执行失败 |
 
 ### 限流
 

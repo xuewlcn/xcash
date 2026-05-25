@@ -14,8 +14,6 @@ router.register("chains", InternalChainViewSet, basename="internal-chain")
 from internal_api.viewsets.deposits import InternalDepositViewSet
 from internal_api.viewsets.epay import EpayMerchantView
 from internal_api.viewsets.invoices import InternalInvoiceViewSet
-from internal_api.viewsets.operations import DepositCollectionViewSet
-from internal_api.viewsets.operations import GasRechargeViewSet
 from internal_api.viewsets.operations import VaultFundingViewSet
 from internal_api.viewsets.operations import WithdrawalReviewLogViewSet
 from internal_api.viewsets.recipient_addresses import RecipientAddressViewSet
@@ -32,12 +30,6 @@ project_router.register(
 )
 project_router.register(
     "recipient-addresses", RecipientAddressViewSet, basename="internal-recipient-address"
-)
-project_router.register(
-    "deposit-collections", DepositCollectionViewSet, basename="internal-deposit-collection"
-)
-project_router.register(
-    "gas-recharges", GasRechargeViewSet, basename="internal-gas-recharge"
 )
 project_router.register(
     "vault-fundings", VaultFundingViewSet, basename="internal-vault-funding"

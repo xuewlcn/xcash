@@ -1,16 +1,14 @@
 from unittest.mock import patch
 
-from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import TransferStatus
 from currencies.models import ChainToken
 from currencies.models import Crypto
-from currencies.service import CryptoService
 
 
 class ChainNativeCryptoMappingTests(TestCase):
@@ -36,60 +34,6 @@ class ChainNativeCryptoMappingTests(TestCase):
         self.assertIsNone(native_mapping.decimals)
 
 
-class CryptoServiceAllowedMethodsTests(TestCase):
-    def setUp(self):
-        cache.clear()
-
-    def test_allowed_methods_reuses_chaintoken_relation_and_filters_chain_codes(self):
-        native = Crypto.objects.create(
-            name="Ethereum Allowed Methods Native",
-            symbol="ETH-AM",
-            coingecko_id="ethereum-allowed-methods-native",
-        )
-        token = Crypto.objects.create(
-            name="Allowed Methods Token",
-            symbol="AMT",
-            coingecko_id="allowed-methods-token",
-        )
-        included_chain = Chain.objects.create(
-            name="Allowed Methods Included",
-            code="am-included",
-            type=ChainType.EVM,
-            native_coin=native,
-            chain_id=8801,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-        excluded_chain = Chain.objects.create(
-            name="Allowed Methods Excluded",
-            code="am-excluded",
-            type=ChainType.EVM,
-            native_coin=native,
-            chain_id=8802,
-            rpc="http://localhost:8546",
-            active=True,
-        )
-        ChainToken.objects.create(
-            crypto=token,
-            chain=included_chain,
-            address="0x0000000000000000000000000000000000008801",
-        )
-        ChainToken.objects.create(
-            crypto=token,
-            chain=excluded_chain,
-            address="0x0000000000000000000000000000000000008802",
-        )
-
-        with patch.object(
-            Crypto,
-            "support_this_chain",
-            side_effect=AssertionError("ChainToken row already proves support"),
-        ):
-            methods = CryptoService.allowed_methods(chain_codes={included_chain.code})
-
-        self.assertEqual(methods, {token.symbol: {included_chain.code}})
-
-
 class ChainTokenRemapTests(TestCase):
     @patch("chains.tasks.process_transfer.apply_async")
     @patch("chains.tasks.process_transfer.delay")
@@ -98,7 +42,7 @@ class ChainTokenRemapTests(TestCase):
         process_transfer_delay_mock,
         _process_transfer_apply_async_mock,
     ):
-        # 修改 ChainToken.crypto 后，历史 OnchainTransfer 应自动切到新币种，并触发一次业务重归类。
+        # 修改 ChainToken.crypto 后，历史 Transfer 应自动切到新币种，并触发一次业务重归类。
         native_coin = Crypto.objects.create(
             name="Ethereum",
             symbol="ETH",
@@ -129,7 +73,7 @@ class ChainTokenRemapTests(TestCase):
             chain=chain,
             address="0x00000000000000000000000000000000000000AA",
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
             hash="0x" + "1" * 64,

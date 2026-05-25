@@ -17,7 +17,7 @@ from tron.watchers import load_tron_filter_addresses
 
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import TransferStatus
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
@@ -133,7 +133,7 @@ class TronUsdtPaymentScanner:
 
         if (
             latest_block > previous_latest_block
-            and OnchainTransfer.objects.filter(
+            and Transfer.objects.filter(
                 chain=chain,
                 status=TransferStatus.CONFIRMING,
                 processed_at__isnull=False,

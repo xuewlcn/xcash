@@ -70,14 +70,14 @@ class ErrorCode(Enum):
     NO_AVAILABLE_METHOD = ErrorInfo("5010", _("无效的支付方式"), 400)
     INVOICE_NOT_EXIST = ErrorInfo("5011", _("账单不存在"), 400)
     INVOICE_EXPIRED = ErrorInfo("5012", _("账单已过期"), 400)
-    CONTRACT_BILLING_REQUIRES_NATIVE_SCANNER = ErrorInfo(
-        "5013", _("合约账单要求平台开启 EVM 原生币扫描"), 400
-    )
     CONTRACT_BILLING_EVM_ONLY = ErrorInfo(
         "5014", _("合约账单仅支持 EVM 链"), 400
     )
     CONTRACT_BILLING_FACTORY_NOT_CONFIGURED = ErrorInfo(
-        "5015", _("合约账单要求该链已配置 CREATE2 工厂地址"), 400
+        "5015", _("合约账单要求该链已配置 DepositSlot Factory 地址"), 400
+    )
+    DIFFER_BILLING_TRON_ONLY = ErrorInfo(
+        "5016", _("差额账单仅支持 Tron 链"), 400
     )
 
     # Internal API
@@ -86,11 +86,6 @@ class ErrorCode(Enum):
     PROJECT_NOT_FOUND = ErrorInfo("6002", _("项目不存在"), 404)
     FEATURE_NOT_ENABLED = ErrorInfo("6003", _("该功能未开放"), 403)
     ACCOUNT_FROZEN = ErrorInfo("6004", _("账户已冻结"), 403)
-    NATIVE_SCANNER_NOT_ENABLED = ErrorInfo(
-        "6005",
-        _("充提币功能未开启，请在后台系统参数中开启「EVM 原生币扫描」，并确保 EVM 链 RPC 支持高频调用"),
-        403,
-    )
 
     def __init__(self, info: ErrorInfo):
         self._info = info

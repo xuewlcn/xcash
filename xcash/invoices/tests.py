@@ -17,20 +17,16 @@ from django.test import TransactionTestCase
 from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from eth_utils import keccak
 from rest_framework.test import APIRequestFactory
 from web3 import Web3
 
-from chains.models import Address
-from chains.models import AddressUsage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
+from chains.models import TransferType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
-from core.models import PlatformSettings
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from currencies.models import Fiat
@@ -49,7 +45,6 @@ from invoices.tasks import fallback_invoice_expired
 from invoices.viewsets import InvoiceViewSet
 from projects.models import Project
 from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 from users.models import User
 
 
@@ -100,7 +95,6 @@ class InvoiceTestMixin:
                 project=self.project,
                 chain_type=ChainType.EVM,
                 address=self.recipient_address,
-                usage=RecipientAddressUsage.INVOICE,
             )
 
     def create_test_invoice(self, *, out_no: str = "test-order", **kwargs) -> Invoice:
@@ -158,7 +152,6 @@ class InvoiceInitializationTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000b1"
             ),
-            usage=RecipientAddressUsage.INVOICE,
         )
         invoice = Invoice.objects.create(
             project=project,
@@ -260,7 +253,6 @@ class InvoicePaySlotTests(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x00000000000000000000000000000000000000A1",
-            usage=RecipientAddressUsage.INVOICE,
         )
 
     def create_invoice(self, *, out_no: str = "slot-order") -> Invoice:
@@ -276,9 +268,9 @@ class InvoicePaySlotTests(TestCase):
 
     def create_transfer(
         self, *, chain: Chain, pay_amount: Decimal, pay_address: str
-    ) -> OnchainTransfer:
+    ) -> Transfer:
         now = timezone.now()
-        return OnchainTransfer.objects.create(
+        return Transfer.objects.create(
             chain=chain,
             block=1,
             hash=f"0x{chain.chain_id:08x}{int(now.timestamp() * 1000000):056x}",
@@ -350,7 +342,7 @@ class InvoicePaySlotTests(TestCase):
             second_slot.discard_reason,
             InvoicePaySlotDiscardReason.SETTLED,
         )
-        self.assertEqual(transfer.type, OnchainActionType.Invoice)
+        self.assertEqual(transfer.type, TransferType.Invoice)
 
     def test_drop_invoice_reactivates_matched_slot(self):
         # 若链上观测后来被回滚，命中过的槽位要恢复为可再次匹配，避免账单永久卡死。
@@ -494,7 +486,7 @@ class InvoicePaySlotTests(TestCase):
         self.assertEqual(invoice.status, InvoiceStatus.CONFIRMING)
         self.assertEqual(invoice.transfer_id, transfer.pk)
         self.assertEqual(first_slot.status, InvoicePaySlotStatus.MATCHED)
-        self.assertEqual(transfer.type, OnchainActionType.Invoice)
+        self.assertEqual(transfer.type, TransferType.Invoice)
 
 
 class InvoicePaySlotConcurrencyTests(TransactionTestCase):
@@ -529,7 +521,6 @@ class InvoicePaySlotConcurrencyTests(TransactionTestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x00000000000000000000000000000000000000A1",
-            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_select_method_allocates_distinct_slots_under_concurrency(self):
@@ -687,89 +678,12 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             project=project,
             chain_type=ChainType.TRON,
             address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
-            usage=RecipientAddressUsage.INVOICE,
         )
 
         methods = Invoice.available_methods(project)
 
         self.assertEqual(methods["USDT"], [tron_chain.code])
         self.assertNotIn("USDC", methods)
-
-    def test_available_methods_hide_evm_native_when_global_native_scanner_closed(self):
-        project = Project.objects.create(
-            name="Invoice Native Scanner Closed Project",
-            wallet=Wallet.objects.create(),
-        )
-        native = Crypto.objects.create(
-            name="Ethereum Invoice Native Closed",
-            symbol="ETHINVCLOSED",
-            coingecko_id="ethereum-invoice-native-closed",
-        )
-        usdt = Crypto.objects.create(
-            name="USDT Invoice Native Closed",
-            symbol="USDTINVCLOSED",
-            coingecko_id="usdt-invoice-native-closed",
-            decimals=6,
-        )
-        chain = Chain.objects.create(
-            name="Ethereum Invoice Native Closed",
-            code="eth-invoice-native-closed",
-            type=ChainType.EVM,
-            native_coin=native,
-            chain_id=9931,
-            rpc="http://eth.invalid",
-            active=True,
-        )
-        ChainToken.objects.create(
-            crypto=usdt,
-            chain=chain,
-            address="0x0000000000000000000000000000000000009931",
-            decimals=6,
-        )
-        RecipientAddress.objects.create(
-            name="evm-pay-native-closed",
-            project=project,
-            chain_type=ChainType.EVM,
-            address="0x0000000000000000000000000000000000009932",
-            usage=RecipientAddressUsage.INVOICE,
-        )
-
-        methods = Invoice.available_methods(project)
-
-        self.assertNotIn(native.symbol, methods)
-        self.assertEqual(methods[usdt.symbol], [chain.code])
-
-    def test_available_methods_expose_evm_native_when_global_native_scanner_open(self):
-        PlatformSettings.objects.create(open_native_scanner=True)
-        project = Project.objects.create(
-            name="Invoice Native Scanner Open Project",
-            wallet=Wallet.objects.create(),
-        )
-        native = Crypto.objects.create(
-            name="Ethereum Invoice Native Open",
-            symbol="ETHINVOPEN",
-            coingecko_id="ethereum-invoice-native-open",
-        )
-        chain = Chain.objects.create(
-            name="Ethereum Invoice Native Open",
-            code="eth-invoice-native-open",
-            type=ChainType.EVM,
-            native_coin=native,
-            chain_id=9933,
-            rpc="http://eth.invalid",
-            active=True,
-        )
-        RecipientAddress.objects.create(
-            name="evm-pay-native-open",
-            project=project,
-            chain_type=ChainType.EVM,
-            address="0x0000000000000000000000000000000000009934",
-            usage=RecipientAddressUsage.INVOICE,
-        )
-
-        methods = Invoice.available_methods(project)
-
-        self.assertEqual(methods[native.symbol], [chain.code])
 
     @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="xcash-saas-token")
     def test_available_methods_filters_by_cached_saas_chain_crypto_whitelist(self):
@@ -840,7 +754,6 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             project=project,
             chain_type=ChainType.EVM,
             address="0x0000000000000000000000000000000000009914",
-            usage=RecipientAddressUsage.INVOICE,
         )
         cache.set(
             f"saas:permission:{project.appid}",
@@ -915,7 +828,6 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             project=project,
             chain_type=ChainType.EVM,
             address="0x0000000000000000000000000000000000009923",
-            usage=RecipientAddressUsage.INVOICE,
         )
         cache.set(
             f"saas:permission:{project.appid}",
@@ -1081,7 +993,6 @@ class InvoiceExpiredMatchTests(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address=self.recipient_address,
-            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_expired_invoice_can_still_be_matched_by_transfer(self):
@@ -1123,7 +1034,7 @@ class InvoiceExpiredMatchTests(TestCase):
 
         # 链上付款在过期前发生（datetime 在 started_at 和 expires_at 之间）
         transfer_time = invoice.started_at + timedelta(seconds=30)
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=1,
             hash="0x" + "e1" * 32,
@@ -1183,7 +1094,6 @@ class FallbackInvoiceExpiredTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000F1"
             ),
-            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_fallback_expires_waiting_invoices_and_discards_slots(self):
@@ -1265,7 +1175,6 @@ class CheckExpiredAtomicityTests(TransactionTestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000A7"
             ),
-            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_check_expired_skips_already_matched_invoice(self):
@@ -1285,7 +1194,7 @@ class CheckExpiredAtomicityTests(TransactionTestCase):
 
         # 模拟在 check_expired 执行前，账单已被匹配
         now = timezone.now()
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=1,
             hash="0x" + "a7" * 32,
@@ -1371,7 +1280,9 @@ class InvoiceCreatePermissionCheckTests(TestCase):
         serializer_stub = self._make_serializer_stub()
 
         with (
-            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch.object(
+                InvoiceViewSet, "get_serializer", return_value=serializer_stub
+            ),
             patch(
                 "invoices.viewsets.Invoice.objects.create",
                 return_value=Mock(
@@ -1404,7 +1315,9 @@ class InvoiceCreatePermissionCheckTests(TestCase):
         }
 
         with (
-            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch.object(
+                InvoiceViewSet, "get_serializer", return_value=serializer_stub
+            ),
             patch(
                 "invoices.viewsets.Invoice.objects.create",
                 return_value=Mock(
@@ -1461,7 +1374,9 @@ class InvoiceCreatePermissionCheckTests(TestCase):
         chain = Mock(code="ethereum-mainnet")
 
         with (
-            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch.object(
+                InvoiceViewSet, "get_serializer", return_value=serializer_stub
+            ),
             patch.object(InvoiceViewSet, "get_object", return_value=invoice),
             patch("invoices.viewsets.CryptoService.get_by_symbol", return_value=crypto),
             patch("invoices.viewsets.ChainService.get_by_code", return_value=chain),
@@ -1500,7 +1415,9 @@ class InvoiceCreatePermissionCheckTests(TestCase):
         serializer_stub = self._make_serializer_stub()
 
         with (
-            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch.object(
+                InvoiceViewSet, "get_serializer", return_value=serializer_stub
+            ),
             patch(
                 "invoices.viewsets.Invoice.objects.create",
                 return_value=Mock(
@@ -1553,7 +1470,7 @@ class InvoiceSelectForUpdateLockScopeTests(InvoicePaySlotTests):
             sql = query["sql"]
             if "FOR UPDATE" not in sql:
                 continue
-            tails.append(sql[sql.rindex("FOR UPDATE"):])
+            tails.append(sql[sql.rindex("FOR UPDATE") :])
         return tails
 
     def _assert_lock_scope_is_self_only(self, tails):
@@ -1564,7 +1481,8 @@ class InvoiceSelectForUpdateLockScopeTests(InvoicePaySlotTests):
         for tail in tails:
             # 不带 OF 子句 = 锁所有 JOIN 表的行，正是死锁根因。
             self.assertIn(
-                " OF ", tail,
+                " OF ",
+                tail,
                 f"select_for_update 必须带 of=(...) 限定主表: {tail}",
             )
             for parent_table in (
@@ -1573,7 +1491,8 @@ class InvoiceSelectForUpdateLockScopeTests(InvoicePaySlotTests):
                 '"chains_chain"',
             ):
                 self.assertNotIn(
-                    parent_table, tail,
+                    parent_table,
+                    tail,
                     f"父表 {parent_table} 不应出现在 FOR UPDATE 子句中: {tail}",
                 )
 
@@ -1646,377 +1565,6 @@ class InvoiceBillingModeFieldTest(TestCase, InvoiceTestMixin):
         self.assertTrue(field.blank)
 
 
-class AllocateContractSlotTest(TestCase, InvoiceTestMixin):
-    def setUp(self):
-        self.setup_base_fixtures(
-            username="contract-slot-merchant",
-            project_name="ContractSlotProject",
-            crypto_symbol="USDTCAS",
-            chain_code="eth-contract-slot",
-            chain_id=8801,
-        )
-        self.chain.create2_factory_address = Web3.to_checksum_address(
-            "0x00000000000000000000000000000000000000ab"
-        )
-        self.chain.save(update_fields=["create2_factory_address"])
-        ChainToken.objects.create(
-            crypto=self.crypto,
-            chain=self.chain,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000c0"
-            ),
-        )
-        self.invoice = self.create_test_invoice(
-            out_no="contract-slot-order",
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            amount=Decimal("100"),
-        )
-
-    def test_first_allocation_derives_collector_from_salt(self):
-        from evm.contracts_codec import predict_collector_address
-
-        crypto_amount = Decimal("100")
-
-        pay_address, recipient_address, pay_amount = (
-            self.invoice._allocate_contract_slot(
-                self.crypto,
-                self.chain,
-                crypto_amount,
-            )
-        )
-
-        expected_salt = keccak(
-            self.invoice.sys_no.encode()
-            + self.chain.code.encode()
-            + self.crypto.symbol.encode()
-        )[:32]
-        expected_collector = predict_collector_address(
-            factory=self.chain.create2_factory_address,
-            salt=expected_salt,
-            to=self.recipient_address,
-            token=self.crypto.address(self.chain) or None,
-        )
-        self.assertEqual(pay_address, expected_collector)
-        self.assertEqual(recipient_address, self.recipient_address)
-        self.assertEqual(pay_amount, crypto_amount)
-
-    def test_reuse_historical_pay_slot_when_existing(self):
-        first_pay, first_recipient, _ = self.invoice._allocate_contract_slot(
-            self.crypto,
-            self.chain,
-            Decimal("100"),
-        )
-        InvoicePaySlot.objects.create(
-            invoice=self.invoice,
-            project=self.invoice.project,
-            version=1,
-            crypto=self.crypto,
-            chain=self.chain,
-            pay_address=first_pay,
-            pay_amount=Decimal("100"),
-            recipient_address=first_recipient,
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            status=InvoicePaySlotStatus.DISCARDED,
-        )
-        RecipientAddress.objects.filter(
-            project=self.project,
-            chain_type=ChainType.EVM,
-            usage=RecipientAddressUsage.INVOICE,
-        ).delete()
-        new_recipient = Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000066"
-        )
-        RecipientAddress.objects.create(
-            name="New Contract Recipient",
-            project=self.project,
-            chain_type=ChainType.EVM,
-            address=new_recipient,
-            usage=RecipientAddressUsage.INVOICE,
-        )
-
-        pay_address, recipient_address, pay_amount = (
-            self.invoice._allocate_contract_slot(
-                self.crypto,
-                self.chain,
-                Decimal("100"),
-            )
-        )
-
-        self.assertEqual(pay_address, first_pay)
-        self.assertEqual(recipient_address, first_recipient)
-        self.assertEqual(pay_amount, Decimal("100"))
-        self.assertNotEqual(recipient_address, new_recipient)
-
-    def test_raises_when_no_invoice_recipient(self):
-        RecipientAddress.objects.filter(
-            project=self.project,
-            chain_type=ChainType.EVM,
-            usage=RecipientAddressUsage.INVOICE,
-        ).delete()
-
-        with self.assertRaises(Invoice.InvoiceAllocationError):
-            self.invoice._allocate_contract_slot(
-                self.crypto,
-                self.chain,
-                Decimal("100"),
-            )
-
-
-class SelectMethodContractBranchTest(TestCase, InvoiceTestMixin):
-    def setUp(self):
-        self.setup_base_fixtures(
-            username="contract-select-merchant",
-            project_name="ContractSelectProject",
-            crypto_symbol="USDTSEL",
-            chain_code="eth-contract-select",
-            chain_id=8802,
-        )
-        self.chain.create2_factory_address = Web3.to_checksum_address(
-            "0x00000000000000000000000000000000000000ab"
-        )
-        self.chain.save(update_fields=["create2_factory_address"])
-        ChainToken.objects.create(
-            crypto=self.crypto,
-            chain=self.chain,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000c1"
-            ),
-        )
-        self.invoice = self.create_test_invoice(
-            out_no="contract-select-order",
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            amount=Decimal("100"),
-        )
-
-    def test_creates_pay_slot_with_contract_billing_mode_and_recipient_address(self):
-        ok = self.invoice.select_method(self.crypto, self.chain)
-
-        self.assertTrue(ok)
-        slot = self.invoice.pay_slots.get()
-        self.assertEqual(slot.billing_mode, InvoiceBillingMode.CONTRACT)
-        self.assertEqual(slot.recipient_address, self.recipient_address)
-        self.assertEqual(slot.pay_amount, self.invoice.amount)
-
-
-class CreateContractInvoicePreflightTest(TestCase):
-    def setUp(self):
-        cache.clear()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        self.project = Project.objects.create(
-            name="ContractCreateProject",
-            wallet=Wallet.objects.create(),
-        )
-        self.crypto = Crypto.objects.create(
-            name="Contract Create USDT",
-            symbol="USDTCRT",
-            prices={"USD": "1"},
-            coingecko_id="usdt-contract-create",
-        )
-        self.native = Crypto.objects.create(
-            name="Contract Create ETH",
-            symbol="ETHCRT",
-            prices={"USD": "2000"},
-            coingecko_id="eth-contract-create",
-        )
-        self.chain = Chain.objects.create(
-            name="Contract Create Chain",
-            code="eth-contract-create",
-            type=ChainType.EVM,
-            native_coin=self.native,
-            chain_id=8803,
-            rpc="http://localhost:8545",
-            create2_factory_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000ab"
-            ),
-            active=True,
-        )
-        ChainToken.objects.create(
-            crypto=self.crypto,
-            chain=self.chain,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000c2"
-            ),
-        )
-        RecipientAddress.objects.create(
-            name="Contract Create Recipient",
-            project=self.project,
-            chain_type=ChainType.EVM,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000d1"
-            ),
-            usage=RecipientAddressUsage.INVOICE,
-        )
-
-    def _base_payload(self):
-        return {
-            "out_no": "contract-create-order",
-            "title": "Contract invoice",
-            "currency": self.crypto.symbol,
-            "amount": "100",
-            "methods": {self.crypto.symbol: [self.chain.code]},
-            "billing_mode": InvoiceBillingMode.CONTRACT,
-        }
-
-    def _post(self, payload):
-        request = APIRequestFactory().post(
-            "/v1/invoice",
-            payload,
-            format="json",
-            HTTP_XC_APPID=self.project.appid,
-        )
-        with (
-            patch("invoices.viewsets.check_saas_permission"),
-            patch("invoices.viewsets.InvoiceService.initialize_invoice"),
-        ):
-            return InvoiceViewSet.as_view({"post": "create"})(request)
-
-    def test_fails_when_native_scanner_disabled(self):
-        settings_obj = PlatformSettings.objects.get(singleton_key=1)
-        settings_obj.open_native_scanner = False
-        settings_obj.save(update_fields=["open_native_scanner"])
-        cache.clear()
-
-        response = self._post(self._base_payload())
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.data["code"],
-            ErrorCode.CONTRACT_BILLING_REQUIRES_NATIVE_SCANNER.code,
-        )
-
-    def test_fails_when_factory_not_configured(self):
-        self.chain.create2_factory_address = ""
-        self.chain.save(update_fields=["create2_factory_address"])
-
-        response = self._post(self._base_payload())
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.data["code"],
-            ErrorCode.CONTRACT_BILLING_FACTORY_NOT_CONFIGURED.code,
-        )
-
-    def test_fails_when_methods_only_non_evm(self):
-        usdt, _ = Crypto.objects.get_or_create(
-            symbol="USDT",
-            defaults={
-                "name": "Tether USD",
-                "prices": {"USD": "1"},
-                "coingecko_id": "tether-contract-create",
-            },
-        )
-        trx = Crypto.objects.create(
-            name="Contract Create TRX",
-            symbol="TRXCRT",
-            prices={"USD": "0.1"},
-            coingecko_id="trx-contract-create",
-        )
-        tron_chain = Chain.objects.filter(type=ChainType.TRON).first()
-        if tron_chain is None:
-            tron_chain = Chain.objects.create(
-                name="Contract Create Tron",
-                code="tron-contract-create",
-                type=ChainType.TRON,
-                native_coin=trx,
-                chain_id=8804,
-                rpc="http://localhost:8545",
-                active=True,
-            )
-        else:
-            tron_chain.active = True
-            tron_chain.save(update_fields=["active"])
-        ChainToken.objects.get_or_create(
-            crypto=usdt,
-            chain=tron_chain,
-            defaults={"address": "TTokenCRT"},
-        )
-        RecipientAddress.objects.create(
-            name="Contract Create Tron Recipient",
-            project=self.project,
-            chain_type=ChainType.TRON,
-            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            usage=RecipientAddressUsage.INVOICE,
-        )
-        payload = self._base_payload()
-        payload["currency"] = usdt.symbol
-        payload["methods"] = {usdt.symbol: [tron_chain.code]}
-
-        response = self._post(payload)
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["code"], ErrorCode.CONTRACT_BILLING_EVM_ONLY.code)
-
-    def test_fails_when_contract_methods_mix_non_evm_chain(self):
-        usdt, _ = Crypto.objects.get_or_create(
-            symbol="USDT",
-            defaults={
-                "name": "Tether USD",
-                "prices": {"USD": "1"},
-                "coingecko_id": "tether-contract-mixed",
-            },
-        )
-        ChainToken.objects.create(
-            crypto=usdt,
-            chain=self.chain,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000c4"
-            ),
-        )
-        trx = Crypto.objects.create(
-            name="Contract Mixed TRX",
-            symbol="TRXMIX",
-            prices={"USD": "0.1"},
-            coingecko_id="trx-contract-mixed",
-        )
-        tron_chain = Chain.objects.create(
-            name="Contract Mixed Tron",
-            code="tron-contract-mixed",
-            type=ChainType.TRON,
-            native_coin=trx,
-            chain_id=8814,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-        ChainToken.objects.create(
-            crypto=usdt,
-            chain=tron_chain,
-            address="TTokenMIX",
-        )
-        RecipientAddress.objects.create(
-            name="Contract Mixed Tron Recipient",
-            project=self.project,
-            chain_type=ChainType.TRON,
-            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            usage=RecipientAddressUsage.INVOICE,
-        )
-        payload = self._base_payload()
-        payload["currency"] = usdt.symbol
-        payload["methods"] = {usdt.symbol: [self.chain.code, tron_chain.code]}
-
-        response = self._post(payload)
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["code"], ErrorCode.CONTRACT_BILLING_EVM_ONLY.code)
-
-    def test_succeeds_when_all_preflight_pass(self):
-        response = self._post(self._base_payload())
-
-        self.assertEqual(response.status_code, 201)
-        invoice = Invoice.objects.get(out_no="contract-create-order")
-        self.assertEqual(invoice.billing_mode, InvoiceBillingMode.CONTRACT)
-
-    def test_default_billing_mode_is_differ(self):
-        payload = self._base_payload()
-        payload["out_no"] = "default-billing-order"
-        del payload["billing_mode"]
-
-        response = self._post(payload)
-
-        self.assertEqual(response.status_code, 201)
-        invoice = Invoice.objects.get(out_no="default-billing-order")
-        self.assertEqual(invoice.billing_mode, InvoiceBillingMode.DIFFER)
-
-
 class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
     def setUp(self):
         self.setup_base_fixtures(
@@ -2031,7 +1579,7 @@ class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
             billing_mode=InvoiceBillingMode.CONTRACT,
             amount=Decimal("100"),
         )
-        self.collector_address = Web3.to_checksum_address(
+        self.slot_address = Web3.to_checksum_address(
             "0x00000000000000000000000000000000000000ce"
         )
         self.contract_slot = InvoicePaySlot.objects.create(
@@ -2040,16 +1588,16 @@ class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
             version=1,
             crypto=self.crypto,
             chain=self.chain,
-            pay_address=self.collector_address,
+            pay_address=self.slot_address,
             pay_amount=Decimal("100"),
             recipient_address=self.recipient_address,
             billing_mode=InvoiceBillingMode.CONTRACT,
             status=InvoicePaySlotStatus.ACTIVE,
         )
 
-    def _make_transfer(self, amount: Decimal) -> OnchainTransfer:
+    def _make_transfer(self, amount: Decimal) -> Transfer:
         now = timezone.now()
-        return OnchainTransfer.objects.create(
+        return Transfer.objects.create(
             chain=self.chain,
             block=1,
             hash=f"0x{self.chain.chain_id:08x}{int(now.timestamp() * 1000000):056x}",
@@ -2058,7 +1606,7 @@ class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
             from_address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000b2"
             ),
-            to_address=self.collector_address,
+            to_address=self.slot_address,
             value=Decimal(amount * Decimal("100000000")),
             amount=amount,
             timestamp=int(now.timestamp()),
@@ -2089,356 +1637,3 @@ class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
         self.assertFalse(matched)
         self.invoice.refresh_from_db()
         self.assertEqual(self.invoice.status, InvoiceStatus.WAITING)
-
-
-class TriggerContractCollectionTest(TestCase, InvoiceTestMixin):
-    def setUp(self):
-        self.setup_base_fixtures(
-            username="contract-collection-merchant",
-            project_name="ContractCollectionProject",
-            crypto_symbol="USDTCOL",
-            chain_code="eth-contract-collection",
-            chain_id=8806,
-        )
-        self.chain.create2_factory_address = Web3.to_checksum_address(
-            "0x00000000000000000000000000000000000000ab"
-        )
-        self.chain.save(update_fields=["create2_factory_address"])
-        ChainToken.objects.create(
-            crypto=self.crypto,
-            chain=self.chain,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000c3"
-            ),
-        )
-        self.invoice = self.create_test_invoice(
-            out_no="contract-collection-order",
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            amount=Decimal("100"),
-            status=InvoiceStatus.COMPLETED,
-        )
-        self.matched_slot = InvoicePaySlot.objects.create(
-            invoice=self.invoice,
-            project=self.invoice.project,
-            version=1,
-            crypto=self.crypto,
-            chain=self.chain,
-            pay_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000ce"
-            ),
-            pay_amount=Decimal("100"),
-            recipient_address=self.recipient_address,
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            status=InvoicePaySlotStatus.MATCHED,
-            matched_at=timezone.now(),
-        )
-        self.deployer = Address.objects.create(
-            wallet=self.project.wallet,
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-            address_index=0,
-            bip44_account=Wallet.get_bip44_account(AddressUsage.Vault),
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000f1"
-            ),
-        )
-
-    def _attach_transfer(self, *, amount: Decimal) -> OnchainTransfer:
-        value = Decimal(amount * Decimal(10) ** self.crypto.get_decimals(self.chain))
-        transfer = OnchainTransfer.objects.create(
-            chain=self.chain,
-            block=1,
-            hash=f"0x{self.chain.chain_id:08x}{int(amount):056x}",
-            event_id=f"tc-{int(amount)}",
-            crypto=self.crypto,
-            from_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000b4"
-            ),
-            to_address=self.matched_slot.pay_address,
-            value=value,
-            amount=amount,
-            timestamp=int(timezone.now().timestamp()),
-            datetime=timezone.now(),
-        )
-        Invoice.objects.filter(pk=self.invoice.pk).update(transfer=transfer)
-        self.invoice.refresh_from_db()
-        return transfer
-
-    def _create_collection_for_matched_slot(self, *, status: str, suffix: int):
-        from evm.models import ContractDeployCollection
-
-        return ContractDeployCollection.objects.create(
-            chain=self.chain,
-            crypto=self.crypto,
-            deployer_address=self.deployer,
-            factory_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000fa"
-            ),
-            collector_address=Web3.to_checksum_address(f"0x{(2000 + suffix):040x}"),
-            recipient_address=self.recipient_address,
-            salt=bytes([suffix]) * 32,
-            collector_init_code=bytes([suffix + 2]) * 2,
-            collector_init_code_hash=bytes([suffix + 1]) * 32,
-            expected_collect_value_raw=1_000_000,
-            pay_slot=self.matched_slot,
-            status=status,
-        )
-
-    def test_raises_when_not_contract_billing_mode(self):
-        from invoices.exceptions import InvoiceBillingModeError
-
-        self.invoice.billing_mode = InvoiceBillingMode.DIFFER
-        self.invoice.save(update_fields=["billing_mode"])
-
-        with self.assertRaises(InvoiceBillingModeError):
-            self.invoice.trigger_contract_collection()
-
-    def test_raises_when_status_not_completed(self):
-        self.invoice.status = InvoiceStatus.CONFIRMING
-        self.invoice.save(update_fields=["status"])
-
-        with self.assertRaises(InvoiceStatusError):
-            self.invoice.trigger_contract_collection()
-
-    @patch("evm.services.create2.ContractDeployCollectionService.create_and_schedule")
-    def test_calls_create_and_schedule_with_expected_args(self, mock_schedule):
-        from evm.constants import GAS_ERC20_COLLECTOR
-
-        mock_schedule.return_value = Mock(collection=Mock(pk=999999))
-        with patch.object(Wallet, "get_address", return_value=self.deployer):
-            self.invoice.trigger_contract_collection()
-
-        mock_schedule.assert_called_once()
-        kwargs = mock_schedule.call_args.kwargs
-        self.assertEqual(kwargs["deployer"], self.deployer)
-        self.assertEqual(kwargs["chain"], self.chain)
-        self.assertEqual(kwargs["crypto"], self.crypto)
-        self.assertEqual(kwargs["recipient_address"], self.recipient_address)
-        self.assertEqual(kwargs["gas"], GAS_ERC20_COLLECTOR)
-        self.assertEqual(
-            kwargs["expected_collect_value_raw"],
-            int(self.matched_slot.pay_amount * Decimal(10) ** self.crypto.decimals),
-        )
-        self.assertEqual(
-            kwargs["salt"],
-            keccak(
-                self.invoice.sys_no.encode()
-                + self.chain.code.encode()
-                + self.crypto.symbol.encode()
-            )[:32],
-        )
-
-    @patch("evm.services.create2.ContractDeployCollectionService.create_and_schedule")
-    def test_uses_matched_transfer_value_when_payment_is_overpaid(self, mock_schedule):
-        transfer = self._attach_transfer(amount=Decimal("150"))
-        mock_schedule.return_value = Mock(collection=Mock(pk=999999))
-
-        with patch.object(Wallet, "get_address", return_value=self.deployer):
-            self.invoice.trigger_contract_collection()
-
-        kwargs = mock_schedule.call_args.kwargs
-        self.assertEqual(kwargs["expected_collect_value_raw"], int(transfer.value))
-
-    @patch("evm.services.create2.ContractDeployCollectionService.create_and_schedule")
-    def test_does_not_schedule_after_five_collection_attempts(self, mock_schedule):
-        from evm.models import ContractDeployCollectionStatus
-
-        mock_schedule.return_value = Mock(collection=Mock(pk=999999))
-        latest = None
-        for suffix in range(1, 6):
-            latest = self._create_collection_for_matched_slot(
-                status=ContractDeployCollectionStatus.FAILED,
-                suffix=suffix,
-            )
-
-        with patch.object(Wallet, "get_address", return_value=self.deployer):
-            result = self.invoice.trigger_contract_collection()
-
-        self.assertEqual(result, latest)
-        mock_schedule.assert_not_called()
-
-
-class ConfirmInvoiceContractHookTest(TestCase, InvoiceTestMixin):
-    def setUp(self):
-        self.setup_base_fixtures(
-            username="contract-confirm-merchant",
-            project_name="ContractConfirmProject",
-            crypto_symbol="USDTCON",
-            chain_code="eth-contract-confirm",
-            chain_id=8807,
-        )
-
-    def _make_confirming_invoice(self, *, billing_mode: str, out_no: str) -> Invoice:
-        invoice = self.create_test_invoice(
-            out_no=out_no,
-            billing_mode=billing_mode,
-            amount=Decimal("100"),
-            status=InvoiceStatus.CONFIRMING,
-        )
-        transfer = OnchainTransfer.objects.create(
-            chain=self.chain,
-            block=1,
-            hash=f"0x{self.chain.chain_id:08x}{invoice.pk:056x}",
-            event_id=f"ci-{invoice.pk}",
-            crypto=self.crypto,
-            from_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000b3"
-            ),
-            to_address=self.recipient_address,
-            value=Decimal("10000000000"),
-            amount=Decimal("100"),
-            timestamp=int(timezone.now().timestamp()),
-            datetime=timezone.now(),
-        )
-        Invoice.objects.filter(pk=invoice.pk).update(
-            crypto=self.crypto,
-            chain=self.chain,
-            transfer=transfer,
-        )
-        invoice.refresh_from_db()
-        return invoice
-
-    @patch("invoices.tasks.deploy_contract_collection.delay")
-    def test_completed_contract_invoice_triggers_deploy_task(self, mock_delay):
-        invoice = self._make_confirming_invoice(
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            out_no="contract-confirm-order",
-        )
-
-        with (
-            patch("invoices.service.WebhookService.create_event"),
-            patch("invoices.service.send_internal_callback"),
-            self.captureOnCommitCallbacks(execute=True),
-        ):
-            InvoiceService.confirm_invoice(invoice)
-
-        mock_delay.assert_called_once_with(invoice.pk)
-
-    @patch("invoices.tasks.deploy_contract_collection.delay")
-    def test_completed_differ_invoice_does_not_trigger_deploy_task(self, mock_delay):
-        invoice = self._make_confirming_invoice(
-            billing_mode=InvoiceBillingMode.DIFFER,
-            out_no="differ-confirm-order",
-        )
-
-        with (
-            patch("invoices.service.WebhookService.create_event"),
-            patch("invoices.service.send_internal_callback"),
-            self.captureOnCommitCallbacks(execute=True),
-        ):
-            InvoiceService.confirm_invoice(invoice)
-
-        mock_delay.assert_not_called()
-
-
-class RetryContractCollectionBeatTest(TestCase, InvoiceTestMixin):
-    def setUp(self):
-        self.setup_base_fixtures(
-            username="contract-retry-merchant",
-            project_name="ContractRetryProject",
-            crypto_symbol="USDTRET",
-            chain_code="eth-contract-retry",
-            chain_id=8808,
-        )
-        self.invoice = self.create_test_invoice(
-            out_no="contract-retry-order",
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            amount=Decimal("100"),
-            status=InvoiceStatus.COMPLETED,
-        )
-        Invoice.objects.filter(pk=self.invoice.pk).update(
-            updated_at=timezone.now() - timedelta(minutes=10),
-        )
-        self.invoice.refresh_from_db()
-        self.slot = InvoicePaySlot.objects.create(
-            invoice=self.invoice,
-            project=self.invoice.project,
-            version=1,
-            crypto=self.crypto,
-            chain=self.chain,
-            pay_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000ce"
-            ),
-            pay_amount=Decimal("100"),
-            recipient_address=self.recipient_address,
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            status=InvoicePaySlotStatus.MATCHED,
-            matched_at=timezone.now(),
-        )
-        self.deployer = Address.objects.create(
-            wallet=self.project.wallet,
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-            address_index=0,
-            bip44_account=Wallet.get_bip44_account(AddressUsage.Vault),
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000f2"
-            ),
-        )
-
-    def _create_collection_for_slot(self, *, status: str):
-        from evm.models import ContractDeployCollection
-
-        return ContractDeployCollection.objects.create(
-            chain=self.chain,
-            crypto=self.crypto,
-            deployer_address=self.deployer,
-            factory_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000fa"
-            ),
-            collector_address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000fb"
-            ),
-            recipient_address=self.recipient_address,
-            salt=b"\x01" * 32,
-            collector_init_code=b"\x60\x00",
-            collector_init_code_hash=b"\x02" * 32,
-            expected_collect_value_raw=1_000_000,
-            pay_slot=self.slot,
-            status=status,
-        )
-
-    @patch("invoices.tasks.deploy_contract_collection.delay")
-    def test_enqueues_invoice_without_active_collection(self, mock_delay):
-        from invoices.tasks import retry_contract_collection_for_completed_invoices
-
-        retry_contract_collection_for_completed_invoices()
-
-        mock_delay.assert_called_once_with(self.invoice.pk)
-
-    @patch("invoices.tasks.deploy_contract_collection.delay")
-    def test_skips_invoice_with_active_collection(self, mock_delay):
-        from evm.models import ContractDeployCollectionStatus
-        from invoices.tasks import retry_contract_collection_for_completed_invoices
-
-        self._create_collection_for_slot(
-            status=ContractDeployCollectionStatus.BROADCASTED,
-        )
-
-        retry_contract_collection_for_completed_invoices()
-
-        mock_delay.assert_not_called()
-
-    @patch("invoices.tasks.deploy_contract_collection.delay")
-    def test_skips_recently_updated_invoice(self, mock_delay):
-        from invoices.tasks import retry_contract_collection_for_completed_invoices
-
-        Invoice.objects.filter(pk=self.invoice.pk).update(updated_at=timezone.now())
-
-        retry_contract_collection_for_completed_invoices()
-
-        mock_delay.assert_not_called()
-
-    @patch("invoices.tasks.deploy_contract_collection.delay")
-    def test_skips_invoice_after_five_collection_attempts(self, mock_delay):
-        from evm.models import ContractDeployCollectionStatus
-        from invoices.tasks import retry_contract_collection_for_completed_invoices
-
-        for _ in range(5):
-            self._create_collection_for_slot(
-                status=ContractDeployCollectionStatus.FAILED,
-            )
-
-        retry_contract_collection_for_completed_invoices()
-
-        mock_delay.assert_not_called()

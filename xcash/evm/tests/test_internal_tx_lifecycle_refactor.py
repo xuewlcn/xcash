@@ -10,36 +10,23 @@ from django.utils import timezone
 from web3 import Web3
 
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
-from deposits.models import Deposit
-from deposits.models import DepositAddress
-from deposits.models import DepositCollection
-from deposits.models import DepositStatus
-from deposits.models import GasRecharge
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
+from chains.models import TxTaskType
+from chains.models import Transfer
 from evm.choices import TxKind
-from evm.contracts_codec import collector_init_code_hash
-from evm.intents import Eip3009Authorization
 from evm.internal_tx import handlers as handlers_mod
 from evm.internal_tx import matchers as matchers_mod
 from evm.internal_tx.facts import MatchedTransferFact
 from evm.internal_tx.processor import process_internal_transaction
-from evm.models import ContractDeployCollectionStatus
-from evm.models import EvmBroadcastTask
-from evm.models import X402FacilitationStatus
-from evm.services.create2 import ContractDeployCollectionService
-from evm.services.x402 import X402FacilitationService
-from evm.tests._fixtures import make_broadcast_task
+from evm.models import EvmTxTask
+from evm.tests._fixtures import make_tx_task
 from evm.tests._fixtures import make_erc20_token
 from evm.tests._fixtures import make_evm_chain
 from evm.tests._fixtures import make_evm_system_address
 from evm.tests._fixtures import make_tx_hash
 from projects.models import Project
-from users.models import Customer
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalStatus
 
@@ -57,19 +44,19 @@ def _erc20_transfer_log(*, token, from_addr, to_addr, value_raw, log_index):
     }
 
 
-def _base_task_without_asset_fields(*, chain, address, action_type, tx_hash_suffix):
-    return BroadcastTask.objects.create(
+def _base_task_without_asset_fields(*, chain, address, tx_type, tx_hash_suffix):
+    return TxTask.objects.create(
         chain=chain,
         address=address,
-        action_type=action_type,
+        tx_type=tx_type,
         tx_hash=make_tx_hash(tx_hash_suffix),
-        stage=BroadcastTaskStage.PENDING_CHAIN,
-        result=BroadcastTaskResult.UNKNOWN,
+        stage=TxTaskStage.PENDING_CHAIN,
+        result=TxTaskResult.UNKNOWN,
     )
 
 
 def _native_evm_task(*, base_task, address, chain, to, value_raw, nonce=0):
-    return EvmBroadcastTask.objects.create(
+    return EvmTxTask.objects.create(
         base_task=base_task,
         address=address,
         chain=chain,
@@ -91,7 +78,7 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
         base_task = _base_task_without_asset_fields(
             chain=chain,
             address=vault,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash_suffix="0d01",
         )
         _native_evm_task(
@@ -109,7 +96,7 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
             chain=chain,
             out_no="noasset-withdrawal",
             to=recipient,
-            broadcast_task=base_task,
+            tx_task=base_task,
             status=WithdrawalStatus.PENDING,
         )
 
@@ -127,69 +114,12 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
                 receipt={"status": 1, "logs": [], "blockNumber": 10},
             )
 
-        transfer = OnchainTransfer.objects.get(hash=base_task.tx_hash)
+        transfer = Transfer.objects.get(hash=base_task.tx_hash)
         transfer.process()
-        withdrawal = Withdrawal.objects.get(broadcast_task=base_task)
+        withdrawal = Withdrawal.objects.get(tx_task=base_task)
         assert withdrawal.transfer_id == transfer.pk
         assert transfer.crypto_id == chain.native_coin_id
         assert transfer.to_address == recipient
-        assert transfer.value == Decimal(value_raw)
-
-    def test_gas_recharge_matches_from_gas_recharge_and_evm_task(self):
-        chain = make_evm_chain(code="eth-noasset-gas", chain_id=43011)
-        vault = make_evm_system_address(suffix="ad02", usage=AddressUsage.Vault)
-        wallet = vault.wallet
-        deposit_addr = make_evm_system_address(
-            wallet=wallet,
-            suffix="ad12",
-            usage=AddressUsage.Deposit,
-        )
-        project = Project.objects.create(name="NoAssetGas", wallet=wallet)
-        customer = Customer.objects.create(project=project, uid="noasset-gas")
-        deposit_address = DepositAddress.objects.create(
-            customer=customer,
-            chain_type=chain.type,
-            address=deposit_addr,
-        )
-        value_raw = 300_000_000_000_000
-        base_task = _base_task_without_asset_fields(
-            chain=chain,
-            address=vault,
-            action_type=OnchainActionType.GasRecharge,
-            tx_hash_suffix="0a01",
-        )
-        _native_evm_task(
-            base_task=base_task,
-            address=vault,
-            chain=chain,
-            to=deposit_addr.address,
-            value_raw=value_raw,
-        )
-        GasRecharge.objects.create(
-            deposit_address=deposit_address,
-            broadcast_task=base_task,
-        )
-
-        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
-            ts.return_value = (1_700_000_000, timezone.now())
-            process_internal_transaction(
-                chain=chain,
-                tx={
-                    "hash": base_task.tx_hash,
-                    "from": vault.address,
-                    "to": deposit_addr.address,
-                    "value": value_raw,
-                    "input": "0x",
-                },
-                receipt={"status": 1, "logs": [], "blockNumber": 11},
-            )
-
-        transfer = OnchainTransfer.objects.get(hash=base_task.tx_hash)
-        transfer.process()
-        recharge = GasRecharge.objects.get(broadcast_task=base_task)
-        assert recharge.transfer_id == transfer.pk
-        assert transfer.type == OnchainActionType.GasRecharge
-        assert transfer.to_address == deposit_addr.address
         assert transfer.value == Decimal(value_raw)
 
     def test_native_internal_transfer_fails_when_real_tx_recipient_differs(self):
@@ -198,12 +128,12 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
         recipient = Web3.to_checksum_address("0x" + "72" * 20)
         wrong_recipient = Web3.to_checksum_address("0x" + "73" * 20)
         value_raw = 10_000
-        task = make_broadcast_task(
+        task = make_tx_task(
             chain=chain,
             address=address,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash_suffix="7171",
-            stage=BroadcastTaskStage.PENDING_CHAIN,
+            stage=TxTaskStage.PENDING_CHAIN,
         )
         _native_evm_task(
             base_task=task,
@@ -226,25 +156,21 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
         )
 
         task.refresh_from_db()
-        assert task.stage == BroadcastTaskStage.FINALIZED
-        assert task.result == BroadcastTaskResult.FAILED
-        assert (
-            task.failure_reason
-            == BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING
-        )
-        assert not OnchainTransfer.objects.filter(hash=task.tx_hash).exists()
+        assert task.stage == TxTaskStage.PENDING_CHAIN
+        assert task.result == TxTaskResult.UNKNOWN
+        assert not Transfer.objects.filter(hash=task.tx_hash).exists()
 
     def test_native_internal_transfer_fails_when_real_tx_value_differs(self):
         chain = make_evm_chain(code="eth-native-real-value", chain_id=43014)
         address = make_evm_system_address(suffix="ad05")
         recipient = Web3.to_checksum_address("0x" + "75" * 20)
         value_raw = 10_000
-        task = make_broadcast_task(
+        task = make_tx_task(
             chain=chain,
             address=address,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash_suffix="7474",
-            stage=BroadcastTaskStage.PENDING_CHAIN,
+            stage=TxTaskStage.PENDING_CHAIN,
         )
         _native_evm_task(
             base_task=task,
@@ -267,469 +193,26 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
         )
 
         task.refresh_from_db()
-        assert task.stage == BroadcastTaskStage.FINALIZED
-        assert task.result == BroadcastTaskResult.FAILED
-        assert (
-            task.failure_reason
-            == BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING
-        )
-        assert not OnchainTransfer.objects.filter(hash=task.tx_hash).exists()
-
-    def test_erc20_collection_matches_from_deposits_and_evm_task(self):
-        chain = make_evm_chain(code="eth-noasset-col", chain_id=43012)
-        crypto = make_erc20_token(chain=chain, address_suffix="cafe", decimals=6)
-        vault = make_evm_system_address(suffix="ad03", usage=AddressUsage.Vault)
-        wallet = vault.wallet
-        deposit_addr = make_evm_system_address(
-            wallet=wallet,
-            suffix="ad13",
-            usage=AddressUsage.Deposit,
-        )
-        project = Project.objects.create(name="NoAssetCollection", wallet=wallet)
-        customer = Customer.objects.create(project=project, uid="noasset-collection")
-        DepositAddress.objects.create(
-            customer=customer,
-            chain_type=chain.type,
-            address=deposit_addr,
-        )
-        recipient = Web3.to_checksum_address("0x" + "92" * 20)
-        value_raw = 2_500_000
-        base_task = _base_task_without_asset_fields(
-            chain=chain,
-            address=deposit_addr,
-            action_type=OnchainActionType.DepositCollection,
-            tx_hash_suffix="c001",
-        )
-        encoded_args = (
-            "0x"
-            "a9059cbb"
-            f"{recipient.lower().replace('0x', '').rjust(64, '0')}"
-            f"{hex(value_raw)[2:].rjust(64, '0')}"
-        )
-        EvmBroadcastTask.objects.create(
-            base_task=base_task,
-            address=deposit_addr,
-            chain=chain,
-            nonce=0,
-            to=crypto.address(chain),
-            value=0,
-            data=encoded_args,
-            gas=65_000,
-            tx_kind=TxKind.CONTRACT_CALL,
-        )
-        collection = DepositCollection.objects.create(
-            collection_hash=None,
-            broadcast_task=base_task,
-        )
-        deposit_transfer = OnchainTransfer.objects.create(
-            chain=chain,
-            block=1,
-            hash=make_tx_hash("de01"),
-            event_id="erc20:1",
-            crypto=crypto,
-            from_address=Web3.to_checksum_address("0x" + "93" * 20),
-            to_address=deposit_addr.address,
-            value=value_raw,
-            amount=Decimal("2.5"),
-            timestamp=1_700_000_000,
-            datetime=timezone.now(),
-        )
-        Deposit.objects.create(
-            customer=customer,
-            transfer=deposit_transfer,
-            status=DepositStatus.COMPLETED,
-            collection=collection,
-        )
-
-        receipt = {
-            "status": 1,
-            "logs": [
-                _erc20_transfer_log(
-                    token=crypto.address(chain),
-                    from_addr=deposit_addr.address,
-                    to_addr=recipient,
-                    value_raw=value_raw,
-                    log_index=3,
-                )
-            ],
-            "blockNumber": 12,
-        }
-        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
-            ts.return_value = (1_700_000_000, timezone.now())
-            process_internal_transaction(
-                chain=chain,
-                tx={"hash": base_task.tx_hash, "from": deposit_addr.address},
-                receipt=receipt,
-            )
-
-        transfer = OnchainTransfer.objects.get(hash=base_task.tx_hash, event_id="erc20:3")
-        transfer.process()
-        collection.refresh_from_db()
-        assert collection.transfer_id == transfer.pk
-        assert collection.collection_hash == base_task.tx_hash
-        assert transfer.type == OnchainActionType.DepositCollection
-
-
-class X402InternalLifecycleTests(TestCase):
-    def setUp(self):
-        self.chain = make_evm_chain(code="eth-x4-life", chain_id=42161)
-        self.crypto = make_erc20_token(chain=self.chain, address_suffix="ab", decimals=6)
-        self.facilitator = make_evm_system_address(
-            suffix="fc",
-            usage=AddressUsage.Vault,
-        )
-        self.auth_from = Web3.to_checksum_address("0x" + "31" * 20)
-        self.auth_to = Web3.to_checksum_address("0x" + "41" * 20)
-        self.value_raw = 1_000_000
-        now_ts = int(timezone.now().timestamp())
-        result = X402FacilitationService.create_and_schedule(
-            facilitator=self.facilitator,
-            chain=self.chain,
-            crypto=self.crypto,
-            authorization=Eip3009Authorization(
-                from_address=self.auth_from,
-                to=self.auth_to,
-                value=self.value_raw,
-                valid_after=now_ts - 60,
-                valid_before=now_ts + 3_600,
-                nonce=b"\x01" * 32,
-                v=27,
-                r=b"\x02" * 32,
-                s=b"\x03" * 32,
-            ),
-        )
-        self.facilitation = result.facilitation
-        self.base_task = self.facilitation.broadcast_task
-        self.base_task.tx_hash = make_tx_hash("402")
-        self.base_task.stage = BroadcastTaskStage.PENDING_CHAIN
-        self.base_task.save(update_fields=["tx_hash", "stage", "updated_at"])
-
-    def _receipt(self, *, status: int, with_matching_log: bool):
-        logs = []
-        if with_matching_log:
-            logs.append(
-                _erc20_transfer_log(
-                    token=self.crypto.address(self.chain),
-                    from_addr=self.auth_from,
-                    to_addr=self.auth_to,
-                    value_raw=self.value_raw,
-                    log_index=5,
-                )
-            )
-        return {
-            "status": status,
-            "logs": logs,
-            "blockNumber": 1234,
-            "blockHash": make_tx_hash("aa"),
-        }
-
-    def test_success_creates_transfer_and_binds_facilitation(self):
-        tx = {"hash": self.base_task.tx_hash, "from": self.facilitator.address}
-        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
-            ts.return_value = (1_700_000_000, timezone.now())
-            process_internal_transaction(
-                chain=self.chain,
-                tx=tx,
-                receipt=self._receipt(status=1, with_matching_log=True),
-            )
-
-        transfer = OnchainTransfer.objects.get(
-            chain=self.chain,
-            hash=self.base_task.tx_hash,
-            event_id="erc20:5",
-        )
-        transfer.process()
-
-        self.facilitation.refresh_from_db()
-        assert self.facilitation.transfer_id == transfer.pk
-        assert self.facilitation.status == X402FacilitationStatus.BROADCASTED
-        assert transfer.type == OnchainActionType.X402Facilitate
-
-    def test_missing_expected_transfer_fails_closed(self):
-        tx = {"hash": self.base_task.tx_hash, "from": self.facilitator.address}
-        process_internal_transaction(
-            chain=self.chain,
-            tx=tx,
-            receipt=self._receipt(status=1, with_matching_log=False),
-        )
-
-        self.base_task.refresh_from_db()
-        self.facilitation.refresh_from_db()
-        assert self.base_task.stage == BroadcastTaskStage.FINALIZED
-        assert self.base_task.result == BroadcastTaskResult.FAILED
-        assert (
-            self.base_task.failure_reason
-            == BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING
-        )
-        assert self.facilitation.status == X402FacilitationStatus.FAILED
-        assert not OnchainTransfer.objects.filter(hash=self.base_task.tx_hash).exists()
-
-    def test_dropped_facilitation_cannot_be_confirmed_by_stale_transfer(self):
-        transfer = OnchainTransfer.objects.create(
-            chain=self.chain,
-            block=1234,
-            block_hash=make_tx_hash("bd"),
-            hash=self.base_task.tx_hash,
-            event_id="erc20:5",
-            crypto=self.crypto,
-            from_address=self.auth_from,
-            to_address=self.auth_to,
-            value=Decimal(self.value_raw),
-            amount=Decimal("1"),
-            timestamp=1_700_000_000,
-            datetime=timezone.now(),
-            type=OnchainActionType.X402Facilitate,
-        )
-        self.facilitation.transfer = transfer
-        self.facilitation.status = X402FacilitationStatus.DROPPED
-        self.facilitation.save(update_fields=["transfer", "status", "updated_at"])
-
-        handlers_mod.HANDLERS[OnchainActionType.X402Facilitate].confirm(transfer)
-
-        self.facilitation.refresh_from_db()
-        assert self.facilitation.status == X402FacilitationStatus.DROPPED
-
-    def test_failed_facilitation_cannot_be_rebound_by_stale_transfer(self):
-        transfer = OnchainTransfer.objects.create(
-            chain=self.chain,
-            block=1234,
-            block_hash=make_tx_hash("bf"),
-            hash=self.base_task.tx_hash,
-            event_id="erc20:6",
-            crypto=self.crypto,
-            from_address=self.auth_from,
-            to_address=self.auth_to,
-            value=Decimal(self.value_raw),
-            amount=Decimal("1"),
-            timestamp=1_700_000_000,
-            datetime=timezone.now(),
-        )
-        self.facilitation.transfer = None
-        self.facilitation.status = X402FacilitationStatus.FAILED
-        self.facilitation.save(update_fields=["transfer", "status", "updated_at"])
-
-        matched = handlers_mod.HANDLERS[OnchainActionType.X402Facilitate].match(
-            transfer, self.base_task
-        )
-
-        self.facilitation.refresh_from_db()
-        transfer.refresh_from_db()
-        assert matched is False
-        assert self.facilitation.transfer_id is None
-        assert self.facilitation.status == X402FacilitationStatus.FAILED
-        assert transfer.type == ""
-
-
-class Create2InternalLifecycleTests(TestCase):
-    def test_success_creates_transfer_and_binds_collection(self):
-        chain = make_evm_chain(code="eth-c2-life", chain_id=42903)
-        chain.create2_factory_address = Web3.to_checksum_address("0x" + "11" * 20)
-        chain.save(update_fields=["create2_factory_address"])
-        crypto = make_erc20_token(chain=chain, address_suffix="cd", decimals=6)
-        deployer = make_evm_system_address(suffix="d4", usage=AddressUsage.Vault)
-        recipient_address = Web3.to_checksum_address("0x" + "44" * 20)
-        value_raw = 1_000_000
-        result = ContractDeployCollectionService.create_and_schedule(
-            deployer=deployer,
-            chain=chain,
-            crypto=crypto,
-            salt=b"\x01" * 32,
-            recipient_address=recipient_address,
-            expected_collect_value_raw=value_raw,
-            gas=200_000,
-        )
-        collection = result.collection
-        assert collection.collector_init_code_hash == collector_init_code_hash(
-            to=recipient_address,
-            token=crypto.address(chain),
-        )
-        base_task = collection.broadcast_task
-        base_task.tx_hash = make_tx_hash("c2e")
-        base_task.stage = BroadcastTaskStage.PENDING_CHAIN
-        base_task.save(update_fields=["tx_hash", "stage", "updated_at"])
-
-        receipt = {
-            "status": 1,
-            "logs": [
-                _erc20_transfer_log(
-                    token=crypto.address(chain),
-                    from_addr=collection.collector_address,
-                    to_addr=collection.recipient_address,
-                    value_raw=value_raw,
-                    log_index=7,
-                )
-            ],
-            "blockNumber": 1234,
-            "blockHash": make_tx_hash("c2b"),
-        }
-        tx = {"hash": base_task.tx_hash, "from": deployer.address}
-        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
-            ts.return_value = (1_700_000_000, timezone.now())
-            process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
-
-        transfer = OnchainTransfer.objects.get(
-            chain=chain,
-            hash=base_task.tx_hash,
-            event_id="erc20:7",
-        )
-        transfer.process()
-
-        collection.refresh_from_db()
-        assert collection.transfer_id == transfer.pk
-        assert collection.status == ContractDeployCollectionStatus.BROADCASTED
-        assert transfer.type == OnchainActionType.ContractDeployCollect
-
-    def test_native_success_creates_transfer_without_erc20_log(self):
-        chain = make_evm_chain(code="eth-c2-native", chain_id=42913)
-        chain.create2_factory_address = Web3.to_checksum_address("0x" + "21" * 20)
-        chain.save(update_fields=["create2_factory_address"])
-        deployer = make_evm_system_address(suffix="e4", usage=AddressUsage.Vault)
-        recipient_address = Web3.to_checksum_address("0x" + "54" * 20)
-        value_raw = 2_500_000_000_000_000_000
-        result = ContractDeployCollectionService.create_and_schedule(
-            deployer=deployer,
-            chain=chain,
-            crypto=chain.native_coin,
-            salt=b"\x11" * 32,
-            recipient_address=recipient_address,
-            expected_collect_value_raw=value_raw,
-            gas=84_000,
-        )
-        collection = result.collection
-        base_task = collection.broadcast_task
-        base_task.tx_hash = make_tx_hash("c2a1")
-        base_task.stage = BroadcastTaskStage.PENDING_CHAIN
-        base_task.save(update_fields=["tx_hash", "stage", "updated_at"])
-
-        receipt = {
-            "status": 1,
-            "logs": [],
-            "blockNumber": 1235,
-            "blockHash": make_tx_hash("c2c"),
-        }
-        tx = {"hash": base_task.tx_hash, "from": deployer.address}
-        with patch("evm.internal_tx.processor._lookup_block_timestamp") as ts:
-            ts.return_value = (1_700_000_001, timezone.now())
-            process_internal_transaction(chain=chain, tx=tx, receipt=receipt)
-
-        transfer = OnchainTransfer.objects.get(
-            chain=chain,
-            hash=base_task.tx_hash,
-            event_id="native:selfdestruct",
-        )
-        assert transfer.from_address == collection.collector_address
-        assert transfer.to_address == collection.recipient_address
-        assert transfer.value == Decimal(value_raw)
-        transfer.process()
-
-        collection.refresh_from_db()
-        assert collection.transfer_id == transfer.pk
-        assert collection.status == ContractDeployCollectionStatus.BROADCASTED
-        assert transfer.type == OnchainActionType.ContractDeployCollect
-
-    def test_dropped_collection_cannot_be_confirmed_by_stale_transfer(self):
-        chain = make_evm_chain(code="eth-c2-drop", chain_id=42904)
-        chain.create2_factory_address = Web3.to_checksum_address("0x" + "12" * 20)
-        chain.save(update_fields=["create2_factory_address"])
-        crypto = make_erc20_token(chain=chain, address_suffix="ce", decimals=6)
-        deployer = make_evm_system_address(suffix="d5", usage=AddressUsage.Vault)
-        recipient_address = Web3.to_checksum_address("0x" + "45" * 20)
-        result = ContractDeployCollectionService.create_and_schedule(
-            deployer=deployer,
-            chain=chain,
-            crypto=crypto,
-            salt=b"\x02" * 32,
-            recipient_address=recipient_address,
-            expected_collect_value_raw=1_000_000,
-            gas=200_000,
-        )
-        collection = result.collection
-        base_task = collection.broadcast_task
-        transfer = OnchainTransfer.objects.create(
-            chain=chain,
-            block=1234,
-            block_hash=make_tx_hash("c2d"),
-            hash=make_tx_hash("c2f"),
-            event_id="erc20:8",
-            crypto=crypto,
-            from_address=collection.collector_address,
-            to_address=collection.recipient_address,
-            value=Decimal("1000000"),
-            amount=Decimal("1"),
-            timestamp=1_700_000_000,
-            datetime=timezone.now(),
-            type=OnchainActionType.ContractDeployCollect,
-        )
-        collection.transfer = transfer
-        collection.status = ContractDeployCollectionStatus.DROPPED
-        collection.save(update_fields=["transfer", "status", "updated_at"])
-
-        handlers_mod.HANDLERS[OnchainActionType.ContractDeployCollect].confirm(transfer)
-
-        collection.refresh_from_db()
-        base_task.refresh_from_db()
-        assert collection.status == ContractDeployCollectionStatus.DROPPED
-
-    def test_failed_collection_cannot_be_rebound_by_stale_transfer(self):
-        chain = make_evm_chain(code="eth-c2-failed", chain_id=42905)
-        chain.create2_factory_address = Web3.to_checksum_address("0x" + "13" * 20)
-        chain.save(update_fields=["create2_factory_address"])
-        crypto = make_erc20_token(chain=chain, address_suffix="cf", decimals=6)
-        deployer = make_evm_system_address(suffix="d6", usage=AddressUsage.Vault)
-        result = ContractDeployCollectionService.create_and_schedule(
-            deployer=deployer,
-            chain=chain,
-            crypto=crypto,
-            salt=b"\x03" * 32,
-            recipient_address=Web3.to_checksum_address("0x" + "46" * 20),
-            expected_collect_value_raw=1_000_000,
-            gas=200_000,
-        )
-        collection = result.collection
-        transfer = OnchainTransfer.objects.create(
-            chain=chain,
-            block=1234,
-            block_hash=make_tx_hash("c2a"),
-            hash=make_tx_hash("c2b"),
-            event_id="erc20:9",
-            crypto=crypto,
-            from_address=collection.collector_address,
-            to_address=collection.recipient_address,
-            value=Decimal("1000000"),
-            amount=Decimal("1"),
-            timestamp=1_700_000_000,
-            datetime=timezone.now(),
-        )
-        collection.status = ContractDeployCollectionStatus.FAILED
-        collection.save(update_fields=["status", "updated_at"])
-
-        matched = handlers_mod.HANDLERS[OnchainActionType.ContractDeployCollect].match(
-            transfer, collection.broadcast_task
-        )
-
-        collection.refresh_from_db()
-        transfer.refresh_from_db()
-        assert matched is False
-        assert collection.transfer_id is None
-        assert collection.status == ContractDeployCollectionStatus.FAILED
-        assert transfer.type == ""
+        assert task.stage == TxTaskStage.PENDING_CHAIN
+        assert task.result == TxTaskResult.UNKNOWN
+        assert not Transfer.objects.filter(hash=task.tx_hash).exists()
 
 
 class ProcessorFailureAtomicityTests(TransactionTestCase):
-    def test_failed_finalize_rolls_back_broadcast_task_when_handler_raises(self):
+    def test_failed_finalize_rolls_back_tx_task_when_handler_raises(self):
         chain = make_evm_chain(code="eth-atomic", chain_id=43001)
         address = make_evm_system_address(suffix="a7")
-        task = make_broadcast_task(
+        task = make_tx_task(
             chain=chain,
             address=address,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash_suffix="fa11",
-            stage=BroadcastTaskStage.PENDING_CHAIN,
+            stage=TxTaskStage.PENDING_CHAIN,
         )
-        original_handler = handlers_mod.HANDLERS[OnchainActionType.Withdrawal]
+        original_handler = handlers_mod.HANDLERS[TxTaskType.Withdrawal]
         handler = MagicMock()
         handler.finalize_failed.side_effect = RuntimeError("business failure")
-        handlers_mod.HANDLERS[OnchainActionType.Withdrawal] = handler
+        handlers_mod.HANDLERS[TxTaskType.Withdrawal] = handler
         try:
             with self.assertRaisesRegex(RuntimeError, "business failure"):
                 process_internal_transaction(
@@ -738,31 +221,29 @@ class ProcessorFailureAtomicityTests(TransactionTestCase):
                     receipt={"status": 0, "logs": [], "blockNumber": 1},
                 )
         finally:
-            handlers_mod.HANDLERS[OnchainActionType.Withdrawal] = original_handler
+            handlers_mod.HANDLERS[TxTaskType.Withdrawal] = original_handler
 
         task.refresh_from_db()
-        assert task.stage == BroadcastTaskStage.PENDING_CHAIN
-        assert task.result == BroadcastTaskResult.UNKNOWN
-        assert task.failure_reason == ""
+        assert task.stage == TxTaskStage.PENDING_CHAIN
+        assert task.result == TxTaskResult.UNKNOWN
 
     def test_failed_finalize_skips_handler_when_task_already_finalized(self):
         chain = make_evm_chain(code="eth-finalize-once", chain_id=43015)
         address = make_evm_system_address(suffix="a9")
-        task = make_broadcast_task(
+        task = make_tx_task(
             chain=chain,
             address=address,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash_suffix="7676",
-            stage=BroadcastTaskStage.PENDING_CHAIN,
+            stage=TxTaskStage.PENDING_CHAIN,
         )
-        BroadcastTask.objects.filter(pk=task.pk).update(
-            stage=BroadcastTaskStage.FINALIZED,
-            result=BroadcastTaskResult.FAILED,
-            failure_reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+        TxTask.objects.filter(pk=task.pk).update(
+            stage=TxTaskStage.FINALIZED,
+            result=TxTaskResult.FAILED,
         )
-        original_handler = handlers_mod.HANDLERS[OnchainActionType.Withdrawal]
+        original_handler = handlers_mod.HANDLERS[TxTaskType.Withdrawal]
         handler = MagicMock()
-        handlers_mod.HANDLERS[OnchainActionType.Withdrawal] = handler
+        handlers_mod.HANDLERS[TxTaskType.Withdrawal] = handler
         try:
             process_internal_transaction(
                 chain=chain,
@@ -770,7 +251,7 @@ class ProcessorFailureAtomicityTests(TransactionTestCase):
                 receipt={"status": 0, "logs": [], "blockNumber": 1},
             )
         finally:
-            handlers_mod.HANDLERS[OnchainActionType.Withdrawal] = original_handler
+            handlers_mod.HANDLERS[TxTaskType.Withdrawal] = original_handler
 
         handler.finalize_failed.assert_not_called()
 
@@ -779,12 +260,12 @@ class ProcessorTimestampReuseTests(TestCase):
     def test_supplied_block_time_skips_block_lookup(self):
         chain = make_evm_chain(code="eth-ts", chain_id=43002)
         address = make_evm_system_address(suffix="a8")
-        task = make_broadcast_task(
+        task = make_tx_task(
             chain=chain,
             address=address,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash_suffix="55",
-            stage=BroadcastTaskStage.PENDING_CHAIN,
+            stage=TxTaskStage.PENDING_CHAIN,
         )
         fact = MatchedTransferFact(
             event_id="native:tx",
@@ -794,9 +275,9 @@ class ProcessorTimestampReuseTests(TestCase):
             value=Decimal("1000000000000000000"),
             amount=Decimal("1"),
         )
-        original_matcher = matchers_mod.MATCHERS[OnchainActionType.Withdrawal]
-        matchers_mod.MATCHERS[OnchainActionType.Withdrawal] = (
-            lambda *, chain, broadcast_task, receipt, tx=None: fact
+        original_matcher = matchers_mod.MATCHERS[TxTaskType.Withdrawal]
+        matchers_mod.MATCHERS[TxTaskType.Withdrawal] = (
+            lambda *, chain, tx_task, receipt, tx=None: fact
         )
         try:
             with patch("evm.internal_tx.processor._lookup_block_timestamp") as lookup:
@@ -814,4 +295,4 @@ class ProcessorTimestampReuseTests(TestCase):
                 )
             lookup.assert_not_called()
         finally:
-            matchers_mod.MATCHERS[OnchainActionType.Withdrawal] = original_matcher
+            matchers_mod.MATCHERS[TxTaskType.Withdrawal] = original_matcher

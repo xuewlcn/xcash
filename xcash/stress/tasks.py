@@ -551,12 +551,7 @@ def _verify_collection_cache_key(stress_run_id: int) -> str:
 @shared_task(bind=True, ignore_result=True, soft_time_limit=120, time_limit=180)
 @singleton_task(timeout=180, use_params=True)
 def verify_deposit_collection(self, stress_run_id: int) -> None:
-    """Phase 2：单轮触发归集 + 进度判定，未完成则 self-reschedule，让出 worker 线程。
-
-    改造前是 `while True: ... time.sleep(30)` 同步轮询，30 分钟硬顶下会卡掉 1/8
-    的 stress 队列并发能力。改造后每次仅跑"一次 _gather_deposits_task + 一次 DB
-    查询"，把 prev_progress / stall_rounds / start_ts 写到 Django cache，30 秒后
-    通过 apply_async(countdown=30) 自调度下一轮。
+    """Phase 2：DepositSlot 体系下轮询 Deposit 是否完成。
 
     幂等保证：
     - singleton_task(use_params=True) 用 stress_run_id 区分锁，同一 run 同时只有
@@ -578,7 +573,6 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
     self.retry 是错误重试机制，max_retries=3 不够 30+ 轮等待，且语义不对）。
     """
     from deposits.models import Deposit
-    from deposits.tasks import gather_deposits as _gather_deposits_task
 
     # ── 1. 前置条件检查（不更新 state，不重调度）────────────────
     # 还有 case 尚未通过 webhook 阶段：直接 return。后续 webhook handler
@@ -658,42 +652,20 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
             tx_hashes.append(h.removeprefix("0x"))
     expected_case_hashes = {c.tx_hash.removeprefix("0x") for c in webhook_ok_cases}
 
-    try:
-        _gather_deposits_task()
-    except Exception:
-        logger.warning("stress.deposit_collection.gather_failed", exc_info=True)
-
     deposits = list(
         Deposit.objects.filter(
             transfer__hash__in=tx_hashes,
             customer__project=stress.project,
             status="completed",
         )
-        .select_related("transfer", "collection")
+        .select_related("transfer")
         .order_by("pk")
     )
     matched_hashes = {deposit.transfer.hash.removeprefix("0x") for deposit in deposits}
     missing_deposit_count = len(expected_case_hashes - matched_hashes)
-    no_collection_count = sum(
-        1 for deposit in deposits if deposit.collection_id is None
-    )
-    pending_confirm_count = sum(
-        1
-        for deposit in deposits
-        if deposit.collection_id is not None
-        and deposit.collection.collected_at is None
-    )
-    progress_key = (
-        missing_deposit_count,
-        no_collection_count,
-        pending_confirm_count,
-    )
+    progress_key = (missing_deposit_count, 0, 0)
 
     # ── 5. 判定逻辑 ────────────────────────────────────────────
-    # 区分"未匹配到 Deposit"、"已匹配但尚未建单"、"已建单待链上确认" 三个阶段。
-    # CollectSchedule 重构后，归集任务会先经历 "等待 schedule 到期 -> 创建
-    # DepositCollection -> 链上广播/确认" 三步，只看最终 uncollected 数会把
-    # "已建单但待确认"误判成无进展。
     if progress_key == (0, 0, 0):
         logger.info(
             "stress.deposit_collection.all_collected",
@@ -715,8 +687,8 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
             "stress.deposit_collection.stalled",
             stress_run_id=stress_run_id,
             missing_deposit_count=missing_deposit_count,
-            no_collection_count=no_collection_count,
-            pending_confirm_count=pending_confirm_count,
+            no_collection_count=0,
+            pending_confirm_count=0,
             stall_seconds=int(now_ts - stall_since_ts),
         )
         _finalize_collection_verification(
@@ -743,14 +715,7 @@ def _finalize_collection_verification(
     webhook_ok_cases: list[DepositStressCase],
     reason: str,
 ) -> None:
-    """归集验证判定阶段：逐个 case 校验 Deposit + DepositCollection 状态，
-    标 SUCCEEDED / FAILED 并触发 on_case_finished。
-
-    被以下三种触发点调用：
-    - reason="completed"   归集已全部完成（progress_key == (0,0,0)）
-    - reason="stalled"     连续两轮进度不下降
-    - reason="overall_timeout"  整体兜底超时（30 分钟）
-    """
+    """DepositSlot 体系下，Deposit 完成即代表入账验证完成。"""
     from deposits.models import Deposit
 
     logger.info(
@@ -771,7 +736,6 @@ def _finalize_collection_verification(
                 transfer__hash__in=hash_variants,
                 customer__project=stress.project,
             )
-            .select_related("collection")
             .first()
         )
 
@@ -782,20 +746,15 @@ def _finalize_collection_verification(
             "error",
             "finished_at",
         ]
-        if (
-            deposit
-            and deposit.collection
-            and deposit.collection.collected_at is not None
-        ):
+        if deposit:
             case.collection_verified = True
-            case.collection_hash = deposit.collection.collection_hash or ""
+            case.collection_hash = deposit.transfer.hash
             case.status = DepositStressCaseStatus.SUCCEEDED
             case.collection_done_at = timezone.now()
             update_fields.append("collection_done_at")
         else:
             case.status = DepositStressCaseStatus.FAILED
-            reason_text = "未找到 Deposit 记录" if not deposit else "归集未完成"
-            case.error = reason_text
+            case.error = "未找到 Deposit 记录"
 
         case.finished_at = timezone.now()
         case.save(update_fields=update_fields)
@@ -817,16 +776,8 @@ def _verify_invoice_collection_cache_key(stress_run_id: int) -> str:
 @shared_task(bind=True, ignore_result=True, soft_time_limit=120, time_limit=180)
 @singleton_task(timeout=180, use_params=True)
 def verify_invoice_collection(self, stress_run_id: int) -> None:
-    """合约账单归集验证 self-rescheduling task。
-
-    与 verify_deposit_collection 同结构：singleton 锁按 stress_run_id 隔离，
-    每轮采集进度三元组，进度严格递减则继续轮询，否则按 stall / overall
-    timeout 判定后 finalize。
-    """
-    from invoices.models import Invoice
+    """DepositSlot 合约账单不再执行旧 collector 归集，webhook OK 后直接收口。"""
     from invoices.models import InvoiceBillingMode
-    from invoices.models import InvoicePaySlotStatus
-    from evm.models import ContractDeployCollectionStatus
 
     try:
         stress = StressRun.objects.select_related("project").get(pk=stress_run_id)
@@ -845,109 +796,8 @@ def verify_invoice_collection(self, stress_run_id: int) -> None:
     if not webhook_ok_cases:
         return
 
-    cache_key = _verify_invoice_collection_cache_key(stress_run_id)
-    state = cache.get(cache_key)
-    now_ts = time.time()
-    if state is None:
-        prev_progress_key: tuple[int, int, int] | None = None
-        stall_since_ts = now_ts
-        start_ts = now_ts
-    else:
-        raw_prev = state.get("prev_progress")
-        prev_progress_key = None if raw_prev is None else tuple(raw_prev)
-        stall_since_ts = state.get("stall_since_ts", now_ts)
-        start_ts = state.get("start_ts", now_ts)
-
-    if now_ts - start_ts > _VERIFY_INVOICE_COLLECTION_OVERALL_TIMEOUT:
-        logger.warning(
-            "stress.invoice_collection.overall_timeout",
-            stress_run_id=stress_run_id,
-            elapsed=int(now_ts - start_ts),
-        )
-        _finalize_invoice_collection_verification(
-            stress, webhook_ok_cases, reason="overall_timeout"
-        )
-        cache.delete(cache_key)
-        return
-
-    # ── 单轮进度采集
-    sys_nos = [c.invoice_sys_no for c in webhook_ok_cases]
-    invoices = {
-        inv.sys_no: inv
-        for inv in Invoice.objects.filter(sys_no__in=sys_nos).prefetch_related(
-            "pay_slots__contract_deploy_collections"
-        )
-    }
-
-    missing_invoice_count = 0
-    no_collection_count = 0
-    pending_confirm_count = 0
-    for case in webhook_ok_cases:
-        invoice = invoices.get(case.invoice_sys_no)
-        if invoice is None:
-            missing_invoice_count += 1
-            continue
-        slot = (
-            invoice.pay_slots.filter(
-                status=InvoicePaySlotStatus.MATCHED,
-                billing_mode=InvoiceBillingMode.CONTRACT,
-            )
-            .order_by("-matched_at", "-version", "-pk")
-            .first()
-        )
-        if slot is None:
-            missing_invoice_count += 1
-            continue
-        collection = (
-            slot.contract_deploy_collections.order_by("-created_at", "-pk").first()
-        )
-        if collection is None:
-            no_collection_count += 1
-            continue
-        if collection.status != ContractDeployCollectionStatus.CONFIRMED:
-            pending_confirm_count += 1
-
-    progress_key = (
-        missing_invoice_count,
-        no_collection_count,
-        pending_confirm_count,
-    )
-
-    if progress_key == (0, 0, 0):
-        _finalize_invoice_collection_verification(
-            stress, webhook_ok_cases, reason="completed"
-        )
-        cache.delete(cache_key)
-        return
-
-    if prev_progress_key is None or progress_key < prev_progress_key:
-        stall_since_ts = now_ts
-    elif now_ts - stall_since_ts > _VERIFY_INVOICE_COLLECTION_STALL_TIMEOUT:
-        logger.warning(
-            "stress.invoice_collection.stalled",
-            stress_run_id=stress_run_id,
-            missing_invoice_count=missing_invoice_count,
-            no_collection_count=no_collection_count,
-            pending_confirm_count=pending_confirm_count,
-            stall_seconds=int(now_ts - stall_since_ts),
-        )
-        _finalize_invoice_collection_verification(
-            stress, webhook_ok_cases, reason="stalled"
-        )
-        cache.delete(cache_key)
-        return
-
-    cache.set(
-        cache_key,
-        {
-            "prev_progress": list(progress_key),
-            "stall_since_ts": stall_since_ts,
-            "start_ts": start_ts,
-        },
-        timeout=_VERIFY_INVOICE_COLLECTION_CACHE_TIMEOUT,
-    )
-    verify_invoice_collection.apply_async(
-        args=[stress_run_id], countdown=_VERIFY_INVOICE_COLLECTION_INTERVAL
+    _finalize_invoice_collection_verification(
+        stress, webhook_ok_cases, reason="completed"
     )
 
 
@@ -956,11 +806,8 @@ def _finalize_invoice_collection_verification(
     webhook_ok_cases: list[InvoiceStressCase],
     reason: str,
 ) -> None:
-    """逐 case 校验 ContractDeployCollection 状态并打终态。"""
+    """DepositSlot 合约账单不再检查旧合约归集记录。"""
     from invoices.models import Invoice
-    from invoices.models import InvoiceBillingMode
-    from invoices.models import InvoicePaySlotStatus
-    from evm.models import ContractDeployCollectionStatus
 
     logger.info(
         "stress.invoice_collection.finalize",
@@ -972,26 +819,8 @@ def _finalize_invoice_collection_verification(
     for case in webhook_ok_cases:
         invoice = (
             Invoice.objects.filter(sys_no=case.invoice_sys_no)
-            .prefetch_related("pay_slots__contract_deploy_collections")
             .first()
         )
-        collection = None
-        if invoice is not None:
-            slot = (
-                invoice.pay_slots.filter(
-                    status=InvoicePaySlotStatus.MATCHED,
-                    billing_mode=InvoiceBillingMode.CONTRACT,
-                )
-                .order_by("-matched_at", "-version", "-pk")
-                .first()
-            )
-            if slot is not None:
-                collection = (
-                    slot.contract_deploy_collections.order_by(
-                        "-created_at", "-pk"
-                    ).first()
-                )
-
         update_fields = [
             "collection_verified",
             "collection_hash",
@@ -1000,13 +829,9 @@ def _finalize_invoice_collection_verification(
             "finished_at",
         ]
         now = timezone.now()
-        if collection is not None and collection.status == (
-            ContractDeployCollectionStatus.CONFIRMED
-        ):
+        if invoice is not None:
             case.collection_verified = True
-            case.collection_hash = (
-                collection.transfer.hash if collection.transfer_id else ""
-            )
+            case.collection_hash = invoice.transfer.hash if invoice.transfer_id else ""
             case.status = InvoiceStressCaseStatus.SUCCEEDED
             case.collection_done_at = now
             update_fields.append("collection_done_at")
@@ -1014,12 +839,8 @@ def _finalize_invoice_collection_verification(
             case.status = InvoiceStressCaseStatus.FAILED
             if invoice is None:
                 case.error = "未找到对应 Invoice"
-            elif collection is None:
-                case.error = "未找到归集记录 ContractDeployCollection"
             else:
-                case.error = (
-                    f"归集未完成（status={collection.status}, reason={reason}）"
-                )
+                case.error = f"DepositSlot 账单未完成（reason={reason}）"
         case.finished_at = now
         case.save(update_fields=update_fields)
         StressService.on_case_finished(case)

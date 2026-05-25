@@ -150,7 +150,7 @@ class WithdrawalAdmin(ModelAdmin):
         "reviewed_by",
         "reviewed_at",
         "transfer",
-        "broadcast_task",
+        "tx_task",
         "created_at",
         "updated_at",
     )
@@ -186,7 +186,7 @@ class WithdrawalAdmin(ModelAdmin):
             {
                 "fields": (
                     "hash",
-                    "broadcast_task",
+                    "tx_task",
                     "transfer",
                 )
             },

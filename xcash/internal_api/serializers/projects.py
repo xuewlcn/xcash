@@ -15,9 +15,6 @@ HMAC_KEY_MAX_LENGTH = 32
 IP_WHITE_LIST_MAX_ENTRIES = 100
 FAST_CONFIRM_THRESHOLD_MAX = Decimal("1000000")
 WITHDRAWAL_LIMIT_MAX = Decimal("10000000")
-GATHER_WORTH_MAX = Decimal("10000000")
-GATHER_PERIOD_MIN = 1
-GATHER_PERIOD_MAX = 525600
 
 
 class ProjectCreateSerializer(serializers.ModelSerializer):
@@ -46,8 +43,6 @@ class ProjectUpdateSerializer(serializers.ModelSerializer):
             "withdrawal_review_exempt_limit",
             "withdrawal_single_limit",
             "withdrawal_daily_limit",
-            "gather_worth",
-            "gather_period",
         ]
         extra_kwargs = {field: {"required": False} for field in fields}
 
@@ -128,26 +123,6 @@ class ProjectUpdateSerializer(serializers.ModelSerializer):
             WITHDRAWAL_LIMIT_MAX,
         )
 
-    def validate_gather_worth(self, value: Decimal) -> Decimal:
-        if value < 0:
-            raise serializers.ValidationError("gather_worth 不能为负数")
-        if value > GATHER_WORTH_MAX:
-            raise serializers.ValidationError(
-                f"gather_worth 不能超过 {GATHER_WORTH_MAX}"
-            )
-        return value
-
-    def validate_gather_period(self, value: int) -> int:
-        if value < GATHER_PERIOD_MIN:
-            raise serializers.ValidationError(
-                f"gather_period 不能小于 {GATHER_PERIOD_MIN}"
-            )
-        if value > GATHER_PERIOD_MAX:
-            raise serializers.ValidationError(
-                f"gather_period 不能超过 {GATHER_PERIOD_MAX}"
-            )
-        return value
-
     def validate(self, attrs):
         """跨字段校验：单笔限额不能超过日限额。
 
@@ -192,8 +167,6 @@ class ProjectDetailSerializer(serializers.ModelSerializer):
             "withdrawal_review_exempt_limit",
             "withdrawal_single_limit",
             "withdrawal_daily_limit",
-            "gather_worth",
-            "gather_period",
             "vault_address",
             "is_ready",
             "ready_errors",

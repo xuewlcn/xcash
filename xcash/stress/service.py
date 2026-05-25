@@ -23,7 +23,6 @@ from invoices.models import Invoice
 from invoices.models import InvoiceBillingMode
 from projects.models import Project
 from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 
 from .models import DepositStressCase
 from .models import InvoiceStressCase
@@ -58,8 +57,6 @@ class StressService:
 
         with transaction.atomic():
             _ensure_stress_crypto_prices()
-            _ensure_native_scanner_enabled()
-            _ensure_local_create2_factory()
             _cleanup_orphan_stress_project(stress)
             project = _create_stress_project(stress)
             _setup_recipient_addresses(project)
@@ -68,19 +65,13 @@ class StressService:
                 case.billing_mode == InvoiceBillingMode.CONTRACT for case in cases
             )
 
-            # 提币、充币和合约账单部署归集都需要 Wallet + EVM Vault。
+            # 提币、充币和合约账单都需要 Wallet + EVM Vault。
             if (
                 stress.withdrawal_count > 0
                 or stress.deposit_count > 0
                 or has_contract_invoice
             ):
                 _setup_wallet_for_withdrawal(project)
-
-            # 充币压测：到期即归集，并把首次窗口压到 1 分钟，避免验证阶段久等。
-            if stress.deposit_count > 0:
-                project.gather_worth = Decimal("0")
-                project.gather_period = 1
-                project.save(update_fields=["gather_worth", "gather_period"])
 
             stress.project = project
             stress.error = ""
@@ -350,10 +341,9 @@ class StressService:
         return resp.json()
 
 
-# Anvil 默认助记词派生的账户地址（索引 5-9，避免与付款账户 0 冲突）
+# Anvil 默认助记词派生的账户地址（索引 5，避免与付款账户 0 冲突）
 _ANVIL_RECIPIENT_ADDRESSES = [
     "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",  # index 5
-    "0x976EA74026E726554dB657fA54763abd0C3a0aa9",  # index 6
 ]
 
 
@@ -362,8 +352,6 @@ def _setup_recipient_addresses(project: Project) -> None:
 
     压测链路固定跑本地测试链，不再依赖"系统里已有其他项目模板地址"。
     - EVM: 直接使用 Anvil 预置账户地址
-    - RecipientAddress 全局仍保持"单记录单用途"约束，因此 stress 专用
-      Project 通过同链两条地址记录分别承接 invoice / deposit。
     """
     from chains.models import ChainType
 
@@ -372,7 +360,6 @@ def _setup_recipient_addresses(project: Project) -> None:
         name: str,
         chain_type: str,
         address: str,
-        usage: str,
     ) -> None:
         RecipientAddress.objects.update_or_create(
             chain_type=chain_type,
@@ -380,21 +367,13 @@ def _setup_recipient_addresses(project: Project) -> None:
             defaults={
                 "name": name,
                 "project": project,
-                "usage": usage,
             },
         )
 
     upsert_recipient(
-        name=f"Stress-{project.pk}-evm-invoice",
+        name=f"Stress-{project.pk}-evm",
         chain_type=ChainType.EVM,
         address=_ANVIL_RECIPIENT_ADDRESSES[0],
-        usage=RecipientAddressUsage.INVOICE,
-    )
-    upsert_recipient(
-        name=f"Stress-{project.pk}-evm-deposit",
-        chain_type=ChainType.EVM,
-        address=_ANVIL_RECIPIENT_ADDRESSES[1],
-        usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
     )
 
 
@@ -417,97 +396,6 @@ def _ensure_stress_crypto_prices() -> None:
             crypto.prices.update(fallback)
             crypto.save(update_fields=["prices"])
             logger.info("stress.backfill_price", symbol=symbol, prices=crypto.prices)
-
-
-def _ensure_native_scanner_enabled() -> None:
-    """合约账单创建要求 native scanner 开启；在 prepare 阶段幂等保证。
-
-    保留"已为 True 时不重复 save"，避免无意义的 updated_at 漂移。
-    显式 cache.delete 让下一次 get_platform_settings() 重新拉数据库。
-    """
-    from core.models import PLATFORM_SETTINGS_CACHE_KEY
-    from core.models import PlatformSettings
-
-    settings = PlatformSettings.objects.order_by("pk").first()
-    if settings is None:
-        PlatformSettings.objects.create(open_native_scanner=True)
-        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
-        return
-
-    if settings.open_native_scanner:
-        return
-
-    settings.open_native_scanner = True
-    settings.save(update_fields=["open_native_scanner"])
-    cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
-
-
-# PaymentCollectorFactory artifact 路径相对项目根（settings.BASE_DIR 已经是 manage.py 所在目录）。
-_FACTORY_ARTIFACT_DIR = "xcash/evm/contracts/artifacts"
-
-
-def _load_factory_artifact() -> tuple[list, str]:
-    """读取 PaymentCollectorFactory 的 ABI 与 bytecode。
-
-    artifact 通过 forge 编译产出，已提交到仓库；本函数只是简单解析两个文件，
-    避免在 stress 模块和 core 之间拉关系。
-    """
-    import json as _json
-    from pathlib import Path
-
-    base = Path(settings.BASE_DIR) / _FACTORY_ARTIFACT_DIR
-    abi_path = base / "PaymentCollectorFactory.abi.json"
-    bin_path = base / "PaymentCollectorFactory.bin"
-    abi = _json.loads(abi_path.read_text())
-    bytecode_text = bin_path.read_text().strip()
-    if not bytecode_text.startswith("0x"):
-        bytecode_text = "0x" + bytecode_text
-    return abi, bytecode_text
-
-
-def _get_w3():
-    """惰性绑定到 stress.evm._get_w3，便于测试 patch stress.service._get_w3。"""
-    from .evm import _get_w3 as _impl
-
-    return _impl()
-
-
-def _ensure_local_create2_factory() -> None:
-    """合约账单依赖 chain.create2_factory_address；prepare 阶段幂等部署。
-
-    已配置则直接返回；未配置则连 anvil 部署 PaymentCollectorFactory，
-    把地址写回 ethereum-local。失败时抛 RuntimeError 中止 prepare，
-    交给运维排查（防止 case 在 create_invoice 阶段大规模 FAIL）。
-    """
-    from chains.models import Chain
-
-    chain = Chain.objects.get(code="ethereum-local")
-    if chain.create2_factory_address:
-        return
-
-    abi, bytecode = _load_factory_artifact()
-    w3 = _get_w3()
-    try:
-        deployer = w3.eth.accounts[0]
-    except IndexError as exc:
-        raise RuntimeError("本地 anvil 未提供可用部署账户") from exc
-
-    contract_factory = w3.eth.contract(abi=abi, bytecode=bytecode)
-    tx_hash = contract_factory.constructor().transact({"from": deployer})
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
-    factory_address = receipt.get("contractAddress")
-    if not factory_address:
-        raise RuntimeError("PaymentCollectorFactory 部署失败：回执缺少合约地址")
-
-    from web3 import Web3
-
-    chain.create2_factory_address = Web3.to_checksum_address(factory_address)
-    chain.save(update_fields=["create2_factory_address"])
-    logger.info(
-        "stress.factory_deployed",
-        chain=chain.code,
-        address=chain.create2_factory_address,
-    )
 
 
 def _cleanup_orphan_stress_project(stress: StressRun) -> None:
@@ -564,14 +452,8 @@ def _setup_wallet_for_withdrawal(project: Project) -> None:
 
 
 def _pick_billing_mode() -> str:
-    """按 40% contract / 60% differ 独立抽样。
-
-    需求强调"差不多 40/60 左右"，因此采用 Bernoulli 抽样而非配额拆分。
-    count 较小时实际比例会有抖动，但符合"压测样本而非严格配比"的语义。
-    """
-    if random.random() < 0.4:  # noqa: S311
-        return InvoiceBillingMode.CONTRACT
-    return InvoiceBillingMode.DIFFER
+    """压测目前仅生成 EVM 账单；新架构下 EVM 一律走 DepositSlot 即 CONTRACT。"""
+    return InvoiceBillingMode.CONTRACT
 
 
 def _build_stress_cases(stress: StressRun) -> list[InvoiceStressCase]:

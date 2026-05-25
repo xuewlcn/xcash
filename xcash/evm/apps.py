@@ -27,7 +27,7 @@ def _install_db_triggers_after_migrate(sender, **kwargs) -> None:
     from django.db import connections  # noqa: PLC0415
 
     existing_tables = set(connections[using].introspection.table_names())
-    if "evm_evmbroadcasttask" not in existing_tables:
+    if "evm_evmtxtask" not in existing_tables:
         return
     from evm.db_triggers import install_triggers  # noqa: PLC0415
 

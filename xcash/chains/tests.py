@@ -22,17 +22,17 @@ from web3.exceptions import ExtraDataLengthError
 from chains.models import Address
 from chains.models import AddressChainState
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import ConfirmMode
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import TransferStatus
 from chains.models import TxHash
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
+from chains.models import TxTaskType
+from chains.models import TransferType
 from chains.models import Wallet
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
@@ -169,7 +169,7 @@ class TransferMatchingTests(TestCase):
         to_address = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000002"
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
             hash="0x" + "1" * 64,
@@ -182,7 +182,7 @@ class TransferMatchingTests(TestCase):
             timestamp=1,
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMED,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
         )
 
         expected_value = raw_amount(
@@ -235,7 +235,7 @@ class TransferMatchingTests(TestCase):
         to_address = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000004"
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
             hash="0x" + "2" * 64,
@@ -248,7 +248,7 @@ class TransferMatchingTests(TestCase):
             timestamp=1,
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMED,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
         )
 
         self.assertTrue(
@@ -309,7 +309,7 @@ class ChainPoaRetryTests(TestCase):
         retry_w3.middleware_onion.inject.assert_called_once()
 
 
-class BroadcastTaskValidationTests(TestCase):
+class TxTaskValidationTests(TestCase):
     def setUp(self):
         self.wallet = Wallet.objects.create()
         self.crypto = Crypto.objects.create(
@@ -335,31 +335,15 @@ class BroadcastTaskValidationTests(TestCase):
             address="0x0000000000000000000000000000000000000001",
         )
 
-    def test_failed_result_must_be_finalized_with_failure_reason(self):
-        # 失败是终局结果，必须落在已结束阶段，并给出可统计的失败原因。
-        task = BroadcastTask(
+    def test_failed_result_must_be_finalized(self):
+        # 失败是终局结果，必须落在已结束阶段。
+        task = TxTask(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "1" * 64,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.FAILED,
-            failure_reason=BroadcastTaskFailureReason.RPC_REJECTED,
-        )
-
-        with self.assertRaises(ValidationError):
-            task.full_clean()
-
-    def test_non_failed_task_cannot_keep_failure_reason(self):
-        # 非失败任务如果残留失败原因，会让后台和统计系统误判终局。
-        task = BroadcastTask(
-            chain=self.chain,
-            address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
-            tx_hash="0x" + "2" * 64,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
-            failure_reason=BroadcastTaskFailureReason.RPC_REJECTED,
+            stage=TxTaskStage.PENDING_CHAIN,
+            result=TxTaskResult.FAILED,
         )
 
         with self.assertRaises(ValidationError):
@@ -367,9 +351,6 @@ class BroadcastTaskValidationTests(TestCase):
 
 
 class WalletBip44AccountMapTests(TestCase):
-    def test_deposit_maps_to_bip44_account_1(self):
-        self.assertEqual(Wallet.get_bip44_account(AddressUsage.Deposit), 1)
-
     def test_vault_maps_to_bip44_account_0(self):
         self.assertEqual(Wallet.get_bip44_account(AddressUsage.Vault), 0)
 
@@ -403,18 +384,18 @@ class TxHashModelTests(TestCase):
             address_index=0,
             address="0x0000000000000000000000000000000000000011",
         )
-        self.task = BroadcastTask.objects.create(
+        self.task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "a1" * 32,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.QUEUED,
+            result=TxTaskResult.UNKNOWN,
         )
 
     def test_tx_hash_unique_per_chain_hash(self):
         TxHash.objects.create(
-            broadcast_task=self.task,
+            tx_task=self.task,
             chain=self.chain,
             hash="0x" + "b1" * 32,
             version=1,
@@ -422,15 +403,15 @@ class TxHashModelTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             TxHash.objects.create(
-                broadcast_task=self.task,
+                tx_task=self.task,
                 chain=self.chain,
                 hash="0x" + "b1" * 32,
                 version=2,
             )
 
-    def test_tx_hash_unique_version_per_broadcast_task(self):
+    def test_tx_hash_unique_version_per_tx_task(self):
         TxHash.objects.create(
-            broadcast_task=self.task,
+            tx_task=self.task,
             chain=self.chain,
             hash="0x" + "c1" * 32,
             version=1,
@@ -438,13 +419,13 @@ class TxHashModelTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             TxHash.objects.create(
-                broadcast_task=self.task,
+                tx_task=self.task,
                 chain=self.chain,
                 hash="0x" + "c2" * 32,
                 version=1,
             )
 
-    def test_tx_hash_chain_must_match_broadcast_task_chain(self):
+    def test_tx_hash_chain_must_match_tx_task_chain(self):
         other_crypto = Crypto.objects.create(
             name="Ethereum TxHash Other",
             symbol="ETH-TXHO",
@@ -461,7 +442,7 @@ class TxHashModelTests(TestCase):
         )
 
         tx_hash = TxHash(
-            broadcast_task=self.task,
+            tx_task=self.task,
             chain=other_chain,
             hash="0x" + "d1" * 32,
             version=1,
@@ -471,7 +452,7 @@ class TxHashModelTests(TestCase):
             tx_hash.full_clean()
 
 
-class BroadcastTaskTxHashHistoryTests(TestCase):
+class TxTaskTxHashHistoryTests(TestCase):
     def setUp(self):
         self.wallet = Wallet.objects.create()
         self.crypto = Crypto.objects.create(
@@ -496,13 +477,13 @@ class BroadcastTaskTxHashHistoryTests(TestCase):
             address_index=0,
             address="0x0000000000000000000000000000000000000021",
         )
-        self.task = BroadcastTask.objects.create(
+        self.task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "e1" * 32,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.QUEUED,
+            result=TxTaskResult.UNKNOWN,
         )
 
     def test_append_tx_hash_updates_current_tx_hash_and_keeps_history(self):
@@ -518,11 +499,11 @@ class BroadcastTaskTxHashHistoryTests(TestCase):
             [item.hash for item in history], ["0x" + "e1" * 32, "0x" + "e2" * 32]
         )
 
-    def test_resolve_broadcast_task_by_old_hash(self):
+    def test_resolve_tx_task_by_old_hash(self):
         self.task.append_tx_hash(self.task.tx_hash)
         self.task.append_tx_hash("0x" + "e2" * 32)
 
-        resolved = BroadcastTask.resolve_by_hash(
+        resolved = TxTask.resolve_by_hash(
             chain=self.chain,
             tx_hash="0x" + "e1" * 32,
         )
@@ -530,8 +511,8 @@ class BroadcastTaskTxHashHistoryTests(TestCase):
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.pk, self.task.pk)
 
-    def test_resolve_broadcast_task_falls_back_to_current_tx_hash(self):
-        resolved = BroadcastTask.resolve_by_hash(
+    def test_resolve_tx_task_falls_back_to_current_tx_hash(self):
+        resolved = TxTask.resolve_by_hash(
             chain=self.chain,
             tx_hash=self.task.tx_hash,
         )
@@ -547,7 +528,7 @@ class AddressIdentityTests(TestCase):
         Address.objects.create(
             wallet=wallet,
             chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
+            usage=AddressUsage.Vault,
             bip44_account=0,
             address_index=0,
             address="0x0000000000000000000000000000000000000001",
@@ -557,7 +538,7 @@ class AddressIdentityTests(TestCase):
             Address.objects.create(
                 wallet=wallet,
                 chain_type=ChainType.EVM,
-                usage=AddressUsage.Deposit,
+                usage=AddressUsage.Vault,
                 bip44_account=0,
                 address_index=0,
                 address="0x0000000000000000000000000000000000000002",
@@ -577,7 +558,7 @@ class AddressIdentityTests(TestCase):
         Address.objects.create(
             wallet=wallet,
             chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
+            usage=AddressUsage.Vault,
             bip44_account=0,
             address_index=0,
             address="0x0000000000000000000000000000000000000001",
@@ -586,7 +567,7 @@ class AddressIdentityTests(TestCase):
         with self.assertRaises(RuntimeError):
             wallet.get_address(
                 chain_type=ChainType.EVM,
-                usage=AddressUsage.Deposit,
+                usage=AddressUsage.Vault,
                 address_index=0,
             )
 
@@ -606,7 +587,7 @@ class AddressIdentityTests(TestCase):
         Address.objects.create(
             wallet=occupied_wallet,
             chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
+            usage=AddressUsage.Vault,
             bip44_account=0,
             address_index=9_999,
             address=expected_address,
@@ -615,7 +596,7 @@ class AddressIdentityTests(TestCase):
         with self.assertRaises(IntegrityError):
             wallet.get_address(
                 chain_type=ChainType.EVM,
-                usage=AddressUsage.Deposit,
+                usage=AddressUsage.Vault,
                 address_index=0,
             )
 
@@ -632,13 +613,13 @@ class AddressIdentityTests(TestCase):
         signer_backend.derive_address.return_value = expected_address
         get_signer_backend_mock.return_value = signer_backend
         wallet = Wallet.objects.create()
-        # 预创建等价于"对方事务已提交"的身份记录；bip44_account 必须与 Deposit
+        # 预创建等价于"对方事务已提交"的身份记录；bip44_account 必须与  Vault
         # 的 BIP44 映射一致，否则会触发 get_address 的身份完整性检查。
-        bip44_account = Wallet.get_bip44_account(AddressUsage.Deposit)
+        bip44_account = Wallet.get_bip44_account(AddressUsage.Vault)
         Address.objects.create(
             wallet=wallet,
             chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
+            usage=AddressUsage.Vault,
             bip44_account=bip44_account,
             address_index=0,
             address=expected_address,
@@ -652,7 +633,7 @@ class AddressIdentityTests(TestCase):
         ):
             addr = wallet.get_address(
                 chain_type=ChainType.EVM,
-                usage=AddressUsage.Deposit,
+                usage=AddressUsage.Vault,
                 address_index=0,
             )
 
@@ -678,7 +659,7 @@ class AddressIdentityTests(TestCase):
         ), self.assertRaises(IntegrityError):
             wallet.get_address(
                 chain_type=ChainType.EVM,
-                usage=AddressUsage.Deposit,
+                usage=AddressUsage.Vault,
                 address_index=0,
             )
 
@@ -789,13 +770,13 @@ class TransferConfirmDispatchTests(TestCase):
             wallet=self.wallet,
             webhook="https://example.com/webhook",
         )
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CONFIRM,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.PENDING_CONFIRM,
+            result=TxTaskResult.UNKNOWN,
         )
         withdrawal = Withdrawal.objects.create(
             project=project,
@@ -805,10 +786,10 @@ class TransferConfirmDispatchTests(TestCase):
             worth="1",
             out_no=f"out-{tx_hash[-6:]}",
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000c3"),
-            broadcast_task=broadcast_task,
+            tx_task=tx_task,
             status=WithdrawalStatus.CONFIRMING,
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=100,
             hash=tx_hash,
@@ -821,11 +802,11 @@ class TransferConfirmDispatchTests(TestCase):
             timestamp=1,
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMING,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
         )
         withdrawal.transfer = transfer
         withdrawal.save(update_fields=["transfer", "updated_at"])
-        return transfer, withdrawal, broadcast_task
+        return transfer, withdrawal, tx_task
 
     @patch("chains.tasks.confirm_transfer.delay")
     def test_block_number_updated_dispatches_quick_transfer_without_waiting_depth(
@@ -835,7 +816,7 @@ class TransferConfirmDispatchTests(TestCase):
         # QUICK 模式只要已进入 confirming 且完成业务归类，就应立即进入确认任务，不等区块深度。
         from chains.tasks import block_number_updated
 
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=100,
             hash="0x" + "7" * 64,
@@ -851,7 +832,7 @@ class TransferConfirmDispatchTests(TestCase):
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMING,
             confirm_mode=ConfirmMode.QUICK,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
             processed_at=timezone.now(),
         )
 
@@ -872,7 +853,7 @@ class TransferConfirmDispatchTests(TestCase):
         )
         self.chain.refresh_from_db()
         tx_hash = "0x" + "8" * 64
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=90,
             hash=tx_hash,
@@ -888,10 +869,10 @@ class TransferConfirmDispatchTests(TestCase):
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMING,
             confirm_mode=ConfirmMode.FULL,
-            type=OnchainActionType.Deposit,
+            type=TransferType.Deposit,
             processed_at=timezone.now(),
         )
-        OnchainTransfer.objects.filter(pk=transfer.pk).update(
+        Transfer.objects.filter(pk=transfer.pk).update(
             created_at=timezone.now() - timedelta(seconds=20)
         )
         observed_at = transfer.datetime + timedelta(seconds=15)
@@ -937,7 +918,7 @@ class TransferConfirmDispatchTests(TestCase):
         self.chain.refresh_from_db()
         tx_hash = "0x" + "9" * 64
         observed_at = timezone.now()
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=self.chain,
             block=100,
             hash=tx_hash,
@@ -953,10 +934,10 @@ class TransferConfirmDispatchTests(TestCase):
             datetime=observed_at,
             status=TransferStatus.CONFIRMING,
             confirm_mode=ConfirmMode.FULL,
-            type=OnchainActionType.Deposit,
+            type=TransferType.Deposit,
             processed_at=timezone.now(),
         )
-        OnchainTransfer.objects.filter(pk=transfer.pk).update(
+        Transfer.objects.filter(pk=transfer.pk).update(
             created_at=timezone.now() - timedelta(seconds=20)
         )
 
@@ -1003,7 +984,7 @@ class TransferConfirmDispatchTests(TestCase):
         from chains.tasks import confirm_transfer
         from withdrawals.models import WithdrawalStatus
 
-        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+        transfer, withdrawal, tx_task = self._create_withdrawal_transfer_fixture(
             tx_hash="0x" + "f" * 64
         )
         adapter = Mock()
@@ -1011,16 +992,16 @@ class TransferConfirmDispatchTests(TestCase):
         get_adapter_mock.return_value = adapter
 
         with self.assertRaisesMessage(
-            RuntimeError, "失败交易不应存在 OnchainTransfer 记录"
+            RuntimeError, "失败交易不应存在 Transfer 记录"
         ):
             confirm_transfer.run(transfer.pk)
 
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
         self.assertEqual(withdrawal.transfer_id, transfer.pk)
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
-        self.assertEqual(broadcast_task.result, BroadcastTaskResult.UNKNOWN)
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
+        self.assertEqual(tx_task.result, TxTaskResult.UNKNOWN)
 
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
@@ -1032,7 +1013,7 @@ class TransferConfirmDispatchTests(TestCase):
         from chains.tasks import confirm_transfer
         from withdrawals.models import WithdrawalStatus
 
-        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+        transfer, withdrawal, tx_task = self._create_withdrawal_transfer_fixture(
             tx_hash="0x" + "e" * 64
         )
         adapter = Mock()
@@ -1041,13 +1022,13 @@ class TransferConfirmDispatchTests(TestCase):
 
         confirm_transfer.run(transfer.pk)
 
-        self.assertFalse(OnchainTransfer.objects.filter(pk=transfer.pk).exists())
+        self.assertFalse(Transfer.objects.filter(pk=transfer.pk).exists())
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertIsNone(withdrawal.transfer)
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertEqual(broadcast_task.result, BroadcastTaskResult.UNKNOWN)
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CHAIN)
+        self.assertEqual(tx_task.result, TxTaskResult.UNKNOWN)
 
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
@@ -1060,7 +1041,7 @@ class TransferConfirmDispatchTests(TestCase):
         from chains.tasks import confirm_transfer
         from withdrawals.models import WithdrawalStatus
 
-        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+        transfer, withdrawal, tx_task = self._create_withdrawal_transfer_fixture(
             tx_hash="0x" + "b" * 64
         )
         adapter = Mock()
@@ -1075,12 +1056,12 @@ class TransferConfirmDispatchTests(TestCase):
 
         transfer.refresh_from_db()
         withdrawal.refresh_from_db()
-        broadcast_task.refresh_from_db()
+        tx_task.refresh_from_db()
         self.assertEqual(transfer.block, 120)
         self.assertEqual(transfer.block_hash, "0x" + "12" * 32)
         self.assertEqual(transfer.status, TransferStatus.CONFIRMING)
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
 
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
@@ -1093,10 +1074,10 @@ class TransferConfirmDispatchTests(TestCase):
         from chains.tasks import confirm_transfer
         from withdrawals.models import WithdrawalStatus
 
-        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+        transfer, withdrawal, tx_task = self._create_withdrawal_transfer_fixture(
             tx_hash="0x" + "c" * 64
         )
-        OnchainTransfer.objects.filter(pk=transfer.pk).update(
+        Transfer.objects.filter(pk=transfer.pk).update(
             block_hash="0x" + "11" * 32
         )
         adapter = Mock()
@@ -1111,12 +1092,12 @@ class TransferConfirmDispatchTests(TestCase):
 
         transfer.refresh_from_db()
         withdrawal.refresh_from_db()
-        broadcast_task.refresh_from_db()
+        tx_task.refresh_from_db()
         self.assertEqual(transfer.block, 100)
         self.assertEqual(transfer.block_hash, "0x" + "22" * 32)
         self.assertEqual(transfer.status, TransferStatus.CONFIRMING)
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
 
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
@@ -1128,7 +1109,7 @@ class TransferConfirmDispatchTests(TestCase):
         from chains.tasks import confirm_transfer
         from withdrawals.models import WithdrawalStatus
 
-        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+        transfer, withdrawal, tx_task = self._create_withdrawal_transfer_fixture(
             tx_hash="0x" + "d" * 64
         )
         adapter = Mock()
@@ -1143,12 +1124,12 @@ class TransferConfirmDispatchTests(TestCase):
             confirm_transfer.run(transfer.pk)
 
         retry_mock.assert_called_once()
-        self.assertTrue(OnchainTransfer.objects.filter(pk=transfer.pk).exists())
+        self.assertTrue(Transfer.objects.filter(pk=transfer.pk).exists())
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
         self.assertEqual(withdrawal.transfer_id, transfer.pk)
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CONFIRM)
 
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
@@ -1160,7 +1141,7 @@ class TransferConfirmDispatchTests(TestCase):
         from chains.tasks import confirm_transfer
         from withdrawals.models import WithdrawalStatus
 
-        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+        transfer, withdrawal, tx_task = self._create_withdrawal_transfer_fixture(
             tx_hash="0x" + "c" * 64
         )
         adapter = Mock()
@@ -1174,12 +1155,12 @@ class TransferConfirmDispatchTests(TestCase):
         finally:
             confirm_transfer.request.retries = old_retries
 
-        self.assertFalse(OnchainTransfer.objects.filter(pk=transfer.pk).exists())
+        self.assertFalse(Transfer.objects.filter(pk=transfer.pk).exists())
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertIsNone(withdrawal.transfer)
-        broadcast_task.refresh_from_db()
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        tx_task.refresh_from_db()
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CHAIN)
 
 
 class SignerBackendTests(TestCase):
@@ -1665,8 +1646,8 @@ class TransferServiceCreateObservedTests(TestCase):
         self.assertTrue(result.conflict)
 
 
-class BroadcastTaskTransitionTests(TestCase):
-    """验证 BroadcastTask 封装的状态转换方法。"""
+class TxTaskTransitionTests(TestCase):
+    """验证 TxTask 封装的状态转换方法。"""
 
     def setUp(self):
         self.wallet = Wallet.objects.create()
@@ -1694,48 +1675,47 @@ class BroadcastTaskTransitionTests(TestCase):
                 "0x00000000000000000000000000000000000000d1"
             ),
         )
-        self.task = BroadcastTask.objects.create(
+        self.task = TxTask.objects.create(
             chain=self.chain,
             address=self.addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "dd" * 32,
-            stage=BroadcastTaskStage.PENDING_CONFIRM,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.PENDING_CONFIRM,
+            result=TxTaskResult.UNKNOWN,
         )
 
     def test_mark_finalized_success_transitions_correctly(self):
-        updated = BroadcastTask.mark_finalized_success(
+        updated = TxTask.mark_finalized_success(
             chain=self.chain, tx_hash=self.task.tx_hash
         )
         self.assertEqual(updated, 1)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(self.task.result, BroadcastTaskResult.SUCCESS)
-        self.assertEqual(self.task.failure_reason, "")
+        self.assertEqual(self.task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, TxTaskResult.SUCCESS)
 
     def test_reset_to_pending_chain_transitions_correctly(self):
-        updated = BroadcastTask.reset_to_pending_chain(
+        updated = TxTask.reset_to_pending_chain(
             chain=self.chain, tx_hash=self.task.tx_hash
         )
         self.assertEqual(updated, 1)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(self.task.stage, TxTaskStage.PENDING_CHAIN)
+        self.assertEqual(self.task.result, TxTaskResult.UNKNOWN)
 
     def test_mark_finalized_success_can_resolve_old_hash(self):
         old_hash = self.task.tx_hash
         self.task.append_tx_hash(old_hash)
         self.task.append_tx_hash("0x" + "ee" * 32)
 
-        updated = BroadcastTask.mark_finalized_success(
+        updated = TxTask.mark_finalized_success(
             chain=self.chain,
             tx_hash=old_hash,
         )
 
         self.assertEqual(updated, 1)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(self.task.result, BroadcastTaskResult.SUCCESS)
+        self.assertEqual(self.task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, TxTaskResult.SUCCESS)
         self.assertEqual(self.task.tx_hash, old_hash)
 
     def test_reset_to_pending_chain_can_resolve_old_hash(self):
@@ -1743,94 +1723,82 @@ class BroadcastTaskTransitionTests(TestCase):
         self.task.append_tx_hash(old_hash)
         self.task.append_tx_hash("0x" + "ef" * 32)
 
-        updated = BroadcastTask.reset_to_pending_chain(
+        updated = TxTask.reset_to_pending_chain(
             chain=self.chain,
             tx_hash=old_hash,
         )
 
         self.assertEqual(updated, 1)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(self.task.stage, TxTaskStage.PENDING_CHAIN)
+        self.assertEqual(self.task.result, TxTaskResult.UNKNOWN)
         self.assertEqual(self.task.tx_hash, old_hash)
 
     def test_mark_finalized_failed_transitions_correctly(self):
-        updated = BroadcastTask.mark_finalized_failed(
+        updated = TxTask.mark_finalized_failed(
             task_id=self.task.pk,
-            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
         )
         self.assertEqual(updated, 1)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(self.task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            self.task.failure_reason, BroadcastTaskFailureReason.EXECUTION_REVERTED
-        )
+        self.assertEqual(self.task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, TxTaskResult.FAILED)
 
     def test_mark_finalized_failed_honors_expected_stage(self):
-        updated = BroadcastTask.mark_finalized_failed(
+        updated = TxTask.mark_finalized_failed(
             task_id=self.task.pk,
-            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
-            expected_stage=BroadcastTaskStage.PENDING_CHAIN,
+            expected_stage=TxTaskStage.PENDING_CHAIN,
         )
 
         self.assertEqual(updated, 0)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.PENDING_CONFIRM)
-        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
-        self.assertEqual(self.task.failure_reason, "")
+        self.assertEqual(self.task.stage, TxTaskStage.PENDING_CONFIRM)
+        self.assertEqual(self.task.result, TxTaskResult.UNKNOWN)
 
     def test_mark_finalized_success_does_not_override_failed_final_state(self):
-        BroadcastTask.mark_finalized_failed(
+        TxTask.mark_finalized_failed(
             task_id=self.task.pk,
-            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
         )
 
-        updated = BroadcastTask.mark_finalized_success(
+        updated = TxTask.mark_finalized_success(
             chain=self.chain,
             tx_hash=self.task.tx_hash,
         )
 
         self.assertEqual(updated, 0)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(self.task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            self.task.failure_reason, BroadcastTaskFailureReason.EXECUTION_REVERTED
-        )
+        self.assertEqual(self.task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, TxTaskResult.FAILED)
 
     def test_mark_finalized_failed_does_not_override_success_final_state(self):
-        BroadcastTask.mark_finalized_success(
+        TxTask.mark_finalized_success(
             chain=self.chain,
             tx_hash=self.task.tx_hash,
         )
 
-        updated = BroadcastTask.mark_finalized_failed(
+        updated = TxTask.mark_finalized_failed(
             task_id=self.task.pk,
-            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
         )
 
         self.assertEqual(updated, 0)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(self.task.result, BroadcastTaskResult.SUCCESS)
-        self.assertEqual(self.task.failure_reason, "")
+        self.assertEqual(self.task.stage, TxTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, TxTaskResult.SUCCESS)
 
     def test_mark_pending_confirm_skips_finalized_tasks(self):
-        # 先将任务标记为已终结
-        BroadcastTask.mark_finalized_success(
+        # 先将任务标记为已完结
+        TxTask.mark_finalized_success(
             chain=self.chain, tx_hash=self.task.tx_hash
         )
-        # mark_pending_confirm 不应回退已终结的任务
-        updated = BroadcastTask.mark_pending_confirm(
+        # mark_pending_confirm 不应回退已完结的任务
+        updated = TxTask.mark_pending_confirm(
             chain=self.chain, tx_hash=self.task.tx_hash
         )
         self.assertEqual(updated, 0)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(self.task.stage, TxTaskStage.FINALIZED)
 
     def test_mark_pending_confirm_with_empty_hash_is_noop(self):
-        updated = BroadcastTask.mark_pending_confirm(chain=self.chain, tx_hash="")
+        updated = TxTask.mark_pending_confirm(chain=self.chain, tx_hash="")
         self.assertEqual(updated, 0)
 
     def test_mark_pending_confirm_can_resolve_old_hash(self):
@@ -1838,31 +1806,31 @@ class BroadcastTaskTransitionTests(TestCase):
         self.task.append_tx_hash(old_hash)
         self.task.append_tx_hash("0x" + "f0" * 32)
 
-        updated = BroadcastTask.mark_pending_confirm(
+        updated = TxTask.mark_pending_confirm(
             chain=self.chain,
             tx_hash=old_hash,
         )
 
         self.assertEqual(updated, 1)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.PENDING_CONFIRM)
-        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(self.task.stage, TxTaskStage.PENDING_CONFIRM)
+        self.assertEqual(self.task.result, TxTaskResult.UNKNOWN)
         self.assertEqual(self.task.tx_hash, old_hash)
 
     def test_reset_to_pending_chain_skips_non_pending_confirm_tasks(self):
-        BroadcastTask.objects.filter(pk=self.task.pk).update(
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
+        TxTask.objects.filter(pk=self.task.pk).update(
+            stage=TxTaskStage.QUEUED,
+            result=TxTaskResult.UNKNOWN,
         )
-        updated = BroadcastTask.reset_to_pending_chain(
+        updated = TxTask.reset_to_pending_chain(
             chain=self.chain,
             tx_hash=self.task.tx_hash,
         )
 
         self.assertEqual(updated, 0)
         self.task.refresh_from_db()
-        self.assertEqual(self.task.stage, BroadcastTaskStage.QUEUED)
-        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(self.task.stage, TxTaskStage.QUEUED)
+        self.assertEqual(self.task.result, TxTaskResult.UNKNOWN)
 
 
 class BlockNumberUpdatedCompensationTests(TestCase):
@@ -1906,7 +1874,7 @@ class BlockNumberUpdatedCompensationTests(TestCase):
 
         # 创建 17 个 QUICK 模式的 confirming 转账（超过 BATCH_SIZE=16）
         for i in range(17):
-            OnchainTransfer.objects.create(
+            Transfer.objects.create(
                 chain=self.chain,
                 block=190,
                 hash="0x" + f"{i:064x}",
@@ -1922,7 +1890,7 @@ class BlockNumberUpdatedCompensationTests(TestCase):
                 datetime=timezone.now(),
                 status=TransferStatus.CONFIRMING,
                 confirm_mode=ConfirmMode.QUICK,
-                type=OnchainActionType.Deposit,
+                type=TransferType.Deposit,
                 processed_at=timezone.now(),
             )
 
@@ -1942,7 +1910,7 @@ class BlockNumberUpdatedCompensationTests(TestCase):
 
         # 只创建 3 个转账，不满批
         for i in range(3):
-            OnchainTransfer.objects.create(
+            Transfer.objects.create(
                 chain=self.chain,
                 block=190,
                 hash="0x" + f"{i+100:064x}",
@@ -1958,7 +1926,7 @@ class BlockNumberUpdatedCompensationTests(TestCase):
                 datetime=timezone.now(),
                 status=TransferStatus.CONFIRMING,
                 confirm_mode=ConfirmMode.QUICK,
-                type=OnchainActionType.Deposit,
+                type=TransferType.Deposit,
                 processed_at=timezone.now(),
             )
 
@@ -1982,9 +1950,9 @@ def test_address_send_crypto_schedules_native_transfer_intent():
         name="Task12 Native Chain",
         type=ChainType.EVM,
         native_coin=native,
-        base_transfer_gas=21_000,
-        erc20_transfer_gas=60_000,
     )
+    chain.base_transfer_gas = 21_000
+    chain.erc20_transfer_gas = 60_000
     address = Address.objects.create(
         wallet=Wallet.objects.create(),
         chain_type=ChainType.EVM,
@@ -1997,7 +1965,7 @@ def test_address_send_crypto_schedules_native_transfer_intent():
     )
     tx_hash = "0x" + "12" * 32
 
-    with patch("evm.models.EvmBroadcastTask.schedule") as schedule_mock:
+    with patch("evm.models.EvmTxTask.schedule") as schedule_mock:
         schedule_mock.return_value = Mock(base_task=Mock(tx_hash=tx_hash))
 
         result = address.send_crypto(
@@ -2005,7 +1973,7 @@ def test_address_send_crypto_schedules_native_transfer_intent():
             chain=chain,
             to="0x0000000000000000000000000000000000121202",
             amount=Decimal("1.5"),
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
         )
 
     assert result == tx_hash
@@ -2014,7 +1982,7 @@ def test_address_send_crypto_schedules_native_transfer_intent():
     assert intent.address == address
     assert intent.chain == chain
     assert intent.tx_kind == TxKind.NATIVE_TRANSFER
-    assert intent.action_type == OnchainActionType.Withdrawal
+    assert intent.tx_type == TxTaskType.Withdrawal
     assert intent.value == 1_500_000_000_000_000_000
     assert intent.gas == chain.base_transfer_gas
 
@@ -2038,9 +2006,9 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
         name="Task12 ERC20 Chain",
         type=ChainType.EVM,
         native_coin=native,
-        base_transfer_gas=21_000,
-        erc20_transfer_gas=65_000,
     )
+    chain.base_transfer_gas = 21_000
+    chain.erc20_transfer_gas = 65_000
     ChainToken.objects.create(
         chain=chain,
         crypto=token,
@@ -2066,7 +2034,7 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
     )
     tx_hash = "0x" + "13" * 32
 
-    with patch("evm.models.EvmBroadcastTask.schedule") as schedule_mock:
+    with patch("evm.models.EvmTxTask.schedule") as schedule_mock:
         schedule_mock.return_value = Mock(base_task=Mock(tx_hash=tx_hash))
 
         result = address.send_crypto(
@@ -2074,7 +2042,7 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
             chain=chain,
             to=recipient,
             amount=Decimal("2.25"),
-            action_type=OnchainActionType.DepositCollection,
+            tx_type=TxTaskType.Withdrawal,
         )
 
     assert result == tx_hash
@@ -2086,7 +2054,7 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
     assert intent.to == Web3.to_checksum_address(
         "0x00000000000000000000000000000000001212c0"
     )
-    assert intent.action_type == OnchainActionType.DepositCollection
+    assert intent.tx_type == TxTaskType.Withdrawal
     assert intent.gas == chain.erc20_transfer_gas
 
 
@@ -2096,7 +2064,7 @@ class ProcessTransferAutoretryTests(SimpleTestCase):
     PostgreSQL 死锁的设计前提是被牺牲方应重试；StressRun 高并发场景里，
     `try_match_invoice` / `confirm_invoice` 等行锁链路会偶发 deadlock。
     若 process_transfer 不配置 OperationalError 重试，单次死锁就会让
-    OnchainTransfer 永久卡在未处理状态，对应的账单也无法被匹配。
+    Transfer 永久卡在未处理状态，对应的账单也无法被匹配。
     """
 
     def test_process_transfer_autoretries_on_database_deadlock(self):

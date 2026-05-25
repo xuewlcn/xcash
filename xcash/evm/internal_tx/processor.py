@@ -8,9 +8,8 @@ from django.db import transaction as db_transaction
 from django.utils import timezone
 from web3 import Web3
 
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
 from chains.models import Chain
+from chains.models import TxTask
 from chains.service import ObservedTransferCreateResult
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
@@ -53,21 +52,16 @@ def _receipt_status(receipt: dict) -> int:
     return int(raw)
 
 
-def _finalize_failed(
-    *,
-    broadcast_task: BroadcastTask,
-    reason: BroadcastTaskFailureReason,
-) -> None:
+def _finalize_failed(*, tx_task: TxTask) -> None:
     with db_transaction.atomic():
-        updated = BroadcastTask.mark_finalized_failed(
-            task_id=broadcast_task.pk,
-            reason=reason,
+        updated = TxTask.mark_finalized_failed(
+            task_id=tx_task.pk,
             expected_stage=None,
         )
         if not updated:
             return
-        handler = get_handler(broadcast_task.action_type)
-        handler.finalize_failed(broadcast_task, reason)
+        handler = get_handler(tx_task.tx_type)
+        handler.finalize_failed(tx_task)
 
 
 def process_internal_transaction(
@@ -82,8 +76,8 @@ def process_internal_transaction(
     tx_hash = _normalize_tx_hash(tx["hash"])
     from_address = _normalize_address(tx["from"])
 
-    broadcast_task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
-    if broadcast_task is None:
+    tx_task = TxTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
+    if tx_task is None:
         raise UnknownInternalBroadcastError(
             chain_code=chain.code,
             tx_hash=tx_hash,
@@ -92,25 +86,18 @@ def process_internal_transaction(
 
     status = _receipt_status(receipt)
     if status == 0:
-        _finalize_failed(
-            broadcast_task=broadcast_task,
-            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
-        )
+        _finalize_failed(tx_task=tx_task)
         return None
 
-    matcher = get_matcher(broadcast_task.action_type)
-    fact = matcher(chain=chain, broadcast_task=broadcast_task, receipt=receipt, tx=tx)
+    matcher = get_matcher(tx_task.tx_type)
+    fact = matcher(chain=chain, tx_task=tx_task, receipt=receipt, tx=tx)
     if fact is None:
-        _finalize_failed(
-            broadcast_task=broadcast_task,
-            reason=BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING,
-        )
         logger.warning(
             "EVM 内部交易 receipt 成功但 matcher 未找到预期 Transfer",
             chain=chain.code,
             tx_hash=tx_hash,
-            action_type=broadcast_task.action_type,
-            broadcast_task_id=broadcast_task.pk,
+            tx_type=tx_task.tx_type,
+            tx_task_id=tx_task.pk,
         )
         return None
 

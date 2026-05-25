@@ -110,7 +110,6 @@ class TestPatchFieldWhitelist:
             "webhook_open": False,
             "pre_notify": True,
             "fast_confirm_threshold": "25.50",
-            "gather_period": 30,
         }
         response = client.patch(
             _url(project),
@@ -125,7 +124,6 @@ class TestPatchFieldWhitelist:
         assert project.webhook_open is False
         assert project.pre_notify is True
         assert project.fast_confirm_threshold == Decimal("25.50")
-        assert project.gather_period == 30
 
 
 # ---------- 单字段校验 ----------
@@ -322,40 +320,3 @@ class TestWithdrawalSingleLimitValidation:
         assert response.status_code == 400
 
 
-@pytest.mark.django_db
-class TestGatherPeriodValidation:
-    def test_rejects_zero(self, client, project):
-        response = client.patch(
-            _url(project),
-            data={"gather_period": 0},
-            content_type="application/json",
-            HTTP_AUTHORIZATION=AUTH_HEADER,
-        )
-        assert response.status_code == 400
-
-    def test_accepts_min(self, client, project):
-        response = client.patch(
-            _url(project),
-            data={"gather_period": 1},
-            content_type="application/json",
-            HTTP_AUTHORIZATION=AUTH_HEADER,
-        )
-        assert response.status_code == 200
-
-    def test_accepts_max(self, client, project):
-        response = client.patch(
-            _url(project),
-            data={"gather_period": 525600},
-            content_type="application/json",
-            HTTP_AUTHORIZATION=AUTH_HEADER,
-        )
-        assert response.status_code == 200
-
-    def test_rejects_over_max(self, client, project):
-        response = client.patch(
-            _url(project),
-            data={"gather_period": 525601},
-            content_type="application/json",
-            HTTP_AUTHORIZATION=AUTH_HEADER,
-        )
-        assert response.status_code == 400

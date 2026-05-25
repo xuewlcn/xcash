@@ -49,7 +49,7 @@ def sync_transfers_when_chain_mapping_changes(
     created: bool,
     **kwargs,
 ):
-    # 当管理员把占位映射改到正式 Crypto 时，历史 OnchainTransfer 要自动跟着修正并重归类。
+    # 当管理员把占位映射改到正式 Crypto 时，历史 Transfer 要自动跟着修正并重归类。
     if created:
         return
 
@@ -57,11 +57,11 @@ def sync_transfers_when_chain_mapping_changes(
     if not old_crypto_id or old_crypto_id == instance.crypto_id:
         return
 
-    from chains.models import OnchainTransfer
+    from chains.models import Transfer
     from chains.tasks import process_transfer
 
     affected_transfer_ids = list(
-        OnchainTransfer.objects.filter(
+        Transfer.objects.filter(
             chain=instance.chain,
             crypto_id=old_crypto_id,
         ).values_list("pk", flat=True)
@@ -69,22 +69,22 @@ def sync_transfers_when_chain_mapping_changes(
     if not affected_transfer_ids:
         return
 
-    # 先统一改写历史 OnchainTransfer.crypto，保证展示和后续匹配都以新映射为准。
-    OnchainTransfer.objects.filter(pk__in=affected_transfer_ids).update(
+    # 先统一改写历史 Transfer.crypto，保证展示和后续匹配都以新映射为准。
+    Transfer.objects.filter(pk__in=affected_transfer_ids).update(
         crypto_id=instance.crypto_id
     )
 
     rematch_transfer_ids = list(
-        OnchainTransfer.objects.filter(
+        Transfer.objects.filter(
             pk__in=affected_transfer_ids,
-            type="",  # 未归类的 OnchainTransfer，type 默认为空字符串
+            type="",  # 未归类的 Transfer，type 默认为空字符串
         ).values_list("pk", flat=True)
     )
     if not rematch_transfer_ids:
         return
 
     # 未归类的历史转账需要重新跑 process()，让 Deposit 等业务对象自动补齐。
-    OnchainTransfer.objects.filter(pk__in=rematch_transfer_ids).update(
+    Transfer.objects.filter(pk__in=rematch_transfer_ids).update(
         processed_at=None
     )
     for transfer_id in rematch_transfer_ids:

@@ -1,48 +1,47 @@
-# xcash EVM Payment Collector Contracts
+# xcash EVM Deposit Slot Contracts
 
-CREATE2 一次性 collector 的链上合约与编译产出。
+XcashDepositFactory 与 XcashDepositTemplate 是合约账单的链上归集入口。
 
 ## 设计
 
-参见 [../../../docs/superpowers/specs/2026-05-16-evm-payment-collector-contracts-design.md](../../../docs/superpowers/specs/2026-05-16-evm-payment-collector-contracts-design.md)。
+- `XcashDepositFactory` 持有不可变的 `depositTemplate` 地址。
+- `deployDepositSlot(vault, salt)` 使用 OpenZeppelin Clones immutable args 通过 CREATE2 部署 slot。
+- 每个 slot 的 immutable `vault` 决定原生币和 ERC20 最终归集地址。
+- `XcashDepositTemplate` 的 `receive` / `fallback` 会把原生币转发到 vault。
+- ERC20 余额由 `collectERC20(token)` 转入 vault。
 
 ## 构建
 
 ```bash
-forge install foundry-rs/forge-std --no-commit
+forge install OpenZeppelin/openzeppelin-contracts@v5.6.1 --no-git --shallow
 make all
 make test
 ```
 
-`make build-yul` 需要 `solc 0.8.35`。如果默认 `solc` 不是 0.8.35，通过
-`SOLC=/path/to/solc-0.8.35 make build-yul` 指定；版本不匹配会直接失败，
-避免不同编译器输出导致 CREATE2 地址漂移。
-
 ## 地址预测公式
 
 ```text
-collector = keccak256(0xff || factory || salt || keccak256(init_code))[-20:]
+deposit_slot = keccak256(0xff || factory || salt || keccak256(slot_init_code))[-20:]
 ```
 
-其中 `init_code` 由 `xcash/evm/contracts_codec.py` 的
-`build_collector_init_code(to, token)` 生成。
+其中 `slot_init_code` 由 OpenZeppelin `Clones` immutable args 规则构造。
+Python 侧对应实现为 `xcash/evm/contracts_codec.py` 的
+`build_xcash_deposit_slot_init_code(deposit_template, vault)` 和
+`predict_xcash_deposit_slot_address(factory, deposit_template, vault, salt)`。
 
-## Sentinel 约定
+## Fixtures
 
-| 占位符 | hex（20 字节） | 含义 |
-|---|---|---|
-| `RECIPIENT_SENTINEL` | `deadbeefdeadbeefdeadbeefdeadbeefdeadbeef` | 归集目的地址 |
-| `TOKEN_SENTINEL` | `cafebabecafebabecafebabecafebabecafebabe` | ERC20 代币地址（仅 ERC20Collector） |
+`make fixtures` 会运行 `scripts/DumpXcashDepositFixtures.s.sol`，生成：
 
-Python 侧 patch 时必须校验模板中每个应出现的 sentinel 恰好出现 1 次。
+```text
+../tests/fixtures/xcash_deposit_slot_fixtures.json
+```
+
+该 fixture 用 Foundry/OpenZeppelin 的实现校验 Python 侧 slot init_code 与
+CREATE2 地址预测逻辑。
 
 ## Salt 约束
 
-工厂无访问控制，任何人拿到相同 `salt + init_code` 都能触发部署。业务层生成
+工厂无访问控制，任何人拿到相同 `salt + vault` 都能触发部署。业务层生成
 salt 时必须包含服务端秘密或使用内部不可预测随机源，禁止直接使用公开订单号、
 商户号、递增编号等可预测输入。
-
-## artifacts
-
-- `artifacts/*.bin` 由 `make build` 产出，Python `contracts_codec.py` 与 Foundry 测试都会读取。
-- 任何对 `src/*.yul` 或 `src/PaymentCollectorFactory.sol` 的改动都需要 `make all` 重新生成 artifacts 并提交。

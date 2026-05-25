@@ -35,7 +35,7 @@ def sync_chain_clock() -> None:
     """把 Anvil 链上时钟拉齐到系统当前时间。
 
     Anvil 链时钟是进程启动时刻 + 出块递增，长时间运行后会相对系统时钟漂移，
-    导致 block.timestamp（也就是 OnchainTransfer.datetime）落后 now() 几十秒。
+    导致 block.timestamp（也就是 Transfer.datetime）落后 now() 几十秒。
     这会让 invoices.service.try_match_invoice 的时间窗口条件
     `invoice__started_at__lte=transfer.datetime` 失配——invoice 是在 Python 端
     按 now() 写入 started_at，transfer.datetime 来自链上块时间——即使 chain /

@@ -13,11 +13,6 @@ from common.consts import UPPER_ALPHABET
 from common.fields import AddressField
 
 
-class RecipientAddressUsage(models.TextChoices):
-    INVOICE = "invoice", _("账单收款")
-    DEPOSIT_COLLECTION = "deposit_collection", _("归集充币")
-
-
 class Project(models.Model):
     appid = ShortUUIDField(
         verbose_name=_("Appid"),
@@ -73,20 +68,6 @@ class Project(models.Model):
         length=32,
     )
 
-    gather_worth = models.DecimalField(
-        max_digits=16,
-        decimal_places=2,
-        verbose_name="自动归集价值(USD)",
-        default=10,
-        help_text="到期后达到该阈值才归集；0 表示到期即归集",
-        blank=True,
-    )
-    gather_period = models.PositiveIntegerField(
-        verbose_name="自动归集周期(分钟)",
-        default=1440,
-        help_text="首次充值后顺延该时间归集；后续同地址同链同币充值会重新顺延",
-        blank=True,
-    )
     withdrawal_review_required = models.BooleanField(
         _("提币需审核"),
         default=True,
@@ -146,9 +127,7 @@ class Project(models.Model):
             errors.append(_("IP 白名单未配置"))
         if not self.webhook:
             errors.append(_("通知地址未配置"))
-        if not RecipientAddress.objects.filter(
-            project=self, usage=RecipientAddressUsage.INVOICE
-        ).exists():
+        if not RecipientAddress.objects.filter(project=self).exists():
             errors.append(_("支付地址未配置"))
         return (not errors), errors
 
@@ -157,7 +136,6 @@ class Project(models.Model):
             RecipientAddress.objects.filter(
                 project=self,
                 chain_type=chain.type,
-                usage=RecipientAddressUsage.INVOICE,
             ).values_list(
                 "address",
                 flat=True,
@@ -182,11 +160,6 @@ class RecipientAddress(models.Model):
         help_text="EVM: Ethereum, BSC, Polygon, Base...<br>Tron: Tron",
     )
     address = AddressField(verbose_name=_("收币地址"))
-    usage = models.CharField(
-        _("用途"),
-        choices=RecipientAddressUsage,
-        max_length=32,
-    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("创建时间"))
 
     class Meta:
@@ -195,15 +168,6 @@ class RecipientAddress(models.Model):
             models.UniqueConstraint(
                 fields=("chain_type", "address"),
                 name="uniq_recipient_address_chain_type_address",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(
-                    usage__in=(
-                        RecipientAddressUsage.INVOICE,
-                        RecipientAddressUsage.DEPOSIT_COLLECTION,
-                    )
-                ),
-                name="recipient_address_valid_usage",
             ),
         ]
         verbose_name = _("收币地址")
@@ -218,27 +182,13 @@ class RecipientAddress(models.Model):
         return super().save(*args, **kwargs)
 
     def clean(self) -> None:
-        """按用途校验项目收币地址允许进入的链类型。"""
+        """校验项目收币地址允许进入的链类型。"""
         super().clean()
-        # admin inline 不直接暴露 usage 字段，会在 save_related 时按 inline 类型补齐；
-        # 这里允许未注入 usage 的临时表单实例先通过校验，真正保存时再由字段必填兜底。
-        if not self.usage or not self.chain_type:
+        if not self.chain_type:
             return
 
-        if self.usage == RecipientAddressUsage.INVOICE:
-            allowed_chain_types = (
-                ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
-            )
-            error_message = _("当前版本支付地址仅支持 EVM / Tron。")
-        elif self.usage == RecipientAddressUsage.DEPOSIT_COLLECTION:
-            allowed_chain_types = (
-                ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
-            )
-            error_message = _("当前版本归集地址仅支持 EVM。")
-        else:
-            raise ValidationError(
-                {"usage": _("项目地址用途必须是支付地址或归集地址。")}
-            )
-
-        if self.chain_type not in allowed_chain_types:
-            raise ValidationError({"chain_type": error_message})
+        if (
+            self.chain_type
+            not in ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
+        ):
+            raise ValidationError({"chain_type": _("当前版本支付地址仅支持 EVM / Tron。")})

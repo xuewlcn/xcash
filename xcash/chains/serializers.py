@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from common.serializers import StrippedDecimalField
 
 
@@ -11,7 +11,7 @@ class TransferSerializer(serializers.ModelSerializer):
     amount = StrippedDecimalField(read_only=True, max_digits=32, decimal_places=8)
 
     class Meta:
-        model = OnchainTransfer
+        model = Transfer
         fields = (
             "chain",
             "block",

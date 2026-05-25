@@ -9,16 +9,16 @@ from chains.models import Address
 from chains.models import AddressUsage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
+from chains.models import TxTaskType
 from chains.models import Wallet
 from currencies.models import Crypto
 from evm.choices import TxKind
 from evm.intents import build_native_transfer_intent
-from evm.models import EvmBroadcastTask
+from evm.models import EvmTxTask
 
 
 class EvmNonceConcurrencyTests(TransactionTestCase):
-    """多线程并发创建 EvmBroadcastTask，验证 nonce 分配的严格递增和互斥性。
+    """多线程并发创建 EvmTxTask，验证 nonce 分配的严格递增和互斥性。
 
     EVM 的 schedule(intent) 只做 nonce 分配和 DB 写入，
     不涉及 signer 或 RPC，因此无需 mock 外部依赖。
@@ -67,13 +67,13 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=5)
-                task = EvmBroadcastTask.schedule(
+                task = EvmTxTask.schedule(
                     build_native_transfer_intent(
                         address=self.address,
                         chain=self.chain,
                         to=recipient,
                         value=thread_idx + 1,
-                        action_type=OnchainActionType.Withdrawal,
+                        tx_type=TxTaskType.Withdrawal,
                     )
                 )
                 results.append(task.nonce)
@@ -103,14 +103,14 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         self.assertEqual(state.address, self.address)
         self.assertEqual(state.chain, self.chain)
         self.assertEqual(
-            EvmBroadcastTask.objects.filter(
+            EvmTxTask.objects.filter(
                 address=self.address, chain=self.chain
             ).count(),
             self.THREAD_COUNT,
         )
         self.assertEqual(
             set(
-                EvmBroadcastTask.objects.filter(
+                EvmTxTask.objects.filter(
                     address=self.address,
                     chain=self.chain,
                 ).values_list("tx_kind", flat=True)
@@ -145,13 +145,13 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=5)
-                task = EvmBroadcastTask.schedule(
+                task = EvmTxTask.schedule(
                     build_native_transfer_intent(
                         address=addr,
                         chain=self.chain,
                         to=recipient,
                         value=1,
-                        action_type=OnchainActionType.Withdrawal,
+                        tx_type=TxTaskType.Withdrawal,
                     )
                 )
                 results.append((str(addr.address), task.nonce))
@@ -177,7 +177,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
     def test_concurrent_1000_tasks_nonce_sequential_0_to_999(self):
         """1000 个线程并发创建任务，验证 nonce 严格从 0 递增到 999。
 
-        同时验证数据库触发器 trg_evm_broadcast_task_nonce_sequential
+        同时验证数据库触发器 trg_evm_tx_task_nonce_sequential
         在高并发下与 AddressChainState 行锁协同工作，不会出现跳跃或重复。
         """
         task_count = 1000
@@ -194,13 +194,13 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 batch_barrier.wait(timeout=10)
-                task = EvmBroadcastTask.schedule(
+                task = EvmTxTask.schedule(
                     build_native_transfer_intent(
                         address=self.address,
                         chain=self.chain,
                         to=recipient,
                         value=1,
-                        action_type=OnchainActionType.Withdrawal,
+                        tx_type=TxTaskType.Withdrawal,
                     )
                 )
                 with lock:
@@ -231,12 +231,12 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         self.assertEqual(sorted(results), list(range(task_count)))
 
         # 数据库记录数一致
-        db_count = EvmBroadcastTask.objects.filter(
+        db_count = EvmTxTask.objects.filter(
             address=self.address, chain=self.chain
         ).count()
         self.assertEqual(db_count, task_count)
 
-        # AddressChainState 只负责行锁，nonce 进度由 EvmBroadcastTask 记录推导。
+        # AddressChainState 只负责行锁，nonce 进度由 EvmTxTask 记录推导。
         from chains.models import AddressChainState
 
         state = AddressChainState.objects.get(
@@ -248,7 +248,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         # 数据库层面无空洞：max(nonce) == count - 1
         from django.db.models import Max
 
-        max_nonce = EvmBroadcastTask.objects.filter(
+        max_nonce = EvmTxTask.objects.filter(
             address=self.address, chain=self.chain
         ).aggregate(m=Max("nonce"))["m"]
         self.assertEqual(max_nonce, task_count - 1)

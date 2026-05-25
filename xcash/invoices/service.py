@@ -12,7 +12,7 @@ from django.utils import timezone
 from risk.tasks import mark_invoice_risk
 
 from chains.models import ConfirmMode
-from chains.models import OnchainActionType
+from chains.models import TransferType
 from chains.service import ChainService
 from chains.service import TransferService
 from common.internal_callback import send_internal_callback
@@ -31,7 +31,7 @@ from .models import InvoiceProtocol
 from .models import InvoiceStatus
 
 if TYPE_CHECKING:
-    from chains.models import OnchainTransfer
+    from chains.models import Transfer
 
 logger = structlog.get_logger()
 
@@ -136,7 +136,7 @@ class InvoiceService:
     @staticmethod
     @transaction.atomic
     def try_match_invoice(
-        transfer: OnchainTransfer,
+        transfer: Transfer,
     ):
         # 第一步：不加锁地找到候选槽位，仅用于定位归属的 Invoice ID。
         # 避免先锁 PaySlot 再锁 Invoice 的顺序——select_method 先锁 Invoice 再锁
@@ -219,7 +219,7 @@ class InvoiceService:
             else ConfirmMode.FULL
         )
         transfer = TransferService.assign_type_and_mode(
-            transfer, OnchainActionType.Invoice, confirm_mode
+            transfer, TransferType.Invoice, confirm_mode
         )
 
         matched_at = timezone.now()
@@ -278,8 +278,8 @@ class InvoiceService:
         cls,
         invoice: Invoice,
     ):
-        # 必须在本方法内对 Invoice 加行锁，不能仅依赖调用方（OnchainTransfer.confirm）持有
-        # OnchainTransfer 锁——其他调用路径可能绕开 OnchainTransfer 锁直接调用此方法。
+        # 必须在本方法内对 Invoice 加行锁，不能仅依赖调用方（Transfer.confirm）持有
+        # Transfer 锁——其他调用路径可能绕开 Transfer 锁直接调用此方法。
         # of=("self",) 把锁限定在 invoices_invoice，避免连带锁 projects_project 引发死锁。
         invoice = (
             Invoice.objects.select_for_update(of=("self",))
@@ -316,10 +316,6 @@ class InvoiceService:
             worth=str(invoice.worth),
             currency=invoice.crypto.symbol,
         )
-        if invoice.billing_mode == InvoiceBillingMode.CONTRACT:
-            from .tasks import deploy_contract_collection
-
-            transaction.on_commit(lambda: deploy_contract_collection.delay(invoice.pk))
 
     @classmethod
     @transaction.atomic

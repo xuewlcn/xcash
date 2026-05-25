@@ -22,7 +22,7 @@ from tron.models import TronWatchCursor
 
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
+from chains.models import Transfer
 from chains.models import Wallet
 from currencies.models import ChainToken
 from currencies.models import Crypto
@@ -32,7 +32,6 @@ from invoices.models import Invoice
 from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 
 
 @override_settings(TRON_RPC_TIMEOUT=3.0)
@@ -273,7 +272,6 @@ class TronFilterAddressesCacheTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address=invoice_addr,
-            usage=RecipientAddressUsage.INVOICE,
         )
         # EVM 链上的 RecipientAddress 不应漏进 Tron 观察集，避免跨链型误观测。
         RecipientAddress.objects.create(
@@ -281,7 +279,6 @@ class TronFilterAddressesCacheTests(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address=evm_addr,
-            usage=RecipientAddressUsage.INVOICE,
         )
 
         addresses = load_tron_filter_addresses()
@@ -302,7 +299,6 @@ class TronFilterAddressesCacheTests(TestCase):
                 project=self.project,
                 chain_type=ChainType.TRON,
                 address=invoice_addr,
-                usage=RecipientAddressUsage.INVOICE,
             )
 
         # post_save 信号挂 on_commit 重建缓存：事务提交后下一次 load 必须能看到新地址。
@@ -317,7 +313,6 @@ class TronFilterAddressesCacheTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address=invoice_addr,
-            usage=RecipientAddressUsage.INVOICE,
         )
         self.assertIn(invoice_addr, load_tron_filter_addresses())
 
@@ -544,7 +539,6 @@ class TronUsdtPaymentScannerTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address=self.watch_address,
-            usage=RecipientAddressUsage.INVOICE,
         )
         self.sender_address = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
 
@@ -717,7 +711,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.filter_addresses, 1)
         self.assertEqual(summary.events_seen, 1)
         self.assertEqual(summary.created_transfers, 1)
-        transfer = OnchainTransfer.objects.get(chain=self.chain)
+        transfer = Transfer.objects.get(chain=self.chain)
         self.assertEqual(transfer.hash, "a" * 64)
         self.assertEqual(transfer.event_id, "trc20:0")
         self.assertEqual(transfer.amount, Decimal("1"))
@@ -754,7 +748,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.blocks_scanned, 1)
         self.assertEqual(summary.events_seen, 0)
         self.assertEqual(summary.created_transfers, 0)
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
         cursor = TronWatchCursor.objects.get(
             chain=self.chain,
             contract_address=self.usdt_mapping.address,
@@ -780,7 +774,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         with self.assertRaisesMessage(TronClientError, "probe failed"):
             TronUsdtPaymentScanner.scan_chain(chain=self.chain)
 
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
         client.list_confirmed_trc20_history.assert_not_called()
         client.get_transaction_info_by_id.assert_not_called()
         cursor = TronWatchCursor.objects.get(
@@ -808,7 +802,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         ):
             TronUsdtPaymentScanner.scan_chain(chain=self.chain)
 
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
         cursor = TronWatchCursor.objects.get(
             chain=self.chain,
             contract_address=self.usdt_mapping.address,
@@ -837,7 +831,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         ):
             TronUsdtPaymentScanner.scan_chain(chain=self.chain)
 
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
         cursor = TronWatchCursor.objects.get(
             chain=self.chain,
             contract_address=self.usdt_mapping.address,
@@ -918,7 +912,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         ):
             TronUsdtPaymentScanner.scan_chain(chain=self.chain)
 
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
         self.assertEqual(client.list_confirmed_contract_events.call_count, 2)
         cursor = TronWatchCursor.objects.get(
             chain=self.chain,
@@ -955,7 +949,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         ):
             TronUsdtPaymentScanner.scan_chain(chain=self.chain)
 
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
         cursor = TronWatchCursor.objects.get(
             chain=self.chain,
             contract_address=self.usdt_mapping.address,
@@ -990,7 +984,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.blocks_scanned, 1)
         self.assertEqual(summary.events_seen, 0)
         self.assertEqual(summary.created_transfers, 0)
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
 
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")
@@ -1020,7 +1014,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.blocks_scanned, 1)
         self.assertEqual(summary.events_seen, 0)
         self.assertEqual(summary.created_transfers, 0)
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
 
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")
@@ -1049,7 +1043,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.blocks_scanned, 1)
         self.assertEqual(summary.events_seen, 0)
         self.assertEqual(summary.created_transfers, 0)
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
 
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")
@@ -1078,7 +1072,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.blocks_scanned, 1)
         self.assertEqual(summary.events_seen, 0)
         self.assertEqual(summary.created_transfers, 0)
-        self.assertFalse(OnchainTransfer.objects.filter(chain=self.chain).exists())
+        self.assertFalse(Transfer.objects.filter(chain=self.chain).exists())
 
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")
@@ -1121,7 +1115,7 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(summary.events_seen, 2)
         self.assertEqual(summary.created_transfers, 2)
         self.assertEqual(
-            OnchainTransfer.objects.filter(chain=self.chain).order_by("hash").count(),
+            Transfer.objects.filter(chain=self.chain).order_by("hash").count(),
             2,
         )
         self.assertEqual(
@@ -1306,7 +1300,7 @@ class TronUsdtPaymentScannerTests(TestCase):
 
         TronUsdtPaymentScanner.scan_chain(chain=self.chain)
 
-        transfer = OnchainTransfer.objects.get(chain=self.chain, hash="b" * 64)
+        transfer = Transfer.objects.get(chain=self.chain, hash="b" * 64)
         transfer.process()
         confirm_transfer.run(transfer.pk)
 

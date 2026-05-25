@@ -17,20 +17,18 @@ from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
-from chains.adapters import AdapterFactory
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
+from chains.models import TxTask
+from chains.models import TxTaskResult
+from chains.models import TxTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
+from chains.models import TxTaskType
+from chains.models import TransferType
+from chains.models import Transfer
 from chains.models import TransferStatus
 from chains.models import Wallet
-from chains.tasks import block_number_updated
 from chains.tasks import confirm_transfer
-from chains.tasks import update_the_latest_block
 from chains.test_signer import build_test_remote_signer_backend
 from core.default_data import ensure_base_currencies
 from core.default_data import ensure_local_chains
@@ -38,29 +36,15 @@ from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from core.models import PlatformSettings
 from core.runtime_settings import get_admin_sensitive_action_otp_max_age_seconds
 from core.runtime_settings import get_alerts_repeat_interval_minutes
-from core.runtime_settings import get_open_native_scanner
 from core.runtime_settings import get_webhook_delivery_breaker_threshold
 from core.runtime_settings import get_webhook_delivery_max_backoff_seconds
 from core.runtime_settings import get_webhook_delivery_max_retries
 from currencies.models import ChainToken
 from currencies.models import Crypto
-from deposits.models import DepositAddress
-from deposits.models import DepositStatus
-from deposits.service import DepositService
-from evm.intents import build_erc20_transfer_intent
-from evm.intents import build_native_transfer_intent
 from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 from evm.local_erc20 import LOCAL_EVM_ERC20_BYTECODE
-from evm.models import EvmBroadcastTask
-from evm.models import EvmScanCursor
-from evm.models import EvmScanCursorType
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
-from evm.scanner.service import EvmChainScannerService
-from evm.scanner.watchers import clear_evm_watch_set_cache
 from projects.models import Project
-from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
-from users.models import Customer
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalStatus
 
@@ -99,7 +83,6 @@ class PlatformSettingsRuntimeTests(TestCase):
     def test_runtime_settings_use_database_override_before_settings_fallback(self):
         # 平台运行参数中心存在记录时，业务读取应优先采用数据库值，而不是继续回退到 settings 常量。
         PlatformSettings.objects.create(
-            open_native_scanner=True,
             admin_sensitive_action_otp_max_age_seconds=480,
             alerts_repeat_interval_minutes=7,
             webhook_delivery_breaker_threshold=12,
@@ -112,11 +95,6 @@ class PlatformSettingsRuntimeTests(TestCase):
         self.assertEqual(get_webhook_delivery_breaker_threshold(), 12)
         self.assertEqual(get_webhook_delivery_max_retries(), 9)
         self.assertEqual(get_webhook_delivery_max_backoff_seconds(), 45)
-        self.assertTrue(get_open_native_scanner())
-
-    def test_open_native_scanner_defaults_to_closed_without_platform_settings(self):
-        # 没有平台运行参数记录时，原生币扫描及其业务入口必须保守关闭。
-        self.assertFalse(get_open_native_scanner())
 
 
 class LocalChainBootstrapCommandTests(TestCase):
@@ -363,132 +341,10 @@ class LocalChainIntegrationMixin:
             w3.eth.wait_for_transaction_receipt(mint_hash)
         return token
 
-    def _scan_evm_chain_and_get_transfer(
-        self,
-        *,
-        chain: Chain,
-        tx_hash,
-        expected_scanner: str,
-        require_created: bool = True,
-    ) -> OnchainTransfer:
-        """使用真实自扫描器从链上抓取交易，再返回命中的 OnchainTransfer。
 
-        expected_scanner:
-        - native: 预期由原生币直转扫描器命中
-        - erc20: 预期由 ERC20 OnchainTransfer 扫描器命中
-        """
-        summary = self._scan_evm_chain(chain=chain)
-        normalized_tx_hash = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
-        if not normalized_tx_hash.startswith("0x"):
-            normalized_tx_hash = f"0x{normalized_tx_hash}"
-        transfer = OnchainTransfer.objects.filter(
-            chain=chain,
-            hash=normalized_tx_hash.lower(),
-        ).first()
-        if transfer is None:
-            raise RuntimeError(
-                f"EVM scanner did not capture transfer: {normalized_tx_hash}"
-            )
 
-        # 自扫描任务跑完后，链级两个游标都必须存在，说明扫描编排链路已经走通。
-        self.assertTrue(
-            EvmScanCursor.objects.filter(
-                chain=chain,
-                scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-            ).exists()
-        )
-        self.assertTrue(
-            EvmScanCursor.objects.filter(
-                chain=chain,
-                scanner_type=EvmScanCursorType.ERC20_TRANSFER,
-            ).exists()
-        )
-        native_cursor = EvmScanCursor.objects.get(
-            chain=chain,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-        )
-        erc20_cursor = EvmScanCursor.objects.get(
-            chain=chain,
-            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
-        )
-        chain.refresh_from_db(fields=("latest_block_number",))
-        # 每轮真实自扫描后，两个游标都必须刷新且不能残留错误。
-        self.assertEqual(native_cursor.last_error, "")
-        self.assertEqual(erc20_cursor.last_error, "")
-        self.assertLessEqual(
-            native_cursor.last_scanned_block, chain.latest_block_number
-        )
-        self.assertLessEqual(erc20_cursor.last_scanned_block, chain.latest_block_number)
 
-        if expected_scanner == "native":
-            self.assertGreaterEqual(summary.native.observed_transfers, 1)
-            self.assertGreaterEqual(summary.native.created_transfers, 1)
-            self.assertEqual(summary.erc20.created_transfers, 0)
-            self.assertEqual(transfer.event_id, "native:tx")
-        elif expected_scanner == "erc20":
-            self.assertGreaterEqual(summary.erc20.observed_logs, 1)
-            if require_created:
-                self.assertGreaterEqual(summary.erc20.created_transfers, 1)
-            self.assertTrue(transfer.event_id.startswith("erc20:"))
-        else:
-            raise ValueError(f"Unsupported expected_scanner: {expected_scanner}")
 
-        return transfer
-
-    @staticmethod
-    def _prime_evm_scan_cursors(*, chain: Chain) -> None:
-        """把 EVM 自扫描游标预热到当前链头附近，模拟生产中的持续轮询状态。
-
-        真实 Anvil 在开发机上通常已经运行了很久；若测试链记录是刚创建的，而游标从 0 开始，
-        单次扫描只会先扫最前面的少量区块，无法覆盖刚刚产生的最新交易。
-        """
-        clear_evm_watch_set_cache(chain=chain)
-        latest_block = chain.get_latest_block_number
-
-        for scanner_type in (
-            EvmScanCursorType.NATIVE_DIRECT,
-            EvmScanCursorType.ERC20_TRANSFER,
-        ):
-            EvmScanCursor.objects.update_or_create(
-                chain=chain,
-                scanner_type=scanner_type,
-                defaults={
-                    "last_scanned_block": latest_block,
-                    "enabled": True,
-                    "last_error": "",
-                    "last_error_at": None,
-                },
-            )
-
-    @staticmethod
-    def _scan_evm_chain(*, chain: Chain):
-        clear_evm_watch_set_cache(chain=chain)
-        return EvmChainScannerService.scan_chain(chain=chain)
-
-    def _mine_evm_block(self, w3: Web3) -> None:
-        """通过发送一笔极小原生币转账推进 anvil 块高，供 FULL 确认链路使用。"""
-        tx_hash = w3.eth.send_transaction(
-            {
-                "from": w3.eth.accounts[0],
-                "to": w3.eth.accounts[1],
-                "value": 1,
-            }
-        )
-        w3.eth.wait_for_transaction_receipt(tx_hash)
-
-    def _run_local_confirm_pipeline(self, *, chain: Chain) -> None:
-        """同步执行“刷新块高 -> 调度确认 -> 执行确认”链路，覆盖真实任务推进逻辑。"""
-        with (
-            patch(
-                "chains.tasks.confirm_transfer.delay",
-                side_effect=confirm_transfer.run,
-            ),
-            patch(
-                "chains.tasks.block_number_updated.delay",
-                side_effect=block_number_updated.run,
-            ),
-        ):
-            update_the_latest_block.run(chain.pk)
 
 
 class LocalEvmContractCompatibilityTests(LocalChainIntegrationMixin, TestCase):
@@ -511,916 +367,18 @@ class LocalEvmContractCompatibilityTests(LocalChainIntegrationMixin, TestCase):
 
 
 class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
-    @patch("withdrawals.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_withdrawal_can_broadcast_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 真实本地链联调：从签名建单到 anvil 广播，再到链上观察与业务完成必须能闭环。
-        w3 = self._require_anvil()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        crypto = Crypto.objects.create(
-            name="Ethereum Local",
-            symbol="ETHL",
-            coingecko_id="ethereum-local",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil Integration",
-            code="anvil-integration",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        wallet = Wallet.generate()
-        project = Project.objects.create(
-            name="Local EVM Project",
-            wallet=wallet,
-        )
-        vault_address = wallet.get_address(
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-        )
-        recipient = Web3.to_checksum_address(w3.eth.accounts[1])
-        amount = Decimal("0.01")
 
-        fund_tx_hash = w3.eth.send_transaction(
-            {
-                "from": w3.eth.accounts[0],
-                "to": vault_address.address,
-                "value": int(Decimal("0.2") * Decimal(10**18)),
-            }
-        )
-        w3.eth.wait_for_transaction_receipt(fund_tx_hash)
-        self._prime_evm_scan_cursors(chain=chain)
 
-        evm_task = EvmBroadcastTask.schedule(
-            build_native_transfer_intent(
-                address=vault_address,
-                chain=chain,
-                to=recipient,
-                value=int(amount * Decimal(10**18)),
-                action_type=OnchainActionType.Withdrawal,
-            )
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="local-evm-order",
-            chain=chain,
-            crypto=crypto,
-            amount=amount,
-            to=recipient,
-            hash=evm_task.base_task.tx_hash,
-            broadcast_task=evm_task.base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-        evm_task.broadcast()
-        _receipt = w3.eth.wait_for_transaction_receipt(evm_task.base_task.tx_hash)
-        adapter = AdapterFactory.get_adapter(chain.type)
-        self.assertEqual(
-            adapter.tx_result(chain=chain, tx_hash=evm_task.base_task.tx_hash),
-            TransferStatus.CONFIRMED,
-        )
 
-        transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=evm_task.base_task.tx_hash,
-            expected_scanner="native",
-        )
-        transfer.process()
-        withdrawal.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
 
-        transfer.confirm()
-        withdrawal.refresh_from_db()
-        evm_task.base_task.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
-        self.assertEqual(evm_task.base_task.result, BroadcastTaskResult.SUCCESS)
 
-    @patch("deposits.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_deposit_can_create_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 真实本地链联调：anvil 上的入账转账必须能生成 Deposit 并完成确认。
-        w3 = self._require_anvil()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        crypto = Crypto.objects.create(
-            name="Ethereum Deposit Local",
-            symbol="ETHD",
-            coingecko_id="ethereum-deposit-local",
-            decimals=18,
-            prices={"USD": "2000"},
-        )
-        chain = Chain.objects.create(
-            name="Anvil Deposit",
-            code="anvil-deposit",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="Local EVM Deposit Project",
-            wallet=Wallet.generate(),
-            pre_notify=True,
-        )
-        customer = Customer.objects.create(project=project, uid="evm-customer-1")
-        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
-        RecipientAddress.objects.create(
-            project=project,
-            chain_type=chain.type,
-            address=Web3.to_checksum_address(
-                "0x000000000000000000000000000000000000beef"
-            ),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        deposit_address = DepositAddress.get_address(chain, customer)
-        amount = Decimal("0.03")
-        self._prime_evm_scan_cursors(chain=chain)
 
-        tx_hash = w3.eth.send_transaction(
-            {
-                "from": w3.eth.accounts[0],
-                "to": deposit_address,
-                "value": int(amount * Decimal(10**18)),
-            }
-        )
-        _receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
-        transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=tx_hash,
-            expected_scanner="native",
-        )
-        transfer.process()
-        deposit = transfer.deposit
-        self.assertEqual(deposit.status, DepositStatus.CONFIRMING)
 
-        transfer.confirm()
-        deposit.refresh_from_db()
-        self.assertEqual(deposit.status, DepositStatus.COMPLETED)
 
-    @patch("deposits.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_native_collection_can_broadcast_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 原生币归集要验证完整闭环：客户入账 -> Deposit 完成 -> 归集广播 -> 归集 OnchainTransfer 完成。
-        w3 = self._require_anvil()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        crypto = Crypto.objects.create(
-            name="Ethereum Collection Local",
-            symbol="ETHC2",
-            coingecko_id="ethereum-collection-local",
-            decimals=18,
-            prices={"USD": "2000"},
-        )
-        chain = Chain.objects.create(
-            name="Anvil Collection",
-            code="anvil-collection",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="Local EVM Collection Project",
-            wallet=Wallet.generate(),
-            pre_notify=True,
-            gather_worth=Decimal("10"),
-            gather_period=1,
-        )
-        RecipientAddress.objects.create(
-            name="归集地址",
-            project=project,
-            chain_type=ChainType.EVM,
-            address=Web3.to_checksum_address(w3.eth.accounts[2]),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        customer = Customer.objects.create(project=project, uid="evm-collector-1")
-        deposit_address = DepositAddress.get_address(chain, customer)
-        deposit_amount = Decimal("0.05")
-        self._prime_evm_scan_cursors(chain=chain)
-
-        incoming_tx_hash = w3.eth.send_transaction(
-            {
-                "from": w3.eth.accounts[0],
-                "to": deposit_address,
-                "value": int(deposit_amount * Decimal(10**18)),
-            }
-        )
-        _incoming_receipt = w3.eth.wait_for_transaction_receipt(incoming_tx_hash)
-        incoming_transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=incoming_tx_hash,
-            expected_scanner="native",
-        )
-        incoming_transfer.process()
-        deposit = incoming_transfer.deposit
-        incoming_transfer.confirm()
-        deposit.refresh_from_db()
-        self.assertEqual(deposit.status, DepositStatus.COMPLETED)
-
-        # --- 第一轮：prepare 不再关心 gas，直接创建 collection 任务；gas 判定由 broadcast 层兜底 ---
-        collected = DepositService.collect_deposit(deposit)
-        self.assertTrue(collected)
-        deposit.refresh_from_db()
-        self.assertIsNotNone(deposit.collection_id)
-
-        collection_task = EvmBroadcastTask.objects.get(
-            base_task=deposit.collection.broadcast_task
-        )
-
-        # --- 第二轮：broadcast pre-flight 发现 balance < value + 2×erc20_gas → 请 Vault 补 gas，保持 QUEUED ---
-        collection_task.broadcast()
-        collection_task.refresh_from_db()
-        self.assertEqual(
-            collection_task.base_task.stage, BroadcastTaskStage.QUEUED
-        )
-        self.assertIsNone(collection_task.last_attempt_at)
-
-        gas_task = EvmBroadcastTask.objects.filter(
-            base_task__chain=chain,
-            base_task__action_type=OnchainActionType.GasRecharge,
-        ).latest("created_at")
-        # 为 vault 充值以便 gas recharge 可以广播
-        w3.eth.wait_for_transaction_receipt(
-            w3.eth.send_transaction(
-                {
-                    "from": w3.eth.accounts[0],
-                    "to": gas_task.address.address,
-                    "value": int(Decimal("1") * Decimal(10**18)),
-                }
-            )
-        )
-        gas_task.broadcast()
-        w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
-
-        # --- 第三轮：gas 已到账，再次广播归集任务，pre-flight 阈值通过 → 上链 ---
-        collection_task.broadcast()
-        deposit.collection.refresh_from_db()
-        self.assertIsNone(deposit.collection.collection_hash)
-        collection_hash = collection_task.base_task.tx_hash
-        w3.eth.wait_for_transaction_receipt(collection_hash)
-        collection_transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=collection_hash,
-            expected_scanner="native",
-        )
-        collection_transfer.process()
-        deposit.refresh_from_db()
-        self.assertEqual(collection_transfer.type, OnchainActionType.DepositCollection)
-        self.assertEqual(deposit.collection.transfer_id, collection_transfer.id)
-
-        collection_transfer.confirm()
-        deposit.collection.refresh_from_db()
-        self.assertIsNotNone(deposit.collection.collected_at)
-
-    @patch("withdrawals.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_erc20_withdrawal_can_broadcast_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # ERC20 提币必须验证真实合约调用、OnchainTransfer 事件观测和业务完成，而不是只测 calldata 构造。
-        w3 = self._require_anvil()
-        native_crypto = Crypto.objects.create(
-            name="Ethereum ERC20 Withdrawal Native",
-            symbol="ETHW2",
-            coingecko_id="ethereum-erc20-withdrawal-native",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil ERC20 Withdrawal",
-            code="anvil-erc20-withdrawal",
-            type=ChainType.EVM,
-            native_coin=native_crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        token_contract = self._deploy_test_erc20(w3, supply_raw=1_000_000_000)
-        token_crypto = Crypto.objects.create(
-            name="Test Token Withdrawal",
-            symbol="TTW",
-            coingecko_id="test-token-withdrawal",
-            decimals=6,
-        )
-        ChainToken.objects.create(
-            crypto=token_crypto,
-            chain=chain,
-            address=token_contract.address,
-        )
-        wallet = Wallet.generate()
-        project = Project.objects.create(
-            name="Local ERC20 Withdrawal Project",
-            wallet=wallet,
-        )
-        # 归集补 gas 走的是 project.wallet 取金库账户，测试也复用同一入口，避免实例缓存差异。
-        vault_address = project.wallet.get_address(
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-        )
-        recipient = Web3.to_checksum_address(w3.eth.accounts[3])
-        transfer_amount_raw = 5_000_000
-        transfer_amount = Decimal(transfer_amount_raw).scaleb(-6)
-
-        # 金库提币既要有 token 余额，也要有原生币支付 gas。
-        w3.eth.wait_for_transaction_receipt(
-            w3.eth.send_transaction(
-                {
-                    "from": w3.eth.accounts[0],
-                    "to": vault_address.address,
-                    "value": int(Decimal("0.2") * Decimal(10**18)),
-                }
-            )
-        )
-        w3.eth.wait_for_transaction_receipt(
-            token_contract.functions.transfer(
-                vault_address.address, 30_000_000
-            ).transact({"from": w3.eth.accounts[0]})
-        )
-        self._prime_evm_scan_cursors(chain=chain)
-
-        evm_task = EvmBroadcastTask.schedule(
-            build_erc20_transfer_intent(
-                address=vault_address,
-                chain=chain,
-                crypto=token_crypto,
-                to=recipient,
-                value_raw=transfer_amount_raw,
-                action_type=OnchainActionType.Withdrawal,
-            )
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="local-erc20-withdraw-order",
-            chain=chain,
-            crypto=token_crypto,
-            amount=transfer_amount,
-            to=recipient,
-            hash=evm_task.base_task.tx_hash,
-            broadcast_task=evm_task.base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-
-        evm_task.broadcast()
-        _receipt = w3.eth.wait_for_transaction_receipt(evm_task.base_task.tx_hash)
-        transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=evm_task.base_task.tx_hash,
-            expected_scanner="erc20",
-        )
-        transfer.process()
-        withdrawal.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-
-        transfer.confirm()
-        withdrawal.refresh_from_db()
-        evm_task.base_task.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
-        self.assertEqual(evm_task.base_task.result, BroadcastTaskResult.SUCCESS)
-
-    @patch("deposits.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_erc20_deposit_can_create_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # ERC20 充币要验证真实 token 合约事件能正确命中 Deposit，而不是只依赖 webhook 伪造数据。
-        w3 = self._require_anvil()
-        native_crypto = Crypto.objects.create(
-            name="Ethereum ERC20 Deposit Native",
-            symbol="ETHD2",
-            coingecko_id="ethereum-erc20-deposit-native",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil ERC20 Deposit",
-            code="anvil-erc20-deposit",
-            type=ChainType.EVM,
-            native_coin=native_crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        token_contract = self._deploy_test_erc20(w3, supply_raw=1_000_000_000)
-        token_crypto = Crypto.objects.create(
-            name="Test Token Deposit",
-            symbol="TTD",
-            coingecko_id="test-token-deposit",
-            decimals=6,
-            prices={"USD": "1"},
-        )
-        ChainToken.objects.create(
-            crypto=token_crypto,
-            chain=chain,
-            address=token_contract.address,
-        )
-        project = Project.objects.create(
-            name="Local ERC20 Deposit Project",
-            wallet=Wallet.generate(),
-            pre_notify=True,
-        )
-        customer = Customer.objects.create(project=project, uid="erc20-customer-1")
-        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
-        RecipientAddress.objects.create(
-            project=project,
-            chain_type=chain.type,
-            address=Web3.to_checksum_address(
-                "0x000000000000000000000000000000000000beef"
-            ),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        deposit_address = DepositAddress.get_address(chain, customer)
-        self._prime_evm_scan_cursors(chain=chain)
-
-        receipt = w3.eth.wait_for_transaction_receipt(
-            token_contract.functions.transfer(deposit_address, 7_500_000).transact(
-                {"from": w3.eth.accounts[0]}
-            )
-        )
-        transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=receipt.transactionHash,
-            expected_scanner="erc20",
-        )
-        transfer.process()
-        deposit = transfer.deposit
-        self.assertEqual(deposit.status, DepositStatus.CONFIRMING)
-
-        transfer.confirm()
-        deposit.refresh_from_db()
-        self.assertEqual(deposit.status, DepositStatus.COMPLETED)
-
-    @patch("deposits.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_erc20_collection_can_broadcast_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # ERC20 归集必须覆盖 gas 补充和 token 归集两笔真实链上交易，否则归集链路只测到一半。
-        w3 = self._require_anvil()
-        native_crypto = Crypto.objects.create(
-            name="Ethereum ERC20 Collection Native",
-            symbol="ETHC3",
-            coingecko_id="ethereum-erc20-collection-native",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil ERC20 Collection",
-            code="anvil-erc20-collection",
-            type=ChainType.EVM,
-            native_coin=native_crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        token_contract = self._deploy_test_erc20(w3, supply_raw=1_000_000_000)
-        token_crypto = Crypto.objects.create(
-            name="Test Token Collection",
-            symbol="TTC",
-            coingecko_id="test-token-collection",
-            decimals=6,
-            prices={"USD": "1"},
-        )
-        ChainToken.objects.create(
-            crypto=token_crypto,
-            chain=chain,
-            address=token_contract.address,
-        )
-        wallet = Wallet.generate()
-        project = Project.objects.create(
-            name="Local ERC20 Collection Project",
-            wallet=wallet,
-            pre_notify=True,
-            gather_worth=Decimal("10"),
-            gather_period=1,
-        )
-        RecipientAddress.objects.create(
-            name="ERC20归集地址",
-            project=project,
-            chain_type=ChainType.EVM,
-            address=Web3.to_checksum_address(w3.eth.accounts[4]),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        customer = Customer.objects.create(project=project, uid="erc20-collector-1")
-        deposit_address = DepositAddress.get_address(chain, customer)
-        _deposit_addr = DepositAddress.objects.get(
-            customer=customer, chain_type=chain.type
-        ).address
-        _vault_address = wallet.get_address(
-            chain_type=ChainType.EVM, usage=AddressUsage.Vault
-        )
-        self._prime_evm_scan_cursors(chain=chain)
-
-        incoming_receipt = w3.eth.wait_for_transaction_receipt(
-            token_contract.functions.transfer(deposit_address, 25_000_000).transact(
-                {"from": w3.eth.accounts[0]}
-            )
-        )
-        incoming_transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=incoming_receipt.transactionHash,
-            expected_scanner="erc20",
-        )
-        incoming_transfer.process()
-        deposit = incoming_transfer.deposit
-        incoming_transfer.confirm()
-        deposit.refresh_from_db()
-        self.assertEqual(deposit.status, DepositStatus.COMPLETED)
-
-        # --- 第一轮：prepare 不再关心 gas，直接创建 collection 任务；gas 判定由 broadcast 层兜底 ---
-        collected = DepositService.collect_deposit(deposit)
-        self.assertTrue(collected)
-        deposit.refresh_from_db()
-        self.assertIsNotNone(deposit.collection_id)
-
-        collection_task = EvmBroadcastTask.objects.get(
-            base_task=deposit.collection.broadcast_task
-        )
-
-        # --- 第二轮：broadcast pre-flight 发现 native < 2×erc20_gas → 请 Vault 补 gas，保持 QUEUED ---
-        collection_task.broadcast()
-        collection_task.refresh_from_db()
-        self.assertEqual(
-            collection_task.base_task.stage, BroadcastTaskStage.QUEUED
-        )
-        self.assertIsNone(collection_task.last_attempt_at)
-
-        gas_task = EvmBroadcastTask.objects.filter(
-            base_task__chain=chain,
-            base_task__action_type=OnchainActionType.GasRecharge,
-        ).latest("created_at")
-        # gas recharge 任务以系统最终选中的金库账户为准；这里再真实补足原生币，确保后续广播闭环。
-        w3.eth.wait_for_transaction_receipt(
-            w3.eth.send_transaction(
-                {
-                    "from": w3.eth.accounts[0],
-                    "to": gas_task.address.address,
-                    "value": int(Decimal("100") * Decimal(10**18)),
-                }
-            )
-        )
-        self.assertGreater(
-            w3.eth.get_balance(gas_task.address.address), int(gas_task.value)
-        )
-        gas_task.broadcast()
-        w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
-
-        # --- 第三轮：gas 已到账，再次广播归集任务，pre-flight 阈值通过 → 上链 ---
-        collection_task.broadcast()
-        deposit.collection.refresh_from_db()
-        self.assertIsNone(deposit.collection.collection_hash)
-        collection_hash = collection_task.base_task.tx_hash
-        w3.eth.wait_for_transaction_receipt(collection_hash)
-        collection_transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=collection_hash,
-            expected_scanner="erc20",
-            require_created=False,
-        )
-        collection_transfer.process()
-        deposit.refresh_from_db()
-        self.assertEqual(collection_transfer.type, OnchainActionType.DepositCollection)
-        self.assertEqual(deposit.collection.transfer_id, collection_transfer.id)
-
-        collection_transfer.confirm()
-        deposit.collection.refresh_from_db()
-        self.assertIsNotNone(deposit.collection.collected_at)
-
-    @patch("deposits.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_deposit_can_complete_via_confirm_task_pipeline(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 真实链路不应只靠手工 confirm()；FULL 确认应能经由块高刷新任务推进到业务完成。
-        w3 = self._require_anvil()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        crypto = Crypto.objects.create(
-            name="Ethereum Deposit Task Local",
-            symbol="ETHDT2",
-            coingecko_id="ethereum-deposit-task-local",
-            decimals=18,
-            prices={"USD": "2000"},
-        )
-        chain = Chain.objects.create(
-            name="Anvil Deposit Task",
-            code="anvil-deposit-task",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="Local EVM Deposit Task Project",
-            wallet=Wallet.generate(),
-            pre_notify=True,
-        )
-        customer = Customer.objects.create(project=project, uid="evm-customer-task-1")
-        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
-        RecipientAddress.objects.create(
-            project=project,
-            chain_type=chain.type,
-            address=Web3.to_checksum_address(
-                "0x000000000000000000000000000000000000beef"
-            ),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        deposit_address = DepositAddress.get_address(chain, customer)
-        self._prime_evm_scan_cursors(chain=chain)
-
-        tx_hash = w3.eth.send_transaction(
-            {
-                "from": w3.eth.accounts[0],
-                "to": deposit_address,
-                "value": int(Decimal("0.02") * Decimal(10**18)),
-            }
-        )
-        w3.eth.wait_for_transaction_receipt(tx_hash)
-        transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=tx_hash,
-            expected_scanner="native",
-        )
-        transfer.process()
-        deposit = transfer.deposit
-        self.assertEqual(transfer.status, TransferStatus.CONFIRMING)
-        self.assertEqual(deposit.status, DepositStatus.CONFIRMING)
-
-        # FULL 确认只会处理“足够老且已达到确认数”的转账，因此这里同时推进块高并回填创建时间。
-        matured_created_at = timezone.now() - timedelta(seconds=12)
-        OnchainTransfer.objects.filter(pk=transfer.pk).update(
-            created_at=matured_created_at
-        )
-        self._mine_evm_block(w3)
-        self._run_local_confirm_pipeline(chain=chain)
-
-        transfer.refresh_from_db()
-        deposit.refresh_from_db()
-        self.assertEqual(transfer.status, TransferStatus.CONFIRMED)
-        self.assertEqual(deposit.status, DepositStatus.COMPLETED)
-
-    @patch("withdrawals.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_withdrawal_can_complete_via_confirm_task_pipeline(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 提币确认也必须经过统一块高任务链路，而不是测试里直接手工推状态。
-        w3 = self._require_anvil()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        crypto = Crypto.objects.create(
-            name="Ethereum Withdrawal Task Local",
-            symbol="ETHWT2",
-            coingecko_id="ethereum-withdrawal-task-local",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil Withdrawal Task",
-            code="anvil-withdrawal-task",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        wallet = Wallet.generate()
-        project = Project.objects.create(
-            name="Local EVM Withdrawal Task Project",
-            wallet=wallet,
-        )
-        vault_address = wallet.get_address(
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-        )
-        recipient = Web3.to_checksum_address(w3.eth.accounts[5])
-        self._prime_evm_scan_cursors(chain=chain)
-        w3.eth.wait_for_transaction_receipt(
-            w3.eth.send_transaction(
-                {
-                    "from": w3.eth.accounts[0],
-                    "to": vault_address.address,
-                    "value": int(Decimal("0.2") * Decimal(10**18)),
-                }
-            )
-        )
-
-        evm_task = EvmBroadcastTask.schedule(
-            build_native_transfer_intent(
-                address=vault_address,
-                chain=chain,
-                to=recipient,
-                value=int(Decimal("0.01") * Decimal(10**18)),
-                action_type=OnchainActionType.Withdrawal,
-            )
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="local-evm-withdraw-task-order",
-            chain=chain,
-            crypto=crypto,
-            amount=Decimal("0.01"),
-            to=recipient,
-            hash=evm_task.base_task.tx_hash,
-            broadcast_task=evm_task.base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-
-        evm_task.broadcast()
-        w3.eth.wait_for_transaction_receipt(evm_task.base_task.tx_hash)
-        transfer = self._scan_evm_chain_and_get_transfer(
-            chain=chain,
-            tx_hash=evm_task.base_task.tx_hash,
-            expected_scanner="native",
-        )
-        transfer.process()
-        withdrawal.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-
-        matured_created_at = timezone.now() - timedelta(seconds=12)
-        OnchainTransfer.objects.filter(pk=transfer.pk).update(
-            created_at=matured_created_at
-        )
-        self._mine_evm_block(w3)
-        self._run_local_confirm_pipeline(chain=chain)
-
-        transfer.refresh_from_db()
-        withdrawal.refresh_from_db()
-        evm_task.base_task.refresh_from_db()
-        self.assertEqual(transfer.status, TransferStatus.CONFIRMED)
-        self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
-        self.assertEqual(evm_task.base_task.result, BroadcastTaskResult.SUCCESS)
-
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_native_scan_replay_keeps_transfer_idempotent(
-        self,
-        _process_transfer_mock,
-    ):
-        # 真实链上重复扫描同一原生币转账时，只允许首轮创建 OnchainTransfer，后续必须走幂等重放。
-        w3 = self._require_anvil()
-        PlatformSettings.objects.create(open_native_scanner=True)
-        crypto = Crypto.objects.create(
-            name="Ethereum Native Replay Local",
-            symbol="ETHR2",
-            coingecko_id="ethereum-native-replay-local",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil Native Replay",
-            code="anvil-native-replay",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="Local EVM Native Replay Project",
-            wallet=Wallet.generate(),
-        )
-        customer = Customer.objects.create(
-            project=project, uid="evm-native-replay-customer"
-        )
-        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
-        RecipientAddress.objects.create(
-            project=project,
-            chain_type=chain.type,
-            address=Web3.to_checksum_address(
-                "0x000000000000000000000000000000000000beef"
-            ),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        deposit_address = DepositAddress.get_address(chain, customer)
-        self._prime_evm_scan_cursors(chain=chain)
-
-        tx_hash = w3.eth.send_transaction(
-            {
-                "from": w3.eth.accounts[0],
-                "to": deposit_address,
-                "value": int(Decimal("0.015") * Decimal(10**18)),
-            }
-        )
-        w3.eth.wait_for_transaction_receipt(tx_hash)
-
-        first_summary = self._scan_evm_chain(chain=chain)
-        second_summary = self._scan_evm_chain(chain=chain)
-
-        self.assertGreaterEqual(first_summary.native.created_transfers, 1)
-        self.assertEqual(second_summary.native.created_transfers, 0)
-        normalized_tx_hash = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
-        if not normalized_tx_hash.startswith("0x"):
-            normalized_tx_hash = f"0x{normalized_tx_hash}"
-        self.assertEqual(
-            OnchainTransfer.objects.filter(
-                chain=chain, hash=normalized_tx_hash.lower()
-            ).count(),
-            1,
-        )
-
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_evm_erc20_scan_replay_keeps_transfer_idempotent(
-        self,
-        _process_transfer_mock,
-    ):
-        # ERC20 真实链回放同样必须依赖唯一键保持幂等，不能因为尾部重扫重复生成业务转账。
-        w3 = self._require_anvil()
-        native_crypto = Crypto.objects.create(
-            name="Ethereum ERC20 Replay Native",
-            symbol="ETHER2",
-            coingecko_id="ethereum-erc20-replay-native",
-            decimals=18,
-        )
-        chain = Chain.objects.create(
-            name="Anvil ERC20 Replay",
-            code="anvil-erc20-replay",
-            type=ChainType.EVM,
-            native_coin=native_crypto,
-            chain_id=31337,
-            rpc=self.EVM_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        token_contract = self._deploy_test_erc20(w3, supply_raw=1_000_000_000)
-        token_crypto = Crypto.objects.create(
-            name="Test Token Replay",
-            symbol="TTR",
-            coingecko_id="test-token-replay",
-            decimals=6,
-            prices={"USD": "1"},
-        )
-        ChainToken.objects.create(
-            crypto=token_crypto,
-            chain=chain,
-            address=token_contract.address,
-        )
-        project = Project.objects.create(
-            name="Local ERC20 Replay Project",
-            wallet=Wallet.generate(),
-        )
-        customer = Customer.objects.create(project=project, uid="erc20-replay-customer")
-        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
-        RecipientAddress.objects.create(
-            project=project,
-            chain_type=chain.type,
-            address=Web3.to_checksum_address(
-                "0x000000000000000000000000000000000000beef"
-            ),
-            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-        )
-        deposit_address = DepositAddress.get_address(chain, customer)
-        self._prime_evm_scan_cursors(chain=chain)
-
-        receipt = w3.eth.wait_for_transaction_receipt(
-            token_contract.functions.transfer(deposit_address, 6_000_000).transact(
-                {"from": w3.eth.accounts[0]}
-            )
-        )
-
-        first_summary = self._scan_evm_chain(chain=chain)
-        second_summary = self._scan_evm_chain(chain=chain)
-
-        self.assertGreaterEqual(first_summary.erc20.created_transfers, 1)
-        self.assertEqual(second_summary.erc20.created_transfers, 0)
-        normalized_tx_hash = receipt.transactionHash.hex()
-        if not normalized_tx_hash.startswith("0x"):
-            normalized_tx_hash = f"0x{normalized_tx_hash}"
-        self.assertEqual(
-            OnchainTransfer.objects.filter(
-                chain=chain, hash=normalized_tx_hash.lower()
-            ).count(),
-            1,
-        )
 
     def test_local_evm_missing_tx_is_dropped_and_reverts_withdrawal(self):
-        # 节点查不到 hash 时，OnchainTransfer 被 drop，提币回退到 PENDING 等待重新匹配。
+        # 节点查不到 hash 时，Transfer 被 drop，提币回退到 PENDING 等待重新匹配。
         self._require_anvil()
         crypto = Crypto.objects.create(
             name="Ethereum Missing Tx Local",
@@ -1450,18 +408,18 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         recipient = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000009"
         )
-        broadcast_task = BroadcastTask.objects.create(
+        tx_task = TxTask.objects.create(
             chain=chain,
             address=addr,
-            action_type=OnchainActionType.Withdrawal,
+            tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "9" * 64,
-            stage=BroadcastTaskStage.PENDING_CONFIRM,
-            result=BroadcastTaskResult.UNKNOWN,
+            stage=TxTaskStage.PENDING_CONFIRM,
+            result=TxTaskResult.UNKNOWN,
         )
-        transfer = OnchainTransfer.objects.create(
+        transfer = Transfer.objects.create(
             chain=chain,
             block=1,
-            hash=broadcast_task.tx_hash,
+            hash=tx_task.tx_hash,
             event_id="native:tx",
             crypto=crypto,
             from_address=addr.address,
@@ -1471,7 +429,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             timestamp=1,
             datetime=timezone.now(),
             status=TransferStatus.CONFIRMING,
-            type=OnchainActionType.Withdrawal,
+            type=TransferType.Withdrawal,
             processed_at=timezone.now(),
         )
         withdrawal = Withdrawal.objects.create(
@@ -1481,8 +439,8 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             crypto=crypto,
             amount=Decimal("0.01"),
             to=recipient,
-            hash=broadcast_task.tx_hash,
-            broadcast_task=broadcast_task,
+            hash=tx_task.tx_hash,
+            tx_task=tx_task,
             transfer=transfer,
             status=WithdrawalStatus.CONFIRMING,
         )
@@ -1495,11 +453,11 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         finally:
             confirm_transfer.request.retries = old_retries
 
-        # OnchainTransfer 被 drop 后直接删除，释放唯一约束以允许 reorg 后重建
-        self.assertFalse(OnchainTransfer.objects.filter(pk=transfer.pk).exists())
+        # Transfer 被 drop 后直接删除，释放唯一约束以允许 reorg 后重建
+        self.assertFalse(Transfer.objects.filter(pk=transfer.pk).exists())
         withdrawal.refresh_from_db()
-        broadcast_task.refresh_from_db()
+        tx_task.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertIsNone(withdrawal.transfer_id)
-        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertEqual(broadcast_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(tx_task.stage, TxTaskStage.PENDING_CHAIN)
+        self.assertEqual(tx_task.result, TxTaskResult.UNKNOWN)

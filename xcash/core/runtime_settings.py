@@ -53,13 +53,6 @@ def get_alerts_repeat_interval_minutes() -> int:
     return int(settings.ALERTS_REPEAT_INTERVAL_MINUTES)
 
 
-def get_open_native_scanner() -> bool:
-    platform_settings = get_platform_settings()
-    if platform_settings is not None:
-        return bool(platform_settings.open_native_scanner)
-    return False
-
-
 def get_webhook_delivery_breaker_threshold() -> int:
     platform_settings = get_platform_settings()
     if platform_settings is not None:
@@ -101,13 +94,6 @@ def get_confirming_withdrawal_timeout() -> timedelta:
         return timedelta(
             minutes=platform_settings.confirming_withdrawal_timeout_minutes
         )
-    return timedelta(minutes=30)
-
-
-def get_deposit_collection_timeout() -> timedelta:
-    platform_settings = get_platform_settings()
-    if platform_settings is not None:
-        return timedelta(minutes=platform_settings.deposit_collection_timeout_minutes)
     return timedelta(minutes=30)
 
 

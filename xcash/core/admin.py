@@ -33,10 +33,6 @@ class PlatformSettingsAdmin(ModelAdmin):
             {"fields": ("alerts_repeat_interval_minutes",)},
         ),
         (
-            "链上扫描",
-            {"fields": ("open_native_scanner",)},
-        ),
-        (
             "Webhook 投递",
             {
                 "fields": (
@@ -53,7 +49,6 @@ class PlatformSettingsAdmin(ModelAdmin):
                     "reviewing_withdrawal_timeout_minutes",
                     "pending_withdrawal_timeout_minutes",
                     "confirming_withdrawal_timeout_minutes",
-                    "deposit_collection_timeout_minutes",
                     "webhook_event_timeout_minutes",
                 )
             },
@@ -86,7 +81,6 @@ class PlatformSettingsAdmin(ModelAdmin):
     readonly_fields = ("created_by", "updated_by", "created_at", "updated_at")
     list_display = (
         "id",
-        "open_native_scanner",
         "risk_marking_enabled",
         "admin_sensitive_action_otp_max_age_seconds",
         "alerts_repeat_interval_minutes",

@@ -33,20 +33,12 @@ FALLBACK_PROCESS_TRANSFER_SCHEDULE_SECONDS = get_int_default(
     "CELERY_FALLBACK_PROCESS_TRANSFER_SCHEDULE_SECONDS",
     20,
 )
-DEPOSIT_GATHER_SCHEDULE_SECONDS = get_int_default(
-    "CELERY_DEPOSIT_GATHER_SCHEDULE_SECONDS",
-    20,
-)
 EVM_BROADCAST_SCHEDULE_SECONDS = get_int_default(
     "CELERY_EVM_BROADCAST_SCHEDULE_SECONDS",
     8,
 )
 EVM_ERC20_SCAN_SCHEDULE_SECONDS = get_int(
     "CELERY_EVM_ERC20_SCAN_SCHEDULE_SECONDS",
-    "evm_scan_seconds",
-)
-EVM_NATIVE_SCAN_SCHEDULE_SECONDS = get_int(
-    "CELERY_EVM_NATIVE_SCAN_SCHEDULE_SECONDS",
     "evm_scan_seconds",
 )
 EVM_RECONCILE_SCHEDULE_SECONDS = get_int_default(
@@ -96,32 +88,17 @@ chains_tasks = {
 }
 
 # ---------------------------
-# deposits app
-# ---------------------------
-deposits_tasks = {
-    "gather_deposits": {
-        "task": "deposits.tasks.gather_deposits",
-        "schedule": DEPOSIT_GATHER_SCHEDULE_SECONDS,
-    },
-}
-
-# ---------------------------
 # evm app
 # ---------------------------
 evm_tasks = {
-    "dispatch_due_evm_broadcast_tasks": {
-        "task": "evm.tasks.dispatch_due_evm_broadcast_tasks",
+    "dispatch_due_evm_tx_tasks": {
+        "task": "evm.tasks.dispatch_due_evm_tx_tasks",
         "schedule": EVM_BROADCAST_SCHEDULE_SECONDS,
     },
     "scan_active_evm_erc20_chains": {
         # ERC20 走 eth_getLogs，RPC 成本低于原生币 full block 扫描，可保持较高频率。
         "task": "evm.tasks.scan_active_evm_erc20_chains",
         "schedule": EVM_ERC20_SCAN_SCHEDULE_SECONDS,
-    },
-    "scan_active_evm_native_chains": {
-        # 原生币直转需要逐块拉完整交易列表，单独调度便于按链和 RPC 能力独立调优。
-        "task": "evm.tasks.scan_active_evm_native_chains",
-        "schedule": EVM_NATIVE_SCAN_SCHEDULE_SECONDS,
     },
     "reconcile_stale_pending_chain_for_active_evm_chains": {
         # 兜底：主扫描漏扫导致的 PENDING_CHAIN 卡单，周期性按 receipt 主动命中并定点复扫。
@@ -158,10 +135,6 @@ invoices_tasks = {
         "task": "invoices.tasks.fallback_invoice_expired",
         "schedule": INVOICE_EXPIRED_SCHEDULE_SECONDS,
     },
-    "retry_contract_collection_for_completed_invoices": {
-        "task": "invoices.tasks.retry_contract_collection_for_completed_invoices",
-        "schedule": 300,
-    },
 }
 
 # ---------------------------
@@ -191,7 +164,6 @@ celery_internal_tasks = {
 app.conf.beat_schedule = {
     **webhooks_tasks,
     **chains_tasks,
-    **deposits_tasks,
     **evm_tasks,
     **tron_tasks,
     **currencies_tasks,

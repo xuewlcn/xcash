@@ -25,7 +25,6 @@ from common.admin import ModelAdmin
 from invoices.models import EpayMerchant
 from projects.models import Project
 from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
 from users.forms import OTPVerifyForm
 from users.models import AdminAccessLog
 from users.otp import AdminOTPRequiredError
@@ -109,7 +108,7 @@ class ProjectHmacKeyWidget(UnfoldAdminTextInputWidget):
 
 
 class RecipientAddressInlineForm(forms.ModelForm):
-    """支付地址 / 归集地址 inline 共用表单，包含地址格式校验和跨项目占用检查。"""
+    """支付地址 inline 表单，包含地址格式校验和跨项目占用检查。"""
 
     allowed_chain_types = frozenset(ChainType.values)
 
@@ -157,17 +156,16 @@ class RecipientAddressInlineForm(forms.ModelForm):
         return address
 
 
-class _RecipientAddressInline(TabularInline):
-    """支付地址 / 归集地址 inline 基类，子类只需声明 model 和用途字段。"""
+class PaymentAddressInline(TabularInline):
+    """项目差额账单收款地址 inline。"""
 
+    model = RecipientAddress
     form = RecipientAddressInlineForm
     extra = 0
     fields = ("name", "chain_type", "address")
-    usage = ""
-    allowed_chain_types = frozenset(ChainType.values)
-
-    def get_queryset(self, request):
-        return super().get_queryset(request).filter(usage=self.usage)
+    allowed_chain_types = ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
+    verbose_name = _("支付地址")
+    verbose_name_plural = _("支付地址")
 
     def get_formset(self, request, obj=None, **kwargs):
         base_form = self.form
@@ -183,26 +181,6 @@ class _RecipientAddressInline(TabularInline):
             if choice[0] in self.allowed_chain_types
         ]
         return formset
-
-
-class PaymentAddressInline(_RecipientAddressInline):
-    model = RecipientAddress
-    usage = RecipientAddressUsage.INVOICE
-    allowed_chain_types = (
-        ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
-    )
-    verbose_name = _("支付地址")
-    verbose_name_plural = _("支付地址")
-
-
-class CollectionAddressInline(_RecipientAddressInline):
-    model = RecipientAddress
-    usage = RecipientAddressUsage.DEPOSIT_COLLECTION
-    allowed_chain_types = (
-        ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
-    )
-    verbose_name = _("归集地址")
-    verbose_name_plural = _("归集地址")
 
 
 class EpayMerchantInline(StackedInline):
@@ -240,7 +218,6 @@ class ProjectAdmin(ModelAdmin):
     form = ProjectForm
     inlines = (
         PaymentAddressInline,
-        CollectionAddressInline,
         EpayMerchantInline,
         ProjectTelegramAlertConfigInline,
     )
@@ -483,20 +460,10 @@ class ProjectAdmin(ModelAdmin):
         return super().get_inline_instances(request, obj=obj)
 
     def save_related(self, request, form, formsets, change):
-        # 收币地址 inline 需在保存前注入用途标记位；重写 save_related 以便同时访问 formsets 和 inline 实例。
+        # Telegram 配置需要记录创建/更新人，因此保留 save_related 定制逻辑。
         form.save_m2m()
-        inline_instances = self.get_inline_instances(request, form.instance)
-        for formset, inline in zip(formsets, inline_instances, strict=False):
-            usage = getattr(inline, "usage", None)
-            if usage:
-                instances = formset.save(commit=False)
-                for instance in instances:
-                    instance.usage = usage
-                    instance.save()
-                for obj in formset.deleted_objects:
-                    obj.delete()
-                formset.save_m2m()
-            elif formset.model is ProjectTelegramAlertConfig:
+        for formset in formsets:
+            if formset.model is ProjectTelegramAlertConfig:
                 instances = formset.save(commit=False)
                 for instance in instances:
                     instance.project = form.instance
@@ -540,15 +507,6 @@ class ProjectAdmin(ModelAdmin):
                 ),
             },
         ),
-        (
-            _("自动归集"),
-            {
-                "fields": (
-                    "gather_worth",
-                    "gather_period",
-                ),
-            },
-        ),
         ("安全", {"fields": ("ip_white_list",)}),
     )
     edit_fieldsets = (
@@ -567,15 +525,6 @@ class ProjectAdmin(ModelAdmin):
                     "appid",
                     "wallet",
                     "fast_confirm_threshold",
-                ),
-            },
-        ),
-        (
-            _("自动归集"),
-            {
-                "fields": (
-                    "gather_worth",
-                    "gather_period",
                 ),
             },
         ),

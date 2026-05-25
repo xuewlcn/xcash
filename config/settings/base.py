@@ -425,8 +425,6 @@ CELERY_WORKER_HIJACK_ROOT_LOGGER = False  # 减少日志开销
 CELERY_TASK_ROUTES = {
     "evm.tasks.scan_evm_erc20_chain": {"queue": "scan"},
     "evm.tasks.scan_active_evm_erc20_chains": {"queue": "scan"},
-    "evm.tasks.scan_evm_native_chain": {"queue": "scan"},
-    "evm.tasks.scan_active_evm_native_chains": {"queue": "scan"},
     "tron.tasks.scan_tron_chain": {"queue": "scan"},
     "tron.tasks.scan_active_tron_chains": {"queue": "scan"},
     "stress.tasks.prepare_stress": {"queue": "stress"},

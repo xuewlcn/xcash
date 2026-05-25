@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from chains.models import ChainType
-from core.runtime_settings import get_open_native_scanner
 
 
 class ChainProductCapabilityService:
@@ -23,14 +22,6 @@ class ChainProductCapabilityService:
         return getattr(chain, "native_coin", None) == crypto
 
     @classmethod
-    def _allows_evm_native(cls, *, chain, crypto) -> bool:
-        if chain.type != ChainType.EVM:
-            return True
-        if not cls._is_chain_native_crypto(chain=chain, crypto=crypto):
-            return True
-        return get_open_native_scanner()
-
-    @classmethod
     def supports_invoice_method(cls, *, chain, crypto) -> bool:
         if chain.type not in cls.INVOICE_RECIPIENT_CHAIN_TYPES:
             return False
@@ -43,8 +34,6 @@ class ChainProductCapabilityService:
         """判断已存在 ChainToken 关系的链币组合是否可用于 Invoice。"""
         if chain.type not in cls.INVOICE_RECIPIENT_CHAIN_TYPES:
             return False
-        if not cls._allows_evm_native(chain=chain, crypto=crypto):
-            return False
         if chain.type == ChainType.TRON:
             return crypto.symbol == "USDT"
         return True
@@ -54,7 +43,6 @@ class ChainProductCapabilityService:
         return (
             chain.type in cls.DEPOSIT_CHAIN_TYPES
             and crypto.support_this_chain(chain)
-            and cls._allows_evm_native(chain=chain, crypto=crypto)
         )
 
     @classmethod
@@ -62,5 +50,4 @@ class ChainProductCapabilityService:
         return (
             chain.type in cls.WITHDRAWAL_CHAIN_TYPES
             and crypto.support_this_chain(chain)
-            and cls._allows_evm_native(chain=chain, crypto=crypto)
         )

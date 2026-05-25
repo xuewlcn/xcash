@@ -1,14 +1,8 @@
-from datetime import timedelta
-
 from celery import shared_task
 from django.db import transaction
-from django.db.models import Count
 from django.utils import timezone
 
-from evm.models import ContractDeployCollectionStatus
-
 from .models import Invoice
-from .models import InvoiceBillingMode
 from .models import InvoicePaySlot
 from .models import InvoicePaySlotDiscardReason
 from .models import InvoicePaySlotStatus
@@ -99,48 +93,3 @@ def fallback_invoice_expired():
             discarded_at=now,
             updated_at=now,
         )
-
-
-@shared_task
-def deploy_contract_collection(invoice_id: int):
-    """异步触发合约账单 collector 部署与归集。"""
-    try:
-        invoice = Invoice.objects.get(pk=invoice_id)
-    except Invoice.DoesNotExist:
-        return
-    invoice.trigger_contract_collection()
-
-
-@shared_task
-def retry_contract_collection_for_completed_invoices():
-    """兜底扫描已完成但无活跃归集记录的合约账单并重新入队。"""
-    cutoff = timezone.now() - timedelta(minutes=2)
-    active_states = (
-        ContractDeployCollectionStatus.CREATED,
-        ContractDeployCollectionStatus.BROADCASTED,
-        ContractDeployCollectionStatus.CONFIRMED,
-    )
-    candidates = (
-        Invoice.objects.filter(
-            billing_mode=InvoiceBillingMode.CONTRACT,
-            status=InvoiceStatus.COMPLETED,
-            updated_at__lte=cutoff,
-        )
-        .exclude(
-            pay_slots__contract_deploy_collections__status__in=active_states,
-        )
-        .annotate(
-            contract_collection_attempt_count=Count(
-                "pay_slots__contract_deploy_collections",
-                distinct=True,
-            )
-        )
-        .filter(
-            contract_collection_attempt_count__lt=Invoice.MAX_CONTRACT_COLLECTION_ATTEMPTS,
-        )
-        .distinct()
-        .order_by("pk")
-        .values_list("pk", flat=True)[:50]
-    )
-    for invoice_id in candidates:
-        deploy_contract_collection.delay(invoice_id)
