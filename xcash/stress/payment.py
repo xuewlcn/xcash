@@ -25,7 +25,7 @@ def simulate_payment(
     后续可能新增的充币测试，还是其他转币类压测，都应该优先复用这里，
     避免在不同场景各自维护一套 payer 生成、注资、铸币和转账逻辑。
     """
-    chain_obj = Chain.objects.get(chain=chain_code)
+    chain_obj = Chain.objects.get(code=chain_code)
     crypto_obj = Crypto.objects.get(symbol=crypto_symbol)
 
     if chain_obj.type != ChainType.EVM:

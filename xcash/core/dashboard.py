@@ -110,7 +110,7 @@ def _build_operational_inspection_payload(metrics, signer_summary):
                 "project": invoice.project.name,
                 "sys_no": invoice.sys_no,
                 "crypto": invoice.crypto.symbol if invoice.crypto else "-",
-                "chain": invoice.chain.chain if invoice.chain else "-",
+                "chain": invoice.chain.code if invoice.chain else "-",
             },
             "href": reverse("admin:invoices_invoice_change", args=[invoice.pk]),
         }
@@ -136,7 +136,7 @@ def _build_operational_inspection_payload(metrics, signer_summary):
                 "project": withdrawal.project.name,
                 "out_no": withdrawal.out_no,
                 "crypto": withdrawal.crypto.symbol,
-                "chain": withdrawal.chain.chain if withdrawal.chain else "-",
+                "chain": withdrawal.chain.code if withdrawal.chain else "-",
             },
             "href": reverse(
                 "admin:withdrawals_withdrawal_change", args=[withdrawal.pk]
@@ -474,7 +474,7 @@ def dashboard_callback(request, context):
             ],
             "payment_methods": [
                 {
-                    "label": f"{row['crypto__symbol']} / {row['chain__chain']}",
+                    "label": f"{row['crypto__symbol']} / {row['chain__code']}",
                     "gmv": _fmt_usd(row["gmv"]),
                     "order_count": row["order_count"],
                 }

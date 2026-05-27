@@ -15,7 +15,7 @@ from alerts.models import ProjectAlertState
 from alerts.models import ProjectAlertStatus
 from alerts.models import ProjectTelegramAlertConfig
 from alerts.service import TelegramAlertService
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.models import Chain
 from chains.test_signer import build_test_remote_signer_backend
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
@@ -75,7 +75,7 @@ class TelegramAlertServiceTests(TestCase):
             coingecko_id="ethereum-alert",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )

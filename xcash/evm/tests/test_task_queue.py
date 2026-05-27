@@ -20,7 +20,7 @@ from evm.models import EvmTxTask
 
 
 class EvmTaskQueueTests(TestCase):
-    queue_lock_key = "dispatch_due_evm_tx_tasks-locked"
+    queue_lock_key = "dispatch_evm_tx_tasks-locked"
 
     def setUp(self):
         self._clear_singleton_locks()
@@ -159,7 +159,7 @@ class EvmTaskQueueTests(TestCase):
         self, delay_mock
     ):
         # dispatch 只放行 QUEUED 任务；PENDING_CHAIN / recent / finalized 不应被选中。
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         other_addr = Address.objects.create(
             wallet=self.wallet,
@@ -210,7 +210,7 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         self.assertEqual(
             {call.args[0] for call in delay_mock.call_args_list},
@@ -272,7 +272,7 @@ class EvmTaskQueueTests(TestCase):
         self, delay_mock
     ):
         # 队列层只应放行每个账户当前最小 QUEUED nonce，避免高 nonce 在前序缺口存在时被反复重试。
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         other_addr = Address.objects.create(
             wallet=self.wallet,
@@ -313,7 +313,7 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         self.assertEqual(
             {call.args[0] for call in delay_mock.call_args_list},
@@ -326,7 +326,7 @@ class EvmTaskQueueTests(TestCase):
         delay_mock,
     ):
         # SQL 选取最小阻塞 nonce 时，不应把已进入 PENDING_CONFIRM 的前序任务继续当作缺口。
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         lower_confirming_task = self._create_evm_task(
             tx_hash="0x" + "13" * 32,
@@ -353,7 +353,7 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         self.assertEqual(
             [call.args[0] for call in delay_mock.call_args_list],
@@ -365,7 +365,7 @@ class EvmTaskQueueTests(TestCase):
         self, delay_mock
     ):
         # SQL 层应直接挑每账户最小未收口 nonce，避免更高 nonce 候选占满 slice 后被 Python 层全部跳过。
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         other_addr = Address.objects.create(
             wallet=self.wallet,
@@ -416,7 +416,7 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         self.assertEqual(
             {call.args[0] for call in delay_mock.call_args_list},
@@ -429,7 +429,7 @@ class EvmTaskQueueTests(TestCase):
         delay_mock,
     ):
         # singleton 锁残留会让队列任务直接返回；测试夹具必须主动清理，避免用例依赖外部缓存状态。
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         cache.set(self.queue_lock_key, "true", 60)
         due_task = self._create_evm_task(
@@ -444,7 +444,7 @@ class EvmTaskQueueTests(TestCase):
 
         self._clear_singleton_locks()
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         self.assertEqual(
             [call.args[0] for call in delay_mock.call_args_list],
@@ -544,7 +544,7 @@ class EvmTaskQueueTests(TestCase):
     @patch("evm.tasks._broadcast_evm_task.delay")
     def test_dispatch_allows_queued_when_pipeline_has_room(self, delay_mock):
         # 同地址已有 PENDING_CHAIN 但未满时，dispatch 仍放行最低 QUEUED nonce。
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         self._create_evm_task(
             tx_hash="0x" + "d1" * 32,
@@ -566,7 +566,7 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         self.assertEqual(
             [call.args[0] for call in delay_mock.call_args_list],
@@ -577,7 +577,7 @@ class EvmTaskQueueTests(TestCase):
     def test_dispatch_blocks_when_pipeline_full(self, delay_mock):
         # pipeline 已满时 dispatch 不选该地址的 QUEUED 任务。
         from evm.constants import EVM_PIPELINE_DEPTH
-        from evm.tasks import dispatch_due_evm_tx_tasks
+        from evm.tasks import dispatch_evm_tx_tasks
 
         for i in range(EVM_PIPELINE_DEPTH):
             self._create_evm_task(
@@ -600,7 +600,7 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            dispatch_due_evm_tx_tasks.run()
+            dispatch_evm_tx_tasks.run()
 
         delay_mock.assert_not_called()
 

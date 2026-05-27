@@ -66,7 +66,7 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
         # 项目级风控（尤其日限额）依赖数据库锁复核，避免并发请求在 serializer 之后同时越过额度。
         project = Project.objects.select_for_update().get(pk=project.pk)
 
-        chain = Chain.objects.get(chain=validated_data["chain"])
+        chain = Chain.objects.get(code=validated_data["chain"])
         # 提币入口只能操作正式启用的资产，占位币不能进入出金链路。
         crypto = CryptoService.get_by_symbol(validated_data["crypto"])
         amount = validated_data["amount"]

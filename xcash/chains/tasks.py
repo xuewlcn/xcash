@@ -117,7 +117,7 @@ def block_number_updated(chain_pk):
     batch_size = 16
     # confirm_block_count 已从 DB 字段瘦身为 property（按 chain 名从常量读取），
     # only() 只能列具体存量字段；chain 字段本身用于推导确认深度，必须一并加载。
-    chain = Chain.objects.only("chain", "latest_block_number").get(pk=chain_pk)
+    chain = Chain.objects.only("code", "latest_block_number").get(pk=chain_pk)
     base_qs = Transfer.objects.filter(
         chain=chain,
         status=TransferStatus.CONFIRMING,

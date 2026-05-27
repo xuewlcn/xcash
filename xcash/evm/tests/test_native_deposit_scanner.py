@@ -12,12 +12,16 @@ from web3 import Web3
 from chains.models import Transfer
 from chains.models import TransferStatus
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
+from evm.models import VaultSlot
 from evm.models import EvmScanCursor
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.watchers import EvmWatchSet
 from evm.tests._fixtures import make_crypto
 from evm.tests._fixtures import make_evm_chain
 from evm.tests._fixtures import make_evm_system_address
+from evm.tests._fixtures import make_wallet
+from projects.models import Project
+from users.models import Customer
 
 
 class EvmNativeDepositScanWindowTests(SimpleTestCase):
@@ -57,9 +61,24 @@ class EvmLogScannerTests(TestCase):
             native_coin=self.native,
         )
         self.slot = make_evm_system_address(suffix="aa")
+        self.project = Project.objects.create(
+            name="Native Scanner Project",
+            wallet=make_wallet(),
+            webhook="https://example.com/webhook",
+        )
+        self.customer = Customer.objects.create(
+            project=self.project,
+            uid="native-scanner-customer",
+        )
+        VaultSlot.objects.create(
+            customer=self.customer,
+            chain=self.chain,
+            address=self.slot.address,
+            vault_address=self.slot.address,
+            salt=b"\x01" * 32,
+        )
         self.payer = Web3.to_checksum_address("0x" + "bb" * 20)
         self.watch_set = EvmWatchSet(
-            watched_addresses=frozenset({self.slot.address}),
             tokens_by_address={},
         )
 
@@ -110,8 +129,8 @@ class EvmLogScannerTests(TestCase):
             },
         )()
 
-        logs, _native_observed, _erc20_observed, created, _created_erc20 = (
-            EvmLogScanner.scan_range_without_cursor(
+        logs, created = (
+            EvmLogScanner.scan_range(
                 chain=self.chain,
                 rpc_client=rpc_client,
                 watch_set=self.watch_set,
@@ -151,7 +170,7 @@ class EvmLogScannerTests(TestCase):
             },
         )()
 
-        EvmLogScanner.scan_range_without_cursor(
+        EvmLogScanner.scan_range(
             chain=self.chain,
             rpc_client=rpc_client,
             watch_set=self.watch_set,
@@ -191,8 +210,8 @@ class EvmLogScannerTests(TestCase):
             },
         )()
 
-        observed_logs, _native_observed, _erc20_observed, created, _created_erc20 = (
-            EvmLogScanner.scan_range_without_cursor(
+        logs, created = (
+            EvmLogScanner.scan_range(
                 chain=self.chain,
                 rpc_client=rpc_client,
                 watch_set=self.watch_set,
@@ -201,7 +220,7 @@ class EvmLogScannerTests(TestCase):
             )
         )
 
-        self.assertEqual(len(observed_logs), 3)
+        self.assertEqual(len(logs), 3)
         self.assertEqual(created, 0)
         create_observed_transfer_mock.assert_not_called()
 
@@ -226,8 +245,8 @@ class EvmLogScannerTests(TestCase):
             },
         )()
 
-        observed_logs, _native_observed, _erc20_observed, created, _created_erc20 = (
-            EvmLogScanner.scan_range_without_cursor(
+        logs, created = (
+            EvmLogScanner.scan_range(
                 chain=self.chain,
                 rpc_client=rpc_client,
                 watch_set=self.watch_set,
@@ -236,32 +255,34 @@ class EvmLogScannerTests(TestCase):
             )
         )
 
-        self.assertEqual(len(observed_logs), 4)
+        self.assertEqual(len(logs), 4)
         self.assertEqual(created, 0)
         create_observed_transfer_mock.assert_not_called()
 
     @patch("evm.scanner.logs.load_watch_set")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_logs")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_latest_block_number")
-    def test_scan_chain_advances_cursor_to_latest_when_watch_set_empty(
+    def test_scan_chain_fetches_xcash_logs_without_cached_addresses(
         self,
         get_latest_block_number_mock,
         get_logs_mock,
         load_watch_set_mock,
     ):
         get_latest_block_number_mock.return_value = 200
+        get_logs_mock.return_value = []
         load_watch_set_mock.return_value = EvmWatchSet(
-            watched_addresses=frozenset(),
+            matched_addresses=frozenset(),
             tokens_by_address={},
         )
 
-        result = EvmLogScanner.scan_chain(chain=self.chain, batch_size=32).native
+        result = EvmLogScanner.scan_chain(chain=self.chain, batch_size=32)
 
         cursor = EvmScanCursor.objects.get(chain=self.chain)
         self.assertEqual(result.latest_block, 200)
-        self.assertEqual(result.observed_logs, 0)
-        self.assertEqual(cursor.last_scanned_block, 200)
-        get_logs_mock.assert_not_called()
+        self.assertEqual(result.created_transfers, 0)
+        self.assertEqual(cursor.last_scanned_block, 32)
+        get_logs_mock.assert_called_once()
+        self.assertIsNone(get_logs_mock.call_args.kwargs["addresses"])
 
     def test_scan_range_drops_reorged_native_transfer_when_replay_logs_empty(self):
         old_transfer = Transfer.objects.create(
@@ -289,8 +310,8 @@ class EvmLogScannerTests(TestCase):
             },
         )()
 
-        logs, _native_observed, _erc20_observed, created, _created_erc20 = (
-            EvmLogScanner.scan_range_without_cursor(
+        logs, created = (
+            EvmLogScanner.scan_range(
                 chain=self.chain,
                 rpc_client=rpc_client,
                 watch_set=self.watch_set,
@@ -326,8 +347,8 @@ class EvmLogScannerTests(TestCase):
         rpc_client.get_logs.return_value = [removed_log]
         rpc_client.get_block_hash.return_value = "0x" + "22" * 32
 
-        logs, _native_observed, _erc20_observed, created, _created_erc20 = (
-            EvmLogScanner.scan_range_without_cursor(
+        logs, created = (
+            EvmLogScanner.scan_range(
                 chain=self.chain,
                 rpc_client=rpc_client,
                 watch_set=self.watch_set,

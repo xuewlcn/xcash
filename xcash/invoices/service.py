@@ -115,7 +115,7 @@ class InvoiceService:
                 "sys_no": invoice.sys_no,
                 "out_no": invoice.out_no,
                 "crypto": invoice.crypto.symbol if invoice.crypto else None,
-                "chain": invoice.transfer.chain.chain if invoice.transfer_id else None,
+                "chain": invoice.transfer.chain.code if invoice.transfer_id else None,
                 "pay_address": invoice.pay_address,
                 "pay_amount": (
                     format_decimal_stripped(invoice.pay_amount)

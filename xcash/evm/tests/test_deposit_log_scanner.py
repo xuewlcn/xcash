@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+from unittest.mock import call
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -7,20 +8,15 @@ from django.test import override_settings
 from web3 import Web3
 
 from chains.models import Transfer
-from chains.models import TransferType
+from chains.models import TxHash
 from chains.models import TxTask
 from chains.models import TxTaskStage
 from chains.models import TxTaskType
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from currencies.models import ChainToken
-from evm.choices import TxKind
-from evm.intents import build_vault_slot_collect_intent
 from evm.models import VaultSlot
-from evm.models import EvmTxTask
 from evm.models import EvmScanCursor
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
-from evm.scanner.constants import XCASH_COLLECTED_TOPIC0
-from evm.scanner.constants import XCASH_VAULT_SLOT_DEPLOYED_TOPIC0
 from evm.scanner.constants import XCASH_NATIVE_RECEIVED_TOPIC0
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.observed_transfers import EvmObservedTransferProcessResult
@@ -111,71 +107,19 @@ class EvmLogScannerTests(TestCase):
             "transactionHash": bytes.fromhex("23" * 32),
         }
 
-    def _collected_log(self, *, tx_hash: str, log_index: int = 6) -> dict:
-        return {
-            "address": self.slot.address,
-            "topics": [
-                Web3.keccak(text="XcashCollected(address,uint256)"),
-                self._address_topic(self.token_deployment.address),
-            ],
-            "data": hex(3 * 10**18),
-            "blockNumber": 99,
-            "blockHash": bytes.fromhex("11" * 32),
-            "logIndex": log_index,
-            "transactionHash": bytes.fromhex(tx_hash.removeprefix("0x")),
-        }
-
-    def _slot_to_vault_transfer_log(self, *, tx_hash: str, log_index: int = 7) -> dict:
-        return {
-            "address": self.token_deployment.address,
-            "topics": [
-                Web3.keccak(text="Transfer(address,address,uint256)"),
-                self._address_topic(self.slot.address),
-                self._address_topic(self.vault.address),
-            ],
-            "data": hex(3 * 10**18),
-            "blockNumber": 99,
-            "blockHash": bytes.fromhex("11" * 32),
-            "logIndex": log_index,
-            "transactionHash": bytes.fromhex(tx_hash.removeprefix("0x")),
-        }
-
-    def _deployed_log(self, *, tx_hash: str, log_index: int = 8) -> dict:
-        return {
-            "address": Web3.to_checksum_address("0x" + "de" * 20),
-            "topics": [
-                Web3.keccak(text="XcashVaultSlotDeployed(address,address,bytes32)"),
-                self._address_topic(self.slot.address),
-                self._address_topic(self.vault.address),
-                "0x" + self.slot.salt.hex(),
-            ],
-            "data": "0x",
-            "blockNumber": 99,
-            "blockHash": bytes.fromhex("11" * 32),
-            "logIndex": log_index,
-            "transactionHash": bytes.fromhex(tx_hash.removeprefix("0x")),
-        }
-
     @patch("evm.scanner.logs.EvmObservedTransferProcessor.process")
-    @patch("evm.scanner.logs.EvmContractEventObserver.observe_logs")
-    def test_process_logs_delegates_contract_events_and_transfer_observation(
+    def test_process_logs_delegates_external_logs_to_transfer_observation(
         self,
-        observe_logs_mock,
         transfer_processor_mock,
     ):
         native_log = self._native_log()
-        tx_hash = "0x" + "12" * 32
-        observe_logs_mock.return_value = {tx_hash}
         transfer_processor_mock.return_value = EvmObservedTransferProcessResult(
             raw_logs=[native_log],
-            native_observed=0,
-            erc20_observed=0,
-            native_created=0,
-            erc20_created=0,
+            created_transfers=0,
         )
         rpc_client = Mock()
         watch_set = EvmWatchSet(
-            watched_addresses=frozenset({self.slot.address}),
+            matched_addresses=frozenset({self.slot.address}),
             tokens_by_address={self.token_deployment.address: self.token_deployment},
         )
 
@@ -188,11 +132,6 @@ class EvmLogScannerTests(TestCase):
             to_block=99,
         )
 
-        observe_logs_mock.assert_called_once_with(
-            chain=self.chain,
-            logs=[native_log],
-            rpc_client=rpc_client,
-        )
         transfer_processor_mock.assert_called_once()
         processor_kwargs = transfer_processor_mock.call_args.kwargs
         self.assertEqual(processor_kwargs["chain"], self.chain)
@@ -201,16 +140,14 @@ class EvmLogScannerTests(TestCase):
         self.assertEqual(processor_kwargs["to_block"], 99)
         self.assertEqual(processor_kwargs["raw_logs"], [native_log])
         self.assertEqual(processor_kwargs["watch_set"], watch_set)
-        self.assertEqual(processor_kwargs["ignored_tx_hashes"], {tx_hash})
-        self.assertEqual(result.native_observed, 0)
-        self.assertEqual(result.native_created, 0)
+        self.assertEqual(result.created_transfers, 0)
 
     @patch("chains.service.TransferService._mark_tx_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_block_timestamp")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_logs")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_latest_block_number")
-    def test_scan_chain_fetches_contract_and_erc20_logs_with_scalable_filters(
+    def test_scan_chain_fetches_native_and_erc20_logs_with_scalable_filters(
         self,
         get_latest_block_number_mock,
         get_logs_mock,
@@ -227,8 +164,7 @@ class EvmLogScannerTests(TestCase):
         self.assertEqual(EvmScanCursor.objects.filter(chain=self.chain).count(), 1)
         cursor = EvmScanCursor.objects.get(chain=self.chain)
         self.assertEqual(cursor.last_scanned_block, 32)
-        self.assertEqual(result.native.created_transfers, 1)
-        self.assertEqual(result.erc20.created_transfers, 1)
+        self.assertEqual(result.created_transfers, 2)
         self.assertEqual(Transfer.objects.count(), 2)
         self.assertEqual(
             set(Transfer.objects.values_list("event_id", flat=True)),
@@ -241,12 +177,8 @@ class EvmLogScannerTests(TestCase):
                 "from_block": 1,
                 "to_block": 32,
                 "addresses": None,
-                "topic0": [
-                    XCASH_NATIVE_RECEIVED_TOPIC0,
-                    XCASH_COLLECTED_TOPIC0,
-                    XCASH_VAULT_SLOT_DEPLOYED_TOPIC0,
-                ],
-                "summary": "获取 EVM Xcash 合约日志失败",
+                "topic0": XCASH_NATIVE_RECEIVED_TOPIC0,
+                "summary": "获取 EVM Xcash 原生币入账日志失败",
             },
             log_calls,
         )
@@ -263,179 +195,109 @@ class EvmLogScannerTests(TestCase):
         for call in log_calls:
             self.assertNotIn(self.slot.address, call["addresses"] or [])
 
-    @patch("evm.scanner.logs.load_watch_set")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_logs")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_latest_block_number")
-    def test_scan_chain_advances_unified_cursor_when_watch_set_empty(
+    def test_scan_chain_still_fetches_xcash_logs_without_cached_addresses(
         self,
         get_latest_block_number_mock,
         get_logs_mock,
-        load_watch_set_mock,
     ):
         get_latest_block_number_mock.return_value = 120
-        load_watch_set_mock.return_value = type(
-            "WatchSet",
-            (),
-            {"watched_addresses": frozenset(), "tokens_by_address": {}},
-        )()
+        get_logs_mock.return_value = []
 
         result = EvmLogScanner.scan_chain(chain=self.chain, batch_size=32)
 
         cursor = EvmScanCursor.objects.get(chain=self.chain)
-        self.assertEqual(cursor.last_scanned_block, 120)
-        self.assertEqual(result.native.observed_logs, 0)
-        self.assertEqual(result.erc20.observed_logs, 0)
-        get_logs_mock.assert_not_called()
+        self.assertEqual(cursor.last_scanned_block, 32)
+        self.assertEqual(result.created_transfers, 0)
+        get_logs_mock.assert_has_calls(
+            [
+                call(
+                    from_block=1,
+                    to_block=32,
+                    addresses=None,
+                    topic0=XCASH_NATIVE_RECEIVED_TOPIC0,
+                    summary="获取 EVM Xcash 原生币入账日志失败",
+                ),
+                call(
+                    from_block=1,
+                    to_block=32,
+                    addresses=[self.token_deployment.address],
+                    topic0=ERC20_TRANSFER_TOPIC0,
+                    summary="获取 EVM ERC20 Transfer 日志失败",
+                ),
+            ],
+            any_order=True,
+        )
 
-    @patch("chains.service.TransferService.enqueue_processing")
-    def test_system_collected_event_routes_to_internal_tx_before_erc20_transfer(
+    @patch("evm.scanner.logs.EvmObservedTransferProcessor.process")
+    def test_process_logs_batches_watched_address_lookup_from_log_candidates(
         self,
-        _enqueue_processing_mock,
+        transfer_processor_mock,
     ):
-        tx_hash = "0x" + "34" * 32
-        intent = build_vault_slot_collect_intent(
-            address=self.vault,
-            chain=self.chain,
-            vault_slot_address=self.slot.address,
-            token_address=self.token_deployment.address,
-        )
-        base_task = TxTask.objects.create(
-            chain=self.chain,
-            address=self.vault,
-            tx_type=TxTaskType.VaultSlotCollect,
-            tx_hash=tx_hash,
-            stage=TxTaskStage.PENDING_CHAIN,
-        )
-        EvmTxTask.objects.create(
-            base_task=base_task,
-            address=self.vault,
-            chain=self.chain,
-            nonce=0,
-            to=intent.to,
-            value=intent.value,
-            data=intent.data,
-            gas=intent.gas,
-            tx_kind=intent.tx_kind,
-        )
-        collected_log = self._collected_log(tx_hash=tx_hash)
-        transfer_log = self._slot_to_vault_transfer_log(tx_hash=tx_hash)
-        receipt = {
-            "status": 1,
-            "blockNumber": 99,
-            "blockHash": "0x" + "11" * 32,
-            "logs": [collected_log, transfer_log],
+        native_log = self._native_log()
+        erc20_log = self._erc20_log()
+        unknown_recipient = Web3.to_checksum_address("0x" + "ef" * 20)
+        unknown_log = {
+            **erc20_log,
+            "topics": [
+                erc20_log["topics"][0],
+                self._address_topic(self.payer),
+                self._address_topic(unknown_recipient),
+            ],
+            "logIndex": 5,
+            "transactionHash": bytes.fromhex("24" * 32),
         }
+        transfer_processor_mock.return_value = EvmObservedTransferProcessResult(
+            raw_logs=[native_log, erc20_log, unknown_log],
+            created_transfers=0,
+        )
         rpc_client = Mock()
-        rpc_client.get_transaction.return_value = {
-            "hash": tx_hash,
-            "from": self.vault.address,
-            "to": self.slot.address,
-            "input": intent.data,
-        }
-        rpc_client.get_transaction_receipt.return_value = receipt
-        rpc_client.get_block_timestamp.return_value = 1_700_000_000
-
-        result = EvmLogScanner._process_logs(
-            chain=self.chain,
-            logs=[collected_log, transfer_log],
-            rpc_client=rpc_client,
-            watch_set=EvmWatchSet(
-                watched_addresses=frozenset({self.slot.address}),
-                tokens_by_address={self.token_deployment.address: self.token_deployment},
-            ),
-            from_block=99,
-            to_block=99,
-        )
-
-        base_task.refresh_from_db()
-        transfer = Transfer.objects.get(hash=tx_hash)
-        transfer.process()
-        transfer.refresh_from_db()
-        self.assertEqual(result.erc20_created, 0)
-        self.assertEqual(Transfer.objects.count(), 1)
-        self.assertEqual(transfer.event_id, "collect:6")
-        self.assertEqual(transfer.type, TransferType.Collect)
-        self.assertEqual(base_task.stage, TxTaskStage.PENDING_CONFIRM)
-        rpc_client.get_transaction.assert_called_once_with(tx_hash=tx_hash)
-        rpc_client.get_transaction_receipt.assert_called_once_with(tx_hash=tx_hash)
-
-    def test_external_collected_event_does_not_route_to_internal_tx(self):
-        tx_hash = "0x" + "35" * 32
-        collected_log = self._collected_log(tx_hash=tx_hash)
-        rpc_client = Mock()
-        rpc_client.get_transaction.return_value = {
-            "hash": tx_hash,
-            "from": self.payer,
-            "to": self.slot.address,
-        }
-
-        result = EvmLogScanner._process_logs(
-            chain=self.chain,
-            logs=[collected_log],
-            rpc_client=rpc_client,
-            watch_set=EvmWatchSet(
-                watched_addresses=frozenset({self.slot.address}),
-                tokens_by_address={self.token_deployment.address: self.token_deployment},
-            ),
-            from_block=99,
-            to_block=99,
-        )
-
-        self.assertEqual(result.native_observed, 0)
-        self.assertEqual(result.erc20_observed, 0)
-        self.assertFalse(Transfer.objects.filter(hash=tx_hash).exists())
-        rpc_client.get_transaction.assert_called_once_with(tx_hash=tx_hash)
-        rpc_client.get_transaction_receipt.assert_not_called()
-
-    def test_system_vault_slot_deployed_event_finalizes_deploy_task(self):
-        tx_hash = "0x" + "36" * 32
-        base_task = TxTask.objects.create(
-            chain=self.chain,
-            address=self.vault,
-            tx_type=TxTaskType.VaultSlotDeploy,
-            tx_hash=tx_hash,
-            stage=TxTaskStage.PENDING_CHAIN,
-        )
-        EvmTxTask.objects.create(
-            base_task=base_task,
-            address=self.vault,
-            chain=self.chain,
-            nonce=0,
-            to=Web3.to_checksum_address("0x" + "de" * 20),
-            value=0,
-            data="0x1234",
-            gas=300_000,
-            tx_kind=TxKind.CONTRACT_CALL,
-        )
-        deployed_log = self._deployed_log(tx_hash=tx_hash)
-        rpc_client = Mock()
-        rpc_client.get_transaction.return_value = {
-            "hash": tx_hash,
-            "from": self.vault.address,
-            "to": Web3.to_checksum_address("0x" + "de" * 20),
-            "input": "0x1234",
-        }
-        rpc_client.get_transaction_receipt.return_value = {
-            "status": 1,
-            "blockNumber": 99,
-            "blockHash": "0x" + "11" * 32,
-            "logs": [deployed_log],
-        }
-        rpc_client.get_block_timestamp.return_value = 1_700_000_000
 
         EvmLogScanner._process_logs(
             chain=self.chain,
-            logs=[deployed_log],
+            logs=[native_log, erc20_log, unknown_log],
             rpc_client=rpc_client,
             watch_set=EvmWatchSet(
-                watched_addresses=frozenset({self.slot.address}),
+                matched_addresses=frozenset(),
                 tokens_by_address={self.token_deployment.address: self.token_deployment},
             ),
             from_block=99,
             to_block=99,
         )
 
-        base_task.refresh_from_db()
-        self.assertEqual(base_task.stage, TxTaskStage.FINALIZED)
-        self.assertIs(base_task.success, True)
+        processor_watch_set = transfer_processor_mock.call_args.kwargs["watch_set"]
+        self.assertEqual(processor_watch_set.matched_addresses, {self.slot.address})
+
+    def test_scanner_skips_logs_from_known_internal_tx_hash(self):
+        tx_hash = "0x" + "23" * 32
+        base_task = TxTask.objects.create(
+            chain=self.chain,
+            address=self.vault,
+            tx_type=TxTaskType.Withdrawal,
+            tx_hash=tx_hash,
+            stage=TxTaskStage.PENDING_CHAIN,
+        )
+        TxHash.objects.create(
+            tx_task=base_task,
+            chain=self.chain,
+            hash=tx_hash,
+            version=1,
+        )
+        rpc_client = Mock()
+
+        result = EvmLogScanner._process_logs(
+            chain=self.chain,
+            logs=[self._erc20_log()],
+            rpc_client=rpc_client,
+            watch_set=EvmWatchSet(
+                matched_addresses=frozenset({self.slot.address}),
+                tokens_by_address={self.token_deployment.address: self.token_deployment},
+            ),
+            from_block=99,
+            to_block=99,
+        )
+
+        self.assertEqual(result.created_transfers, 0)
         self.assertFalse(Transfer.objects.filter(hash=tx_hash).exists())
+        rpc_client.get_block_timestamp.assert_not_called()

@@ -25,8 +25,7 @@ from evm.choices import TxKind
 from evm.intents import build_native_transfer_intent
 from evm.models import EvmScanCursor
 from evm.models import EvmTxTask
-from evm.scanner.logs import EvmLogKindResult
-from evm.scanner.logs import EvmLogRangeResult
+from evm.scanner.logs import EvmLogScanResult
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.service import EvmScannerService
 from evm.scanner.watchers import EvmWatchSet
@@ -68,28 +67,26 @@ class EvmChainScannerServiceTests(TestCase):
         result = EvmScannerService.scan_chain(chain=self.chain)
 
         scan_chain_mock.assert_not_called()
-        self.assertEqual(result.erc20.created_transfers, 0)
-        self.assertEqual(result.erc20.latest_block, 88)
+        self.assertEqual(result.created_transfers, 0)
+        self.assertEqual(result.latest_block, 88)
 
     @patch("evm.scanner.service.EvmLogScanner.scan_chain")
     def test_scan_chain_scans_native_and_erc20(
         self,
         scan_chain_mock,
     ):
-        scan_chain_mock.return_value = type(
-            "Result",
-            (),
-            {
-                "native": EvmLogKindResult(1, 1, 88, 2, 2),
-                "erc20": EvmLogKindResult(1, 1, 88, 1, 1),
-            },
+        scan_chain_mock.return_value = EvmLogScanResult(
+            from_block=1,
+            to_block=1,
+            latest_block=88,
+            raw_logs=[],
+            created_transfers=3,
         )
 
         result = EvmScannerService.scan_chain(chain=self.chain)
 
         scan_chain_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
-        self.assertEqual(result.native.created_transfers, 2)
-        self.assertEqual(result.erc20.created_transfers, 1)
+        self.assertEqual(result.created_transfers, 3)
 
     @patch(
         "evm.scanner.service.EvmLogScanner.scan_chain",
@@ -102,29 +99,28 @@ class EvmChainScannerServiceTests(TestCase):
         result = EvmScannerService.scan_chain(chain=self.chain)
 
         scan_chain_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
-        self.assertEqual(result.native.created_transfers, 0)
-        self.assertEqual(result.erc20.created_transfers, 0)
+        self.assertEqual(result.created_transfers, 0)
 
     @patch("evm.scanner.service.load_watch_set")
-    @patch("evm.scanner.service.EvmLogScanner.scan_range_without_cursor")
-    def test_rescan_blocks_scans_native_and_erc20_ranges(
+    @patch("evm.scanner.service.EvmLogScanner.scan_range")
+    def test_reconcile_blocks_scans_native_and_erc20_ranges(
         self,
         scan_range_mock,
         load_watch_set_mock,
     ):
         load_watch_set_mock.return_value = EvmWatchSet(
-            watched_addresses=frozenset(),
+            matched_addresses=frozenset(),
             tokens_by_address={},
         )
-        scan_range_mock.return_value = EvmLogRangeResult(
+        scan_range_mock.return_value = EvmLogScanResult(
+            from_block=10,
+            to_block=10,
+            latest_block=10,
             raw_logs=[{"kind": "log"}],
-            native_observed=1,
-            erc20_observed=1,
-            native_created=1,
-            erc20_created=2,
+            created_transfers=3,
         )
 
-        result = EvmScannerService.rescan_blocks(
+        result = EvmScannerService.reconcile_blocks(
             chain=self.chain,
             block_numbers={10},
         )
@@ -136,10 +132,7 @@ class EvmChainScannerServiceTests(TestCase):
             from_block=10,
             to_block=10,
         )
-        self.assertEqual(result.observed_native, 1)
-        self.assertEqual(result.created_native, 1)
-        self.assertEqual(result.observed_erc20, 1)
-        self.assertEqual(result.created_erc20, 2)
+        self.assertEqual(result.created_transfers, 3)
 
     @override_settings(SIGNER_BACKEND="remote")
     def test_broadcast_rejects_local_fallback_when_remote_signer_enabled(self):
@@ -219,7 +212,6 @@ class EvmChainScannerServiceTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
             wallet=wallet,
@@ -269,7 +261,6 @@ class EvmChainScannerServiceTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
             chain_type=ChainType.EVM,
@@ -335,7 +326,6 @@ class EvmChainScannerServiceTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
             wallet=wallet,
@@ -432,7 +422,6 @@ class EvmChainScannerServiceTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
             wallet=wallet,

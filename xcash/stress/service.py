@@ -507,7 +507,7 @@ def _build_withdrawal_cases(stress: StressRun) -> list[WithdrawalStressCase]:
     amount_max_dp = 8
     decimals_by_method: dict[tuple[str, str], int] = {}
     for crypto_symbol, chain_code in STRESS_WITHDRAWAL_METHOD_CHOICES:
-        chain = Chain.objects.get(chain=chain_code)
+        chain = Chain.objects.get(code=chain_code)
         crypto = Crypto.objects.get(symbol=crypto_symbol)
         decimals_by_method[(crypto_symbol, chain_code)] = min(
             crypto.get_decimals(chain), amount_max_dp
@@ -688,7 +688,7 @@ def _fund_evm_vault(project: Project) -> None:
 
     # 2. 为 Vault 铸造 USDT
     # 压测脚本默认以以太坊主网作为 EVM 入口（底层 RPC 实际指向 docker-compose 本地链）。
-    evm_chain = Chain.objects.get(chain="ethereum")
+    evm_chain = Chain.objects.get(code="ethereum")
     usdt = Crypto.objects.get(symbol="USDT")
     usdt_contract_address = usdt.address(evm_chain)
     if not usdt_contract_address:

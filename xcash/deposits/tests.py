@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Chain
 from chains.models import Address
@@ -247,7 +247,7 @@ class DepositNotificationTests(TestCase):
         )
         customer = Customer.objects.create(project=project, uid="customer-confirm")
         chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -308,7 +308,7 @@ def create_deposit_context(*, native: bool = False):
         address=Web3.to_checksum_address("0x0000000000000000000000000000000000000d01"),
     )
     chain = Chain.objects.create(
-        chain=ChainName.Ethereum,
+        code=ChainCode.Ethereum,
         rpc="",
         active=True,
     )

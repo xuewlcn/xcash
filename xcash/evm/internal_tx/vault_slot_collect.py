@@ -26,15 +26,18 @@ _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 def _hex_lower(value: Any) -> str:
+    """提取去掉 0x 前缀的小写十六进制串。"""
     raw = value.hex() if hasattr(value, "hex") else str(value)
     return raw.removeprefix("0x").lower()
 
 
 def _topic_to_address(topic: Any) -> str:
+    """从 32 字节 topic 取后 20 字节作为 checksum 地址。"""
     return Web3.to_checksum_address(f"0x{_hex_lower(topic)[-40:]}")
 
 
 def _decode_collect_token(data: str) -> str | None:
+    """从 collect(token) 的 calldata 解析目标代币地址；selector 不匹配返回 None。"""
     raw = data.lower() if data.startswith("0x") else f"0x{data.lower()}"
     if not raw.startswith(_COLLECT_SELECTOR):
         return None
@@ -49,6 +52,7 @@ def _decode_collect_token(data: str) -> str | None:
 
 
 def _crypto_for_collect_token(*, chain: Chain, token_address: str) -> Crypto | None:
+    """零地址映射为原生币，其余按 ChainToken 查 Crypto；未登记返回 None。"""
     if Web3.to_checksum_address(token_address) == Web3.to_checksum_address(
         _ZERO_ADDRESS
     ):
@@ -75,6 +79,7 @@ def _find_collected_log(
     slot_address: str,
     token_address: str,
 ) -> _CollectedLog | None:
+    """在 receipt 中找到对应 slot 与 token 的 XcashCollected 事件。"""
     for log in receipt.get("logs") or []:
         if Web3.to_checksum_address(str(log.get("address") or "")) != slot_address:
             continue
@@ -163,18 +168,24 @@ def vault_slot_collect_matcher(
 
 @dataclass
 class VaultSlotCollectHandler:
+    """VaultSlot 归集任务的生命周期 handler，仅打标无额外业务流转。"""
+
     def match(self, transfer: Transfer, tx_task: TxTask) -> bool:
+        """把 Transfer 类型标记为 Collect。"""
         transfer.type = TransferType.Collect
         transfer.save(update_fields=["type"])
         return True
 
     def confirm(self, transfer: Transfer) -> None:
+        """归集确认不需要额外业务动作。"""
         return None
 
     def drop(self, transfer: Transfer) -> None:
+        """reorg 撤销时无须额外回滚。"""
         return None
 
     def finalize_failed(self, tx_task: TxTask) -> None:
+        """归集失败无须额外业务收尾。"""
         return None
 
 

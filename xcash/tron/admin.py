@@ -15,7 +15,7 @@ class TronWatchCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin
         "disable_selected_scanners",
         "sync_selected_to_latest",
     )
-    ordering = ("chain__chain", "contract_address")
+    ordering = ("chain__code", "contract_address")
     list_display = (
         "display_chain",
         "contract_address",
@@ -29,7 +29,7 @@ class TronWatchCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin
         "updated_at",
     )
     list_filter = ("enabled", "chain")
-    search_fields = ("chain__chain", "contract_address", "last_error")
+    search_fields = ("chain__code", "contract_address", "last_error")
     list_select_related = ("chain",)
     readonly_fields = (
         "chain",
@@ -53,7 +53,7 @@ class TronWatchCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin
         chain.latest_block_number = latest_block
         return latest_block
 
-    @admin.display(ordering="chain__chain", description="网络")
+    @admin.display(ordering="chain__code", description="网络")
     def display_chain(self, obj: TronWatchCursor):  # pragma: no cover
         return obj.chain
 

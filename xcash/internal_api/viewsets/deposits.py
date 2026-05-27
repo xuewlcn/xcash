@@ -63,7 +63,7 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
                 raise APIError(ErrorCode.INVALID_CHAIN)
         elif chain_code:
             try:
-                chain = Chain.objects.get(chain=chain_code, active=True)
+                chain = Chain.objects.get(code=chain_code, active=True)
             except Chain.DoesNotExist:
                 raise APIError(ErrorCode.INVALID_CHAIN) from None
         else:

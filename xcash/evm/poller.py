@@ -19,7 +19,7 @@ class EvmTaskPoller:
     """轮询内部 EVM 任务的链上终局状态。
 
     对 PENDING_CHAIN 超过阈值仍未终局的任务，遍历所有历史 tx_hash 查询 receipt：
-    - 查到 receipt (status=1) -> 构建 ObservedTransferPayload 喂回扫描器管线
+    - 查到 receipt (status=1) -> 交给内部交易处理器按 TxTask 收口
     - 查到 receipt (status=0) -> 标记失败终局
     - 所有 hash 均无 receipt -> 交易已被 mempool 丢弃，重新广播
     """
@@ -45,7 +45,7 @@ class EvmTaskPoller:
             if isinstance(status, Exception):
                 logger.warning(
                     "EVM 任务轮询查链失败",
-                    chain=chain.chain,
+                    chain=chain.code,
                     address=evm_task.address.address,
                     nonce=evm_task.nonce,
                     error=str(status),
@@ -64,7 +64,7 @@ class EvmTaskPoller:
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "轮询器观察确认交易失败",
-                        chain=chain.chain,
+                        chain=chain.code,
                         address=evm_task.address.address,
                         nonce=evm_task.nonce,
                         tx_hash=tx_hash,
@@ -76,7 +76,7 @@ class EvmTaskPoller:
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "轮询器收口失败交易异常",
-                        chain=chain.chain,
+                        chain=chain.code,
                         address=evm_task.address.address,
                         nonce=evm_task.nonce,
                     )
@@ -88,14 +88,14 @@ class EvmTaskPoller:
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "PENDING_CHAIN 超时重新执行失败",
-                        chain=chain.chain,
+                        chain=chain.code,
                         address=evm_task.address.address,
                         nonce=evm_task.nonce,
                     )
                 else:
                     logger.info(
                         "PENDING_CHAIN 超时且无链上记录，已重新广播",
-                        chain=chain.chain,
+                        chain=chain.code,
                         address=evm_task.address.address,
                         nonce=evm_task.nonce,
                     )

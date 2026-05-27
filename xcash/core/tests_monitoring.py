@@ -11,7 +11,7 @@ from django.utils import timezone
 from django_otp.oath import TOTP
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Chain
 from chains.models import Transfer
@@ -58,7 +58,7 @@ class OperationalRiskServiceTests(TestCase):
             coingecko_id="ethereum-monitor",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )

@@ -65,7 +65,7 @@ class InternalWithdrawalViewSet(ModelViewSet):
             raise APIError(ErrorCode.DUPLICATE_OUT_NO)
 
         try:
-            chain = Chain.objects.get(chain=data["chain"], active=True)
+            chain = Chain.objects.get(code=data["chain"], active=True)
         except Chain.DoesNotExist:
             raise APIError(ErrorCode.INVALID_CHAIN) from None
 

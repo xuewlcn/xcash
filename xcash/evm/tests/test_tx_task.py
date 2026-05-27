@@ -20,6 +20,7 @@ from chains.models import TxHash
 from chains.models import Wallet
 from currencies.models import Crypto
 from evm.choices import TxKind
+from evm.constants import DEFAULT_BASE_TRANSFER_GAS
 from evm.models import EvmTxTask
 
 
@@ -194,8 +195,6 @@ class EvmTxTaskTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
-        chain.erc20_transfer_gas = 60_000
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
             chain_type=ChainType.EVM,
@@ -398,8 +397,6 @@ class EvmTxTaskTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
-        chain.erc20_transfer_gas = 60_000
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
             chain_type=ChainType.EVM,
@@ -418,7 +415,7 @@ class EvmTxTaskTests(TestCase):
             eth=SimpleNamespace(
                 gas_price=gas_price,
                 get_balance=Mock(
-                    return_value=value + 2 * chain.base_transfer_gas * gas_price
+                    return_value=value + 2 * DEFAULT_BASE_TRANSFER_GAS * gas_price
                 ),
                 estimate_gas=estimate_gas_mock,
                 send_raw_transaction=send_raw_mock,
@@ -441,7 +438,7 @@ class EvmTxTaskTests(TestCase):
             nonce=0,
             to=recipient,
             value=value,
-            gas=chain.base_transfer_gas,
+            gas=DEFAULT_BASE_TRANSFER_GAS,
             tx_kind=TxKind.NATIVE_TRANSFER,
             gas_price=gas_price,
             signed_payload="0x7261772d6279746573",
@@ -468,8 +465,6 @@ class EvmTxTaskTests(TestCase):
             native_coin=native,
             active=True,
         )
-        chain.base_transfer_gas = 21_000
-        chain.erc20_transfer_gas = 60_000
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
             chain_type=ChainType.EVM,

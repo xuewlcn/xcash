@@ -233,7 +233,7 @@ class Invoice(models.Model):
     ) -> tuple[str, Decimal]:
         """差额账单:沿用 get_pay_differ 寻找空闲的 (pay_address, pay_amount)。"""
         detail = (
-            f"project={self.project_id}, crypto={crypto.symbol}, chain={chain.chain}"
+            f"project={self.project_id}, crypto={crypto.symbol}, chain={chain.code}"
         )
         pay_address, pay_amount = Invoice.get_pay_differ(
             project=self.project,
@@ -358,7 +358,7 @@ class Invoice(models.Model):
             )
 
         detail = (
-            f"project={self.project_id}, crypto={crypto.symbol}, chain={chain.chain}"
+            f"project={self.project_id}, crypto={crypto.symbol}, chain={chain.code}"
         )
 
         for _retry in range(self.MAX_ALLOCATION_RETRY):

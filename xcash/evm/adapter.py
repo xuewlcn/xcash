@@ -54,7 +54,7 @@ class EvmAdapter(AdapterInterface):
         token_address = crypto.address(chain)
         if not token_address:
             raise ValueError(
-                f"Crypto {crypto.symbol} is not deployed on chain {chain.chain}."
+                f"Crypto {crypto.symbol} is not deployed on chain {chain.code}."
             )
 
         # 通过 ERC-20 合约的 balanceOf 查询代币余额

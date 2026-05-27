@@ -7,7 +7,7 @@ import {XcashVaultSlotFactory} from "../src/XcashVaultSlotFactory.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
 
 contract XcashVaultSlotFactoryTest is Test {
-    event XcashNativeReceived(address indexed payer, uint256 amount);
+    event XcashNativeReceived(address indexed from, uint256 amount);
     event XcashCollected(address indexed token, uint256 amount);
     event XcashVaultSlotDeployed(
         address indexed vaultSlot, address indexed vault, bytes32 indexed salt

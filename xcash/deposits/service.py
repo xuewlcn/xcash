@@ -35,7 +35,7 @@ class DepositService:
             "data": {
                 "sys_no": deposit.sys_no,
                 "uid": customer.uid if customer else None,
-                "chain": deposit.transfer.chain.chain,
+                "chain": deposit.transfer.chain.code,
                 "block": deposit.transfer.block,
                 "hash": deposit.transfer.hash,
                 "crypto": deposit.transfer.crypto.symbol,

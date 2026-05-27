@@ -17,18 +17,18 @@ def scan_tron_chain(chain_pk: int) -> None:
     if not chain.active:
         return
     if chain.type == ChainType.TRON and not chain.tron_api_key:
-        logger.warning("Tron USDT 扫描跳过，缺少 API Key", chain=chain.chain)
+        logger.warning("Tron USDT 扫描跳过，缺少 API Key", chain=chain.code)
         return
 
     try:
         summary = TronUsdtPaymentScanner.scan_chain(chain=chain)
     except TronClientError:
-        logger.warning("Tron USDT 扫描 RPC 失败", chain=chain.chain)
+        logger.warning("Tron USDT 扫描 RPC 失败", chain=chain.code)
         return
 
     logger.info(
         "Tron USDT 扫描完成",
-        chain=chain.chain,
+        chain=chain.code,
         filter_addresses=summary.filter_addresses,
         blocks_scanned=summary.blocks_scanned,
         events_seen=summary.events_seen,

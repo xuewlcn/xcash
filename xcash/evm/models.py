@@ -31,7 +31,6 @@ from evm.constants import XCASH_VAULT_SLOT_FACTORY_ADDRESS
 from evm.contracts_codec import predict_xcash_vault_slot_address
 from evm.intents import build_vault_slot_collect_intent
 from evm.intents import build_vault_slot_deploy_intent
-from evm.intents import get_preflight_buffer_multiplier
 from users.models import Customer
 
 if TYPE_CHECKING:
@@ -163,7 +162,7 @@ class VaultSlot(models.Model):
         if usage == VaultSlotUsage.DEPOSIT:
             if customer is None:
                 raise ValueError("customer is required for deposit salt")
-            # 不掺 chain.chain：configure deterministic deployer 后所有 EVM 链的
+            # 不掺 chain.code：configure deterministic deployer 后所有 EVM 链的
             # factory / template / vault 地址都一致，再用同一 salt 即可让客户在所有 EVM 链
             # 拿到同一个 VaultSlot 地址。
             return keccak(
@@ -318,8 +317,7 @@ class VaultSlot(models.Model):
         if slot.deploy_tx_task_id is not None:
             base_task = slot.deploy_tx_task.base_task
             if base_task.success is None or (
-                base_task.stage == TxTaskStage.FINALIZED
-                and base_task.success is True
+                base_task.stage == TxTaskStage.FINALIZED and base_task.success is True
             ):
                 return slot.deploy_tx_task
 
@@ -330,9 +328,7 @@ class VaultSlot(models.Model):
         )
         configured_vault_address = slot.project.vault
         if not configured_vault_address:
-            raise RuntimeError(
-                f"Project {slot.project_id} VaultSlot Vault 地址未配置"
-            )
+            raise RuntimeError(f"Project {slot.project_id} VaultSlot Vault 地址未配置")
         current_vault_address = Web3.to_checksum_address(configured_vault_address)
         slot_vault_address = Web3.to_checksum_address(slot.vault_address)
         if current_vault_address != slot_vault_address:
@@ -399,7 +395,7 @@ class VaultSlot(models.Model):
         except VaultSlot.DoesNotExist as exc:
             raise RuntimeError(
                 "VaultSlot 不存在："
-                f"deposit_id={deposit.pk} chain={chain.chain} "
+                f"deposit_id={deposit.pk} chain={chain.code} "
                 f"customer_id={deposit.customer_id} address={transfer.to_address}"
             ) from exc
 
@@ -423,7 +419,7 @@ class VaultSlot(models.Model):
         token_address = crypto.address(chain)
         if not token_address:
             raise RuntimeError(
-                f"Crypto {crypto.symbol} 未部署在链 {chain.chain}，无法调度 VaultSlot 归集"
+                f"Crypto {crypto.symbol} 未部署在链 {chain.code}，无法调度 VaultSlot 归集"
             )
 
         intent = build_vault_slot_collect_intent(
@@ -462,7 +458,11 @@ class VaultSlot(models.Model):
 
         if invoice.billing_mode != InvoiceBillingMode.CONTRACT:
             return None
-        if invoice.chain_id is None or invoice.crypto_id is None or not invoice.pay_address:
+        if (
+            invoice.chain_id is None
+            or invoice.crypto_id is None
+            or not invoice.pay_address
+        ):
             return None
 
         chain = invoice.chain
@@ -480,7 +480,7 @@ class VaultSlot(models.Model):
         except VaultSlot.DoesNotExist as exc:
             raise RuntimeError(
                 "Invoice VaultSlot 不存在："
-                f"invoice_id={invoice.pk} chain={chain.chain} "
+                f"invoice_id={invoice.pk} chain={chain.code} "
                 f"project_id={invoice.project_id} address={invoice.pay_address}"
             ) from exc
 
@@ -504,7 +504,7 @@ class VaultSlot(models.Model):
         token_address = crypto.address(chain)
         if not token_address:
             raise RuntimeError(
-                f"Crypto {crypto.symbol} 未部署在链 {chain.chain}，无法调度 Invoice VaultSlot 归集"
+                f"Crypto {crypto.symbol} 未部署在链 {chain.code}，无法调度 Invoice VaultSlot 归集"
             )
 
         intent = build_vault_slot_collect_intent(
@@ -564,7 +564,7 @@ class EvmScanCursor(models.Model):
         verbose_name_plural = verbose_name
 
     def __str__(self) -> str:
-        return self.chain.chain
+        return self.chain.code
 
 
 class EvmTxTask(UndeletableModel):
@@ -670,8 +670,7 @@ class EvmTxTask(UndeletableModel):
             self.address.address
         )  # noqa: SLF001
         signed_gas_price = int(self.gas_price)
-        multiplier = get_preflight_buffer_multiplier(TxKind(self.tx_kind))
-        buffer_required = int(self.value) + multiplier * self.gas * signed_gas_price
+        buffer_required = int(self.value) + 2 * self.gas * signed_gas_price
         # 余额不足时保持 QUEUED，等待运营向发起地址补充 gas。
         return current_native_balance >= buffer_required
 
@@ -742,10 +741,7 @@ class EvmTxTask(UndeletableModel):
         base_task = TxTask.objects.only("stage", "success", "tx_hash").get(
             pk=self.base_task_id
         )
-        if (
-            base_task.stage != TxTaskStage.QUEUED
-            or base_task.success is not None
-        ):
+        if base_task.stage != TxTaskStage.QUEUED or base_task.success is not None:
             return False
 
         tx_hash, receipt = self._find_receipt_for_known_hashes()

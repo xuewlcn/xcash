@@ -38,8 +38,7 @@ class ChainService:
 
     @staticmethod
     def get_by_code(code: str, *, active_only: bool = True) -> Chain:
-        # 入参变量名保留 code 以减少调用方改动；语义上对应 Chain.chain (slug)。
-        qs = Chain.objects.filter(chain=code)
+        qs = Chain.objects.filter(code=code)
         if active_only:
             qs = qs.filter(active=True)
         return qs.get()
@@ -53,7 +52,7 @@ class ChainService:
         return set(
             Chain.objects.filter(
                 type__in=chain_types, active=True
-            ).values_list("chain", flat=True)
+            ).values_list("code", flat=True)
         )
 
 
@@ -239,7 +238,7 @@ class TransferService:
             logger.warning(
                 "Observed transfer replay with older block ignored",
                 source=observed.source,
-                chain=observed.chain.chain,
+                chain=observed.chain.code,
                 tx_hash=observed.tx_hash,
                 event_id=observed.event_id,
                 existing_transfer_id=existing.pk,
@@ -278,7 +277,7 @@ class TransferService:
         logger.error(
             "Observed transfer conflict",
             source=observed.source,
-            chain=observed.chain.chain,
+            chain=observed.chain.code,
             tx_hash=observed.tx_hash,
             event_id=observed.event_id,
             existing_transfer_id=existing.pk,
@@ -324,7 +323,7 @@ class TransferService:
                 logger.warning(
                     "Observed transfer integrity conflict without existing row",
                     source=observed.source,
-                    chain=observed.chain.chain,
+                    chain=observed.chain.code,
                     tx_hash=observed.tx_hash,
                     event_id=observed.event_id,
                 )
@@ -351,7 +350,7 @@ class TransferService:
                 logger.debug(
                     "Observed transfer replay ignored",
                     source=observed.source,
-                    chain=observed.chain.chain,
+                    chain=observed.chain.code,
                     tx_hash=observed.tx_hash,
                     event_id=observed.event_id,
                     transfer_id=existing.pk,

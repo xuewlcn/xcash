@@ -168,7 +168,7 @@ class RiskMarkingService:
             cached_result = cache.get(
                 cls._cache_key(
                     source=provider["source"],
-                    chain=transfer.chain.chain,
+                    chain=transfer.chain.code,
                     address=address,
                 )
             )
@@ -208,7 +208,7 @@ class RiskMarkingService:
         payload = cls._result_to_cache_payload(result)
         cls.write_cache(
             source=provider["source"],
-            chain=transfer.chain.chain,
+            chain=transfer.chain.code,
             address=address,
             result=payload,
             timeout=get_risk_marking_cache_seconds(),
@@ -385,7 +385,7 @@ class RiskMarkingService:
         if chain.type == ChainType.EVM and chain.chain_id in QUICKNODE_EVM_CHAIN:
             return QUICKNODE_EVM_CHAIN[chain.chain_id]
         raise UnsupportedRiskProviderChainError(
-            f"unsupported QuickNode MistTrack chain: {chain.chain}"
+            f"unsupported QuickNode MistTrack chain: {chain.code}"
         )
 
     @staticmethod
@@ -398,5 +398,5 @@ class RiskMarkingService:
             if mapping and symbol in mapping:
                 return mapping[symbol]
         raise UnsupportedRiskProviderChainError(
-            f"unsupported MistTrack OpenAPI coin: {crypto.symbol} on {chain.chain}"
+            f"unsupported MistTrack OpenAPI coin: {crypto.symbol} on {chain.code}"
         )

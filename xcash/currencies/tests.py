@@ -3,7 +3,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.models import Chain
 from chains.models import Transfer
 from chains.models import TransferStatus
@@ -14,7 +14,7 @@ from currencies.models import Crypto
 class ChainNativeCryptoMappingTests(TestCase):
     def test_creating_chain_auto_creates_native_crypto_mapping(self):
         chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -46,7 +46,7 @@ class ChainTokenRemapTests(TestCase):
             coingecko_id="tether",
         )
         chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )

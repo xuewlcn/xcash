@@ -10,6 +10,11 @@ from web3 import Web3
 
 from chains.models import TxTaskType
 from evm.choices import TxKind
+from evm.constants import DEFAULT_BASE_TRANSFER_GAS
+from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
+from evm.constants import DEFAULT_VAULT_SLOT_COLLECT_GAS
+from evm.constants import DEFAULT_VAULT_SLOT_DEPLOY_GAS
+from evm.constants import ERC20_TRANSFER_SELECTOR
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,12 +39,6 @@ class EvmTxIntent:
     verify_fn: Callable[[], None] | None = None
 
 
-_PREFLIGHT_BUFFER_MULTIPLIER = {
-    TxKind.NATIVE_TRANSFER: 2,
-    TxKind.CONTRACT_CALL: 2,
-}
-
-
 def _normalize_hex_calldata(data: str) -> str:
     """规范化 calldata 十六进制字符串，保持字节边界完整。"""
     if data in {"", "0x"}:
@@ -59,15 +58,6 @@ def _normalize_hex_calldata(data: str) -> str:
         raise ValueError("calldata must be a hex string") from exc
 
     return normalized
-
-
-def get_preflight_buffer_multiplier(tx_kind: TxKind) -> int:
-    return _PREFLIGHT_BUFFER_MULTIPLIER[tx_kind]
-
-
-_ERC20_TRANSFER_SELECTOR = "0xa9059cbb"
-DEFAULT_VAULT_SLOT_DEPLOY_GAS = 160_000
-DEFAULT_VAULT_SLOT_COLLECT_GAS = 90_000
 
 
 def _function_selector(signature: str) -> str:
@@ -94,43 +84,7 @@ def build_native_transfer_intent(
         to=to_checksum,
         value=value,
         data="",
-        gas=chain.base_transfer_gas,
-        tx_type=tx_type,
-        verify_fn=verify_fn,
-    )
-
-
-def build_erc20_transfer_intent(
-    *,
-    address: Address,
-    chain: Chain,
-    crypto: Crypto,
-    to: str,
-    value_raw: int,
-    tx_type: TxTaskType,
-    verify_fn: Callable[[], None] | None = None,
-) -> EvmTxIntent:
-    if value_raw < 0:
-        raise ValueError("value_raw must be >= 0")
-
-    to_checksum = Web3.to_checksum_address(to)
-    token_addr = crypto.address(chain)
-    if not token_addr:
-        raise ValueError(
-            f"Crypto {crypto.symbol} is not deployed on chain {chain.chain}"
-        )
-
-    token_checksum = Web3.to_checksum_address(token_addr)
-    encoded_args = eth_abi.encode(["address", "uint256"], [to_checksum, value_raw]).hex()
-
-    return EvmTxIntent(
-        address=address,
-        chain=chain,
-        tx_kind=TxKind.CONTRACT_CALL,
-        to=token_checksum,
-        value=0,
-        data=f"{_ERC20_TRANSFER_SELECTOR}{encoded_args}",
-        gas=chain.erc20_transfer_gas,
+        gas=DEFAULT_BASE_TRANSFER_GAS,
         tx_type=tx_type,
         verify_fn=verify_fn,
     )
@@ -165,6 +119,41 @@ def build_contract_call_intent(
     )
 
 
+def build_erc20_transfer_intent(
+    *,
+    address: Address,
+    chain: Chain,
+    crypto: Crypto,
+    to: str,
+    value_raw: int,
+    tx_type: TxTaskType,
+    verify_fn: Callable[[], None] | None = None,
+) -> EvmTxIntent:
+    if value_raw < 0:
+        raise ValueError("value_raw must be >= 0")
+
+    to_checksum = Web3.to_checksum_address(to)
+    token_addr = crypto.address(chain)
+    if not token_addr:
+        raise ValueError(
+            f"Crypto {crypto.symbol} is not deployed on chain {chain.code}"
+        )
+
+    encoded_args = eth_abi.encode(
+        ["address", "uint256"], [to_checksum, value_raw]
+    ).hex()
+
+    return build_contract_call_intent(
+        address=address,
+        chain=chain,
+        contract_address=token_addr,
+        data=f"{ERC20_TRANSFER_SELECTOR}{encoded_args}",
+        gas=DEFAULT_ERC20_TRANSFER_GAS,
+        tx_type=tx_type,
+        verify_fn=verify_fn,
+    )
+
+
 def build_vault_slot_deploy_intent(
     *,
     address: Address,
@@ -192,7 +181,6 @@ def build_vault_slot_deploy_intent(
         data=f"0x{selector}{encoded_args}",
         gas=DEFAULT_VAULT_SLOT_DEPLOY_GAS,
         tx_type=TxTaskType.VaultSlotDeploy,
-        value=0,
         verify_fn=verify_fn,
     )
 
@@ -217,6 +205,5 @@ def build_vault_slot_collect_intent(
         data=f"0x{selector}{encoded_args}",
         gas=DEFAULT_VAULT_SLOT_COLLECT_GAS,
         tx_type=TxTaskType.VaultSlotCollect,
-        value=0,
         verify_fn=verify_fn,
     )

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from currencies.models import Crypto
 
 
-_ERC20_TRANSFER_SELECTOR = "0xa9059cbb"
+ERC20_TRANSFER_SELECTOR = "0xa9059cbb"
 
 
 @dataclass(frozen=True)
@@ -34,12 +34,14 @@ class DirectTransferFields:
 
 
 def _normalize_calldata(data: str) -> str:
+    """归一化 calldata：空值统一为 '0x'，其它转小写并补前缀。"""
     if not data or data == "0x":
         return "0x"
     return data.lower() if data.startswith("0x") else f"0x{data.lower()}"
 
 
 def _normalize_tx_input(value: Any) -> str:
+    """归一化 tx.input，兼容 bytes / str / 空值，输出带 0x 的小写串。"""
     if value in (None, "", "0x", "0X"):
         return "0x"
     if isinstance(value, (bytes, bytearray)):
@@ -54,6 +56,7 @@ def _normalize_tx_input(value: Any) -> str:
 
 
 def _decimal_from_tx_value(value: Any) -> Decimal | None:
+    """把 tx.value 解析为 Decimal，非法值返回 None。"""
     if value is None:
         return None
     try:
@@ -74,6 +77,7 @@ def _native_tx_matches_expected(
     to_address: str,
     value: Decimal,
 ) -> bool:
+    """校验链上 tx 的 from/to/value/input 与预期一致，且 input 为空（纯转账）。"""
     if tx is None or "input" not in tx:
         return False
 
@@ -92,6 +96,7 @@ def _native_tx_matches_expected(
 
 
 def _crypto_for_token(*, chain: Chain, token_address: str) -> Crypto | None:
+    """按 ERC20 合约地址查到对应 Crypto；未登记返回 None。"""
     token_checksum = Web3.to_checksum_address(token_address)
     chain_token = (
         ChainToken.objects.select_related("crypto")
@@ -129,7 +134,7 @@ def decode_direct_transfer_fields(
     data = _normalize_calldata(evm_task.data)
     if evm_task.tx_kind != TxKind.CONTRACT_CALL:
         return None
-    if not data.startswith(_ERC20_TRANSFER_SELECTOR):
+    if not data.startswith(ERC20_TRANSFER_SELECTOR):
         return None
 
     crypto = _crypto_for_token(chain=chain, token_address=evm_task.to)
@@ -160,6 +165,10 @@ def match_direct_transfer_fact(
     receipt: dict,
     tx: dict | None = None,
 ) -> MatchedTransferFact | None:
+    """从 receipt 校验直接转账事实是否与 TxTask 预期一致。
+
+    原生币要求 tx 字段四要素吻合；ERC20 要求 receipt 中恰好一条匹配的 Transfer 日志。
+    """
     fields = decode_direct_transfer_fields(chain=chain, tx_task=tx_task)
     if fields is None:
         return None

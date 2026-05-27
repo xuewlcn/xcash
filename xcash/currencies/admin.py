@@ -55,7 +55,7 @@ def merge_placeholder_crypto(modeladmin, request, queryset):
                     ).exists():
                         modeladmin.message_user(
                             request,
-                            f"{placeholder.symbol}：目标代币在 {ct.chain.chain} 上已有部署记录，跳过该链",
+                            f"{placeholder.symbol}：目标代币在 {ct.chain.code} 上已有部署记录，跳过该链",
                             level=messages.WARNING,
                         )
                         continue

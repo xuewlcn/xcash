@@ -142,10 +142,10 @@ class TronHttpClient:
             )
         except (TypeError, ValueError) as exc:
             raise TronClientError(
-                f"invalid latest solid block from {self.chain.chain}"
+                f"invalid latest solid block from {self.chain.code}"
             ) from exc
         if block_number <= 0:
-            raise TronClientError(f"invalid latest solid block from {self.chain.chain}")
+            raise TronClientError(f"invalid latest solid block from {self.chain.code}")
         return block_number
 
     def get_transaction_info_by_id(self, tx_hash: str) -> dict:

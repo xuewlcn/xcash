@@ -12,7 +12,7 @@ contract XcashVaultSlotTemplate {
     error ForwardFailed();
     error ERC20TransferFailed();
 
-    event XcashNativeReceived(address indexed payer, uint256 amount);
+    event XcashNativeReceived(address indexed from, uint256 amount);
     event XcashCollected(address indexed token, uint256 amount);
 
     receive() external payable {

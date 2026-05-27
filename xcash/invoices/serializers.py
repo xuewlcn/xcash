@@ -195,11 +195,11 @@ class InvoiceCreateSerializer(Serializer):
             for chain_codes in methods.values()
             for chain_code in chain_codes
         }
-        chains = list(Chain.objects.filter(chain__in=chain_codes, active=True))
+        chains = list(Chain.objects.filter(code__in=chain_codes, active=True))
         if not chains:
             raise APIError(ErrorCode.CONTRACT_BILLING_EVM_ONLY)
 
-        chains_by_chain = {chain.chain: chain for chain in chains}
+        chains_by_chain = {chain.code: chain for chain in chains}
         if any(
             chain_code not in chains_by_chain
             or chains_by_chain[chain_code].type != ChainType.EVM
@@ -224,11 +224,11 @@ class InvoiceCreateSerializer(Serializer):
             for chain_codes in methods.values()
             for chain_code in chain_codes
         }
-        chains = list(Chain.objects.filter(chain__in=chain_codes, active=True))
+        chains = list(Chain.objects.filter(code__in=chain_codes, active=True))
         if not chains:
             raise APIError(ErrorCode.DIFFER_BILLING_TRON_ONLY)
 
-        chains_by_chain = {chain.chain: chain for chain in chains}
+        chains_by_chain = {chain.code: chain for chain in chains}
         if any(
             chain_code not in chains_by_chain
             or chains_by_chain[chain_code].type != ChainType.TRON
@@ -247,7 +247,7 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
     crypto = serializers.CharField(
         source="crypto.symbol", read_only=True, allow_null=True
     )
-    chain = serializers.CharField(source="chain.chain", read_only=True, allow_null=True)
+    chain = serializers.CharField(source="chain.code", read_only=True, allow_null=True)
     amount = StrippedDecimalField(max_digits=32, decimal_places=8)
     pay_amount = StrippedDecimalField(max_digits=32, decimal_places=8)
     pay_url = serializers.SerializerMethodField()
@@ -312,7 +312,7 @@ class InvoiceDisplaySerializer(serializers.ModelSerializer):
     crypto = serializers.CharField(
         source="crypto.symbol", read_only=True, allow_null=True
     )
-    chain = serializers.CharField(source="chain.chain", read_only=True, allow_null=True)
+    chain = serializers.CharField(source="chain.code", read_only=True, allow_null=True)
     amount = StrippedDecimalField(max_digits=32, decimal_places=8)
     pay_amount = StrippedDecimalField(max_digits=32, decimal_places=8)
 

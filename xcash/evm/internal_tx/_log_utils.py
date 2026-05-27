@@ -43,12 +43,14 @@ def matches_transfer_log(
 
 
 def normalize_log_index(value: Any) -> int:
+    """把 logIndex 解析为 int，兼容十进制 / 0x 十六进制 / int。"""
     if isinstance(value, str):
         return int(value, 16) if value.startswith("0x") else int(value)
     return int(value)
 
 
 def _hex_lower(value: Any) -> str:
+    """提取去掉 0x 前缀的小写十六进制串。"""
     raw = value.hex() if hasattr(value, "hex") else str(value)
     return raw.removeprefix("0x").lower()
 

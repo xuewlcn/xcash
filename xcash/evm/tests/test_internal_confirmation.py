@@ -209,7 +209,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self,
         chain_w3_mock,
     ):
-        """超时后查到 receipt status=1，协调器调用 _observe_confirmed_transaction 喂回扫描器管线。"""
+        """超时后查到 receipt status=1，协调器调用 _observe_confirmed_transaction 收口内部交易。"""
         from evm.poller import EvmTaskPoller
 
         tx_hash = "0x" + "b" * 64
@@ -276,7 +276,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self,
         chain_w3_mock,
     ):
-        """当前 tx_hash 无 receipt 但历史 hash 有 receipt 时，通过历史 hash 喂回扫描器管线。"""
+        """当前 tx_hash 无 receipt 但历史 hash 有 receipt 时，通过历史 hash 收口内部交易。"""
         from web3.exceptions import TransactionNotFound
 
         from evm.poller import EvmTaskPoller

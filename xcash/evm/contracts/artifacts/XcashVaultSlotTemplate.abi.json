@@ -53,7 +53,7 @@
     "name": "XcashNativeReceived",
     "inputs": [
       {
-        "name": "payer",
+        "name": "from",
         "type": "address",
         "indexed": true,
         "internalType": "address"

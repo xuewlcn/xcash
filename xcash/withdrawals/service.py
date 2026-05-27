@@ -2,7 +2,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import structlog
-from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction as db_transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -13,16 +12,16 @@ from chains.models import ChainType
 from chains.models import TransferType
 from chains.models import TxTask
 from chains.models import TxTaskType
-from chains.service import AddressService
 from chains.transfer_matching import raw_amount
 from chains.transfer_matching import transfer_matches
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.internal_callback import send_internal_callback
 from common.utils.math import format_decimal_stripped
+from evm.constants import DEFAULT_BASE_TRANSFER_GAS
+from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
 from users.otp import validate_admin_approval_context
 from webhooks.service import WebhookService
-from withdrawals.models import HotWalletFunding
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalReviewLog
 from withdrawals.models import WithdrawalStatus
@@ -50,7 +49,7 @@ class WithdrawalService:
         data = {
             "sys_no": withdrawal.sys_no,
             "out_no": withdrawal.out_no,
-            "chain": withdrawal.chain.chain if withdrawal.chain else "",
+            "chain": withdrawal.chain.code if withdrawal.chain else "",
             "hash": (
                 withdrawal.tx_task.tx_hash if withdrawal.tx_task_id else withdrawal.hash
             ),
@@ -75,14 +74,14 @@ class WithdrawalService:
             gas_price = chain.w3.eth.gas_price  # noqa: SLF001
         except Exception:
             logger.warning(
-                "获取 EVM gas_price 失败，跳过实时 gas 预留", chain=chain.chain
+                "获取 EVM gas_price 失败，跳过实时 gas 预留", chain=chain.code
             )
             return 0
 
         gas_limit = (
-            chain.base_transfer_gas
+            DEFAULT_BASE_TRANSFER_GAS
             if crypto == chain.native_coin
-            else chain.erc20_transfer_gas
+            else DEFAULT_ERC20_TRANSFER_GAS
         )
         return int(gas_price * gas_limit)
 
@@ -216,7 +215,7 @@ class WithdrawalService:
             logger.exception(
                 "计算提币 USD 价值失败，无法执行限额校验",
                 project_id=project.pk,
-                chain=chain.chain,
+                chain=chain.code,
                 crypto=crypto.symbol,
             )
             raise APIError(
@@ -428,7 +427,7 @@ class WithdrawalService:
         """每次审核决策都必须落审计日志，便于运营追溯与责任定位。"""
         snapshot = {
             "out_no": withdrawal.out_no,
-            "chain": withdrawal.chain.chain if withdrawal.chain_id else "",
+            "chain": withdrawal.chain.code if withdrawal.chain_id else "",
             "crypto": withdrawal.crypto.symbol,
             "amount": str(withdrawal.amount),
             "worth": str(withdrawal.worth),
@@ -767,29 +766,3 @@ class WithdrawalService:
         withdrawal.status = WithdrawalStatus.FAILED
         withdrawal.save(update_fields=["transfer", "status", "updated_at"])
         cls.notify_status_changed(withdrawal)
-
-    @staticmethod
-    def try_record_hot_wallet_funding(
-        transfer: "Transfer",
-    ) -> bool:
-        from django.db import IntegrityError
-
-        try:
-            hot_wallet = AddressService.get_by_address(
-                address=transfer.to_address,
-                chain_type=transfer.chain.type,
-                usage=AddressUsage.HotWallet,
-            )
-            HotWalletFunding.objects.create(
-                project=hot_wallet.wallet.project,
-                transfer=transfer,
-            )
-            transfer.type = TransferType.Prefunding
-            transfer.save(update_fields=["type"])
-        except ObjectDoesNotExist:
-            return False
-        except IntegrityError:
-            # transfer 已有 OneToOne 唯一约束，重复推送时幂等跳过
-            return True
-        else:
-            return True

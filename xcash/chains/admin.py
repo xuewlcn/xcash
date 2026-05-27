@@ -27,7 +27,7 @@ class ChainAdmin(ModelAdmin):
     # 字段瘦身后，type / native_coin / confirm_block_count 已转为 property，
     # 通过 display 方法暴露到列表页，方便运维一眼看清链配置。
     list_display = (
-        "chain",
+        "code",
         "type_display",
         "native_coin_display",
         "active",
@@ -40,7 +40,7 @@ class ChainAdmin(ModelAdmin):
         "evm_log_max_block_range",
     )
     list_filter = ("active",)
-    search_fields = ("chain",)
+    search_fields = ("code",)
 
     @display(description=_("类型"))
     def type_display(self, obj: Chain) -> str:
@@ -59,7 +59,7 @@ class ChainAdmin(ModelAdmin):
             _("基本信息"),
             {
                 "fields": (
-                    "chain",
+                    "code",
                     "active",
                 )
             },
@@ -188,7 +188,7 @@ class TxTaskAdmin(ReadOnlyModelAdmin):
     def display_address(self, obj: TxTask):
         return obj.address
 
-    @admin.display(ordering="chain__chain", description=_("网络"))
+    @admin.display(ordering="chain__code", description=_("网络"))
     def display_chain(self, obj: TxTask):
         return obj.chain
 

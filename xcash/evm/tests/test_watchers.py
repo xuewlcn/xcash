@@ -13,6 +13,7 @@ from currencies.models import Crypto
 from evm.models import VaultSlot
 from evm.scanner.watchers import clear_evm_watch_set_cache
 from evm.scanner.watchers import load_watch_set
+from evm.scanner.watchers import load_matched_addresses_for_candidates
 from projects.models import DifferRecipientAddress
 from projects.models import Project
 from users.models import Customer
@@ -88,112 +89,92 @@ class EvmWatchSetCacheTests(TestCase):
         clear_evm_watch_set_cache()
         cache.clear()
 
-    def test_load_watch_set_refreshes_when_vault_slot_is_deleted(self):
-        initial_watch_set = load_watch_set(chain=self.chain, refresh=True)
-        self.assertIn(self.vault_slot.address, initial_watch_set.watched_addresses)
-
-        VaultSlot.objects.filter(pk=self.vault_slot.pk).delete()
-
-        watch_set = load_watch_set(chain=self.chain)
-        self.assertNotIn(self.vault_slot.address, watch_set.watched_addresses)
-
-    def test_load_watch_set_excludes_system_hot_wallet_addresses(self):
+    def test_load_watch_set_only_loads_chain_tokens(self):
         watch_set = load_watch_set(chain=self.chain, refresh=True)
 
-        self.assertNotIn(self.address.address, watch_set.watched_addresses)
-        self.assertIn(self.vault_slot.address, watch_set.watched_addresses)
-
-    def test_vault_slot_save_refreshes_cached_watch_set_after_commit(self):
-        load_watch_set(chain=self.chain, refresh=True)
-        new_slot_address = Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000d01"
-        )
-        new_customer = Customer.objects.create(
-            project=self.project,
-            uid="watcher-customer-new-slot",
+        self.assertEqual(watch_set.matched_addresses, frozenset())
+        self.assertEqual(
+            watch_set.tokens_by_address,
+            {self.token_deployment.address: self.token_deployment},
         )
 
-        with self.captureOnCommitCallbacks(execute=True):
-            VaultSlot.objects.create(
-                customer=new_customer,
-                chain=self.chain,
-                address=new_slot_address,
-                vault_address=self.address.address,
-                salt=b"\x02" * 32,
-            )
-
-        watch_set = load_watch_set(chain=self.chain)
-        self.assertIn(new_slot_address, watch_set.watched_addresses)
-
-    def test_load_watch_set_includes_evm_differ_recipient_addresses(self):
-        project = self._create_project()
+    def test_candidate_lookup_matches_vault_slots_and_differ_recipient_addresses(self):
         recipient_address = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000d01"
         )
         DifferRecipientAddress.objects.create(
-            project=project,
+            project=self._create_project(),
             chain_type=ChainType.EVM,
             address=recipient_address,
         )
+        unknown_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000d02"
+        )
 
-        watch_set = load_watch_set(chain=self.chain, refresh=True)
+        matched_addresses = load_matched_addresses_for_candidates(
+            chain=self.chain,
+            addresses={self.vault_slot.address, recipient_address, unknown_address},
+        )
 
-        self.assertIn(recipient_address, watch_set.watched_addresses)
+        self.assertEqual(
+            matched_addresses,
+            frozenset({self.vault_slot.address, recipient_address}),
+        )
 
-    def test_load_watch_set_excludes_non_evm_differ_recipient_addresses(self):
-        project = self._create_project()
+    def test_candidate_lookup_excludes_non_candidate_and_non_evm_addresses(self):
         recipient_address = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000d02"
         )
         DifferRecipientAddress.objects.create(
-            project=project,
+            project=self._create_project(),
             chain_type=ChainType.TRON,
             address=recipient_address,
         )
 
-        watch_set = load_watch_set(chain=self.chain, refresh=True)
+        matched_addresses = load_matched_addresses_for_candidates(
+            chain=self.chain,
+            addresses={self.address.address, recipient_address},
+        )
 
-        self.assertNotIn(recipient_address, watch_set.watched_addresses)
+        self.assertEqual(matched_addresses, frozenset())
 
-    def test_differ_recipient_address_save_refreshes_cached_watch_set_after_commit(
-        self,
-    ):
-        project = self._create_project()
-        load_watch_set(chain=self.chain, refresh=True)
-        recipient_address = Web3.to_checksum_address(
+    def test_candidate_lookup_scopes_vault_slots_to_chain(self):
+        other_native = Crypto.objects.create(
+            name="Watcher Other Native",
+            symbol="WOTHER",
+            coingecko_id="watcher-other-native",
+        )
+        other_chain = Chain.objects.create(
+            code="watcher-other-chain",
+            name="Watcher Other Chain",
+            type=ChainType.EVM,
+            chain_id=88_002,
+            rpc="http://watcher-other.local",
+            native_coin=other_native,
+            confirm_block_count=6,
+            active=True,
+        )
+        other_customer = Customer.objects.create(
+            project=self.project,
+            uid="watcher-customer-other-chain",
+        )
+        other_slot_address = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000d03"
         )
-
-        with self.captureOnCommitCallbacks(execute=True):
-            DifferRecipientAddress.objects.create(
-                project=project,
-                chain_type=ChainType.EVM,
-                address=recipient_address,
-            )
-
-        watch_set = load_watch_set(chain=self.chain)
-        self.assertIn(recipient_address, watch_set.watched_addresses)
-
-    def test_differ_recipient_address_delete_refreshes_cached_watch_set_after_commit(
-        self,
-    ):
-        project = self._create_project()
-        recipient_address = Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000d04"
+        VaultSlot.objects.create(
+            customer=other_customer,
+            chain=other_chain,
+            address=other_slot_address,
+            vault_address=self.address.address,
+            salt=b"\x03" * 32,
         )
-        differ_address = DifferRecipientAddress.objects.create(
-            project=project,
-            chain_type=ChainType.EVM,
-            address=recipient_address,
+
+        matched_addresses = load_matched_addresses_for_candidates(
+            chain=self.chain,
+            addresses={self.vault_slot.address, other_slot_address},
         )
-        initial_watch_set = load_watch_set(chain=self.chain, refresh=True)
-        self.assertIn(recipient_address, initial_watch_set.watched_addresses)
 
-        with self.captureOnCommitCallbacks(execute=True):
-            differ_address.delete()
-
-        watch_set = load_watch_set(chain=self.chain)
-        self.assertNotIn(recipient_address, watch_set.watched_addresses)
+        self.assertEqual(matched_addresses, frozenset({self.vault_slot.address}))
 
     def test_chain_token_save_refreshes_cached_token_set_after_commit(self):
         load_watch_set(chain=self.chain, refresh=True)

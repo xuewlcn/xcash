@@ -8,6 +8,7 @@ from django.db import transaction
 from django.db.models import F
 from django.db.models.functions import Greatest
 from django.utils import timezone
+from web3 import Web3
 
 from chains.models import Chain
 from chains.models import ChainType
@@ -15,58 +16,34 @@ from evm.models import EvmScanCursor
 from evm.scanner.constants import DEFAULT_DEPOSIT_LOG_SCAN_REPLAY_BLOCKS
 from evm.scanner.constants import DEFAULT_LOG_SCAN_BATCH_SIZE
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
-from evm.scanner.constants import XCASH_COLLECTED_TOPIC0
 from evm.scanner.constants import XCASH_NATIVE_RECEIVED_TOPIC0
-from evm.scanner.constants import XCASH_VAULT_SLOT_DEPLOYED_TOPIC0
-from evm.scanner.internal_events import EvmContractEventObserver
 from evm.scanner.observed_transfers import EvmObservedTransferProcessor
 from evm.scanner.rpc import EvmScannerRpcClient
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.watchers import EvmWatchSet
+from evm.scanner.watchers import load_matched_addresses_for_candidates
 from evm.scanner.watchers import load_watch_set
 
 logger = structlog.get_logger()
 
 
 @dataclass(frozen=True)
-class EvmLogKindResult:
-    """描述同一次 EVM 日志扫描中某类入账日志的处理结果。"""
+class EvmLogScanResult:
+    """描述一次 EVM 日志扫描结果。"""
 
     from_block: int
     to_block: int
     latest_block: int
-    observed_logs: int
-    created_transfers: int
-
-
-@dataclass(frozen=True)
-class EvmLogScanResult:
-    """描述一次统一 EVM 日志扫描的结果。"""
-
-    native: EvmLogKindResult
-    erc20: EvmLogKindResult
-
-
-@dataclass(frozen=True)
-class EvmLogRangeResult:
-    """描述一次不推进游标的区间扫描结果。"""
-
     raw_logs: list[dict[str, Any]]
-    native_observed: int
-    erc20_observed: int
-    native_created: int
-    erc20_created: int
+    created_transfers: int
 
     def __iter__(self):
         yield self.raw_logs
-        yield self.native_observed
-        yield self.erc20_observed
-        yield self.native_created
-        yield self.erc20_created
+        yield self.created_transfers
 
 
 class EvmLogScanner:
-    """按链统一扫描 EVM 入账日志与系统合约生命周期事件。"""
+    """按链扫描外部入账日志。"""
 
     @classmethod
     def scan_chain(
@@ -76,8 +53,9 @@ class EvmLogScanner:
         batch_size: int = DEFAULT_LOG_SCAN_BATCH_SIZE,
         rpc_client: EvmScannerRpcClient | None = None,
     ) -> EvmLogScanResult:
+        """根据游标推进一次正向日志扫描，成功后更新游标。"""
         if chain.type != ChainType.EVM:
-            raise ValueError(f"仅支持 EVM 链扫描，当前链为 {chain.chain}")
+            raise ValueError(f"仅支持 EVM 链扫描，当前链为 {chain.code}")
 
         cursor = cls._get_or_create_cursor(chain=chain)
         if not cursor.enabled:
@@ -91,29 +69,22 @@ class EvmLogScanner:
             )
 
             watch_set = load_watch_set(chain=chain)
-            if not watch_set.watched_addresses:
-                cls._advance_cursor(cursor=cursor, scanned_to_block=latest_block)
+            scan_window = cls._compute_scan_window(
+                cursor=cursor,
+                latest_block=latest_block,
+                batch_size=batch_size,
+            )
+            if scan_window is None:
+                cls._mark_cursor_idle(cursor=cursor)
                 return cls._result_for_window(
                     from_block=0,
                     to_block=0,
                     latest_block=latest_block,
+                    raw_logs=[],
                 )
+            from_block, to_block = scan_window
 
-            from_block, to_block = cls._compute_scan_window(
-                cursor=cursor,
-                latest_block=latest_block,
-                batch_size=batch_size,
-                replay_blocks=cls._replay_blocks_for_chain(chain=chain),
-            )
-            if from_block > to_block:
-                cls._mark_cursor_idle(cursor=cursor)
-                return cls._result_for_window(
-                    from_block=from_block,
-                    to_block=to_block,
-                    latest_block=latest_block,
-                )
-
-            range_result = cls.scan_range_without_cursor(
+            range_result = cls.scan_range(
                 chain=chain,
                 rpc_client=rpc_client,
                 watch_set=watch_set,
@@ -129,14 +100,12 @@ class EvmLogScanner:
             from_block=from_block,
             to_block=to_block,
             latest_block=latest_block,
-            native_observed=range_result.native_observed,
-            native_created=range_result.native_created,
-            erc20_observed=range_result.erc20_observed,
-            erc20_created=range_result.erc20_created,
+            raw_logs=range_result.raw_logs,
+            created_transfers=range_result.created_transfers,
         )
 
     @classmethod
-    def scan_range_without_cursor(
+    def scan_range(
         cls,
         *,
         chain: Chain,
@@ -144,11 +113,8 @@ class EvmLogScanner:
         watch_set: EvmWatchSet,
         from_block: int,
         to_block: int,
-    ) -> EvmLogRangeResult:
+    ) -> EvmLogScanResult:
         """对 [from_block, to_block] 区间拉取一次日志并按类型落库。"""
-        if from_block > to_block or not watch_set.watched_addresses:
-            return cls._range_result(raw_logs=[])
-
         logs = cls._fetch_logs(
             rpc_client=rpc_client,
             watch_set=watch_set,
@@ -174,27 +140,28 @@ class EvmLogScanner:
         watch_set: EvmWatchSet,
         from_block: int,
         to_block: int,
-    ) -> EvmLogRangeResult:
-        internal_tx_hashes = EvmContractEventObserver.observe_logs(
-            chain=chain,
-            logs=logs,
-            rpc_client=rpc_client,
+    ) -> EvmLogScanResult:
+        """把外部入账日志交给 Transfer 落库。"""
+        matched_watch_set = watch_set.with_matched_addresses(
+            load_matched_addresses_for_candidates(
+                chain=chain,
+                addresses=cls._watched_address_candidates_from_logs(logs=logs),
+            )
         )
         transfer_result = EvmObservedTransferProcessor.process(
             chain=chain,
             rpc_client=rpc_client,
             raw_logs=logs,
-            watch_set=watch_set,
-            ignored_tx_hashes=internal_tx_hashes,
+            watch_set=matched_watch_set,
             from_block=from_block,
             to_block=to_block,
         )
-        return cls._range_result(
+        return cls._result_for_window(
+            from_block=from_block,
+            to_block=to_block,
+            latest_block=to_block,
             raw_logs=logs,
-            native_observed=transfer_result.native_observed,
-            erc20_observed=transfer_result.erc20_observed,
-            native_created=transfer_result.native_created,
-            erc20_created=transfer_result.erc20_created,
+            created_transfers=transfer_result.created_transfers,
         )
 
     @classmethod
@@ -206,18 +173,15 @@ class EvmLogScanner:
         from_block: int,
         to_block: int,
     ) -> list[dict[str, Any]]:
+        """拉取本轮关注的外部入账日志。"""
         logs: list[dict[str, Any]] = []
         logs.extend(
             rpc_client.get_logs(
                 from_block=from_block,
                 to_block=to_block,
                 addresses=None,
-                topic0=[
-                    XCASH_NATIVE_RECEIVED_TOPIC0,
-                    XCASH_COLLECTED_TOPIC0,
-                    XCASH_VAULT_SLOT_DEPLOYED_TOPIC0,
-                ],
-                summary="获取 EVM Xcash 合约日志失败",
+                topic0=XCASH_NATIVE_RECEIVED_TOPIC0,
+                summary="获取 EVM Xcash 原生币入账日志失败",
             )
         )
         erc20_addresses = cls._erc20_log_filter_addresses(watch_set=watch_set)
@@ -235,10 +199,63 @@ class EvmLogScanner:
 
     @staticmethod
     def _erc20_log_filter_addresses(*, watch_set: EvmWatchSet) -> list[str]:
+        """返回需要在 eth_getLogs 中作为合约地址过滤的 ERC20 列表。"""
         return sorted(watch_set.tokens_by_address.keys())
 
     @classmethod
+    def _watched_address_candidates_from_logs(
+        cls,
+        *,
+        logs: list[dict[str, Any]],
+    ) -> set[str]:
+        """从本轮日志里抽出可能命中观察集的地址，供后续批量精确匹配。"""
+        candidates: set[str] = set()
+        for log in logs:
+            if log.get("removed"):
+                continue
+            topics = list(log.get("topics") or [])
+            if not topics:
+                continue
+            topic0 = cls._normalize_topic(topics[0])
+            if topic0 == XCASH_NATIVE_RECEIVED_TOPIC0.lower():
+                if address := cls._normalize_address(log.get("address")):
+                    candidates.add(address)
+                continue
+            if topic0 == ERC20_TRANSFER_TOPIC0.lower() and len(topics) >= 3:
+                for topic in topics[1:3]:
+                    if address := cls._topic_to_address(topic):
+                        candidates.add(address)
+        return candidates
+
+    @staticmethod
+    def _normalize_topic(value: Any) -> str:
+        """把 topic 统一成小写十六进制串，方便比较。"""
+        if isinstance(value, bytes):
+            return Web3.to_hex(value).lower()
+        return str(value or "").lower()
+
+    @staticmethod
+    def _normalize_address(value: Any) -> str | None:
+        """转 checksum 地址，非法地址返回 None 而不是抛错。"""
+        try:
+            return Web3.to_checksum_address(str(value or ""))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _topic_to_address(cls, topic: Any) -> str | None:
+        """从 32 字节 topic 取最后 20 字节作为地址。"""
+        try:
+            topic_hex = cls._normalize_topic(topic)
+            if len(topic_hex) < 42:
+                return None
+            return Web3.to_checksum_address("0x" + topic_hex[-40:])
+        except ValueError:
+            return None
+
+    @classmethod
     def _get_or_create_cursor(cls, *, chain: Chain) -> EvmScanCursor:
+        """加锁取出或新建本链的扫描游标，避免并发扫描争抢。"""
         with transaction.atomic():
             cursor, _ = EvmScanCursor.objects.select_for_update().get_or_create(
                 chain=chain,
@@ -253,9 +270,10 @@ class EvmLogScanner:
         latest_block: int,
         batch_size: int,
         replay_blocks: int = DEFAULT_DEPOSIT_LOG_SCAN_REPLAY_BLOCKS,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int] | None:
+        """根据游标和批次大小算出本轮扫描的合法区间；无可扫区间返回 None。"""
         if latest_block <= 0:
-            return 0, -1
+            return None
 
         replay_blocks = max(0, replay_blocks)
         if cursor.last_scanned_block <= 0:
@@ -268,17 +286,13 @@ class EvmLogScanner:
             to_block = min(latest_block, cursor.last_scanned_block + forward_batch_size)
         else:
             to_block = min(latest_block, from_block + forward_batch_size - 1)
+        if from_block > to_block:
+            return None
         return from_block, to_block
 
     @staticmethod
-    def _replay_blocks_for_chain(*, chain: Chain) -> int:
-        return max(
-            DEFAULT_DEPOSIT_LOG_SCAN_REPLAY_BLOCKS,
-            int(chain.confirm_block_count or 0),
-        )
-
-    @staticmethod
     def _mark_cursor_idle(*, cursor: EvmScanCursor) -> None:
+        """无新块可扫时只清空错误状态，不推进游标。"""
         EvmScanCursor.objects.filter(pk=cursor.pk).update(
             last_error="",
             last_error_at=None,
@@ -287,6 +301,7 @@ class EvmLogScanner:
 
     @staticmethod
     def _advance_cursor(*, cursor: EvmScanCursor, scanned_to_block: int) -> None:
+        """把游标推进到本轮扫描末端，并清空错误状态。"""
         EvmScanCursor.objects.filter(pk=cursor.pk).update(
             last_scanned_block=Greatest(F("last_scanned_block"), scanned_to_block),
             last_error="",
@@ -296,9 +311,10 @@ class EvmLogScanner:
 
     @staticmethod
     def _mark_cursor_error(*, cursor: EvmScanCursor, exc: Exception) -> None:
+        """记录本轮 RPC 错误到游标，便于运维观察。"""
         logger.warning(
             "EVM 日志扫描失败",
-            chain=cursor.chain.chain,
+            chain=cursor.chain.code,
             error=str(exc),
         )
         EvmScanCursor.objects.filter(pk=cursor.pk).update(
@@ -308,28 +324,13 @@ class EvmLogScanner:
         )
 
     @staticmethod
-    def _range_result(
-        *,
-        raw_logs: list[dict[str, Any]],
-        native_observed: int = 0,
-        erc20_observed: int = 0,
-        native_created: int = 0,
-        erc20_created: int = 0,
-    ) -> EvmLogRangeResult:
-        return EvmLogRangeResult(
-            raw_logs=raw_logs,
-            native_observed=native_observed,
-            erc20_observed=erc20_observed,
-            native_created=native_created,
-            erc20_created=erc20_created,
-        )
-
-    @staticmethod
     def _empty_result(*, chain: Chain) -> EvmLogScanResult:
+        """生成不扫描时使用的空结果占位。"""
         return EvmLogScanner._result_for_window(
             from_block=0,
             to_block=0,
             latest_block=chain.latest_block_number,
+            raw_logs=[],
         )
 
     @staticmethod
@@ -338,24 +339,14 @@ class EvmLogScanner:
         from_block: int,
         to_block: int,
         latest_block: int,
-        native_observed: int = 0,
-        native_created: int = 0,
-        erc20_observed: int = 0,
-        erc20_created: int = 0,
+        raw_logs: list[dict[str, Any]],
+        created_transfers: int = 0,
     ) -> EvmLogScanResult:
+        """按窗口端点和新增 Transfer 总数拼装统一返回结构。"""
         return EvmLogScanResult(
-            native=EvmLogKindResult(
-                from_block=from_block,
-                to_block=to_block,
-                latest_block=latest_block,
-                observed_logs=native_observed,
-                created_transfers=native_created,
-            ),
-            erc20=EvmLogKindResult(
-                from_block=from_block,
-                to_block=to_block,
-                latest_block=latest_block,
-                observed_logs=erc20_observed,
-                created_transfers=erc20_created,
-            ),
+            from_block=from_block,
+            to_block=to_block,
+            latest_block=latest_block,
+            raw_logs=raw_logs,
+            created_transfers=created_transfers,
         )

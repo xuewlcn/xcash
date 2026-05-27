@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from typing import Literal
 
 import structlog
 from django.utils import timezone
@@ -13,6 +12,7 @@ from web3 import Web3
 from chains.models import Chain
 from chains.models import Transfer
 from chains.models import TransferStatus
+from chains.models import TxHash
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
@@ -22,14 +22,11 @@ from evm.scanner.watchers import EvmWatchSet
 
 logger = structlog.get_logger()
 
-EvmTransferLogKind = Literal["native", "erc20"]
-
 
 @dataclass(frozen=True)
 class ParsedEvmTransferLog:
     """扫描器已验证可进入 Transfer 管线的一条外部入账日志。"""
 
-    kind: EvmTransferLogKind
     block_number: int
     block_hash: str | None
     tx_hash: str
@@ -46,10 +43,7 @@ class EvmObservedTransferProcessResult:
     """外部入账日志处理结果。"""
 
     raw_logs: list[dict[str, Any]]
-    native_observed: int
-    erc20_observed: int
-    native_created: int
-    erc20_created: int
+    created_transfers: int
 
 
 class EvmObservedTransferProcessor:
@@ -63,11 +57,11 @@ class EvmObservedTransferProcessor:
         rpc_client: EvmScannerRpcClient,
         raw_logs: list[dict[str, Any]],
         watch_set: EvmWatchSet,
-        ignored_tx_hashes: set[str],
         from_block: int,
         to_block: int,
     ) -> EvmObservedTransferProcessResult:
-        parsed_logs = [
+        """解析外部入账日志、清理 reorg 失效项，并幂等落库。"""
+        candidate_logs = [
             parsed
             for log in raw_logs
             if (
@@ -78,7 +72,13 @@ class EvmObservedTransferProcessor:
                 )
             )
             is not None
-            and parsed.tx_hash not in ignored_tx_hashes
+        ]
+        internal_tx_hashes = cls._known_internal_tx_hashes(
+            chain=chain,
+            logs=candidate_logs,
+        )
+        parsed_logs = [
+            log for log in candidate_logs if log.tx_hash not in internal_tx_hashes
         ]
         cls._drop_reorged_transfers(
             chain=chain,
@@ -88,17 +88,31 @@ class EvmObservedTransferProcessor:
             parsed_logs=parsed_logs,
             raw_logs=raw_logs,
         )
-        native_created, erc20_created = cls._persist_logs(
+        created_transfers = cls._persist_logs(
             chain=chain,
             logs=parsed_logs,
             rpc_client=rpc_client,
         )
         return EvmObservedTransferProcessResult(
             raw_logs=raw_logs,
-            native_observed=sum(1 for log in parsed_logs if log.kind == "native"),
-            erc20_observed=sum(1 for log in parsed_logs if log.kind == "erc20"),
-            native_created=native_created,
-            erc20_created=erc20_created,
+            created_transfers=created_transfers,
+        )
+
+    @staticmethod
+    def _known_internal_tx_hashes(
+        *,
+        chain: Chain,
+        logs: list[ParsedEvmTransferLog],
+    ) -> set[str]:
+        """返回已登记 TxHash 的本系统主动交易 hash，scanner 必须整体跳过。"""
+        tx_hashes = {log.tx_hash for log in logs}
+        if not tx_hashes:
+            return set()
+        return set(
+            TxHash.objects.filter(chain=chain, hash__in=tx_hashes).values_list(
+                "hash",
+                flat=True,
+            )
         )
 
     @classmethod
@@ -109,6 +123,7 @@ class EvmObservedTransferProcessor:
         chain: Chain,
         watch_set: EvmWatchSet,
     ) -> ParsedEvmTransferLog | None:
+        """按 topic0 分派到原生币或 ERC20 解析；非入账日志返回 None。"""
         if log.get("removed"):
             return None
         topics = list(log.get("topics") or [])
@@ -130,6 +145,7 @@ class EvmObservedTransferProcessor:
         chain: Chain,
         watch_set: EvmWatchSet,
     ) -> ParsedEvmTransferLog | None:
+        """解析 VaultSlot 上的原生币入账事件，并过滤掉不在观察集中的 slot。"""
         topics = list(log.get("topics") or [])
         if len(topics) < 2:
             return None
@@ -144,16 +160,15 @@ class EvmObservedTransferProcessor:
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             logger.warning(
                 "EVM 原生币充值日志解析失败，已跳过",
-                chain=chain.chain,
+                chain=chain.code,
                 error=str(exc),
             )
             return None
 
-        if value <= 0 or slot_address not in watch_set.watched_addresses:
+        if value <= 0 or slot_address not in watch_set.matched_addresses:
             return None
 
         return ParsedEvmTransferLog(
-            kind="native",
             block_number=block_number,
             block_hash=cls._normalize_hash(log.get("blockHash")),
             tx_hash=tx_hash,
@@ -173,6 +188,7 @@ class EvmObservedTransferProcessor:
         chain: Chain,
         watch_set: EvmWatchSet,
     ) -> ParsedEvmTransferLog | None:
+        """解析 ERC20 Transfer 日志，仅保留外部地址打入系统观察地址的入账。"""
         topics = list(log.get("topics") or [])
         if len(topics) < 3:
             return None
@@ -187,9 +203,9 @@ class EvmObservedTransferProcessor:
             to_address = cls._topic_to_address(topics[2])
             # 只观察外部地址打入系统观察地址的入账事实；
             # 系统地址或 VaultSlot 发出的资产移动由 internal_tx receipt 路径收口。
-            if to_address not in watch_set.watched_addresses:
+            if to_address not in watch_set.matched_addresses:
                 return None
-            if from_address in watch_set.watched_addresses:
+            if from_address in watch_set.matched_addresses:
                 return None
 
             raw_hex = cls._to_hex(log.get("data", "0x0"))
@@ -202,7 +218,7 @@ class EvmObservedTransferProcessor:
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             logger.warning(
                 "EVM ERC20 Transfer 日志解析失败，已跳过",
-                chain=chain.chain,
+                chain=chain.code,
                 error=str(exc),
             )
             return None
@@ -214,7 +230,6 @@ class EvmObservedTransferProcessor:
             token.decimals if token.decimals is not None else token.crypto.decimals
         )
         return ParsedEvmTransferLog(
-            kind="erc20",
             block_number=block_number,
             block_hash=cls._normalize_hash(log.get("blockHash")),
             tx_hash=tx_hash,
@@ -237,6 +252,7 @@ class EvmObservedTransferProcessor:
         parsed_logs: list[Any],
         raw_logs: list[dict[str, Any]],
     ) -> None:
+        """对窗口内已确认中的 Transfer 校验 block_hash，发现 reorg 立刻撤回。"""
         if from_block > to_block:
             return
 
@@ -264,6 +280,7 @@ class EvmObservedTransferProcessor:
 
     @staticmethod
     def _current_hashes_from_logs(logs: list[Any]) -> dict[int, str]:
+        """从已解析日志收集 block_number -> block_hash 映射。"""
         current_hashes: dict[int, str] = {}
         for log in logs:
             if log.block_hash:
@@ -272,6 +289,7 @@ class EvmObservedTransferProcessor:
 
     @classmethod
     def _current_hashes_from_raw_logs(cls, logs: list[dict[str, Any]]) -> dict[int, str]:
+        """从原始 RPC 日志收集 block_number -> block_hash，跳过已 removed 项。"""
         current_hashes: dict[int, str] = {}
         for log in logs:
             if log.get("removed"):
@@ -293,6 +311,7 @@ class EvmObservedTransferProcessor:
         from_block: int,
         to_block: int,
     ) -> set[int]:
+        """列出窗口内仍处于确认中的 Transfer 所在块号，便于补查 reorg。"""
         rows = (
             Transfer.objects.filter(
                 chain=chain,
@@ -313,10 +332,10 @@ class EvmObservedTransferProcessor:
         chain: Chain,
         logs: list[Any],
         rpc_client: EvmScannerRpcClient,
-    ) -> tuple[int, int]:
+    ) -> int:
+        """逐条幂等落库，返回新建 Transfer 数量；块时间戳本轮缓存。"""
         timestamp_cache: dict[int, int] = {}
-        native_created = 0
-        erc20_created = 0
+        created_transfers = 0
 
         for log in logs:
             timestamp = timestamp_cache.get(log.block_number)
@@ -347,15 +366,13 @@ class EvmObservedTransferProcessor:
                 )
             )
             if result.created:
-                if log.kind == "native":
-                    native_created += 1
-                else:
-                    erc20_created += 1
+                created_transfers += 1
 
-        return native_created, erc20_created
+        return created_transfers
 
     @staticmethod
     def _to_hex(value: object) -> str:
+        """提取原始十六进制字面（无 0x 前缀），兼容 bytes 与 str。"""
         if hasattr(value, "hex"):
             hex_value = value.hex()
         else:
@@ -364,6 +381,7 @@ class EvmObservedTransferProcessor:
 
     @classmethod
     def _normalize_hash(cls, value: object | None) -> str | None:
+        """转成带 0x 前缀的小写哈希串，空值返回 None。"""
         if value is None:
             return None
         raw_hex = cls._to_hex(value)
@@ -371,6 +389,7 @@ class EvmObservedTransferProcessor:
 
     @classmethod
     def _normalize_required_hash(cls, value: object) -> str:
+        """要求哈希必填的归一化变体，空值直接抛错。"""
         normalized = cls._normalize_hash(value)
         if normalized is None:
             raise ValueError("hash is empty")
@@ -378,6 +397,7 @@ class EvmObservedTransferProcessor:
 
     @staticmethod
     def _parse_int(raw_value: object) -> int:
+        """兼容十进制 / 0x 十六进制 / int 的整数解析。"""
         if isinstance(raw_value, int):
             return raw_value
         value = str(raw_value).strip()
@@ -387,5 +407,6 @@ class EvmObservedTransferProcessor:
 
     @staticmethod
     def _topic_to_address(topic: object) -> str:
+        """从 32 字节 topic 取后 20 字节作为 checksum 地址。"""
         raw_hex = EvmObservedTransferProcessor._to_hex(topic)
         return Web3.to_checksum_address(f"0x{raw_hex[-40:]}")

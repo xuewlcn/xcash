@@ -72,7 +72,7 @@ class EvmTxTaskAdmin(ReadOnlyModelAdmin):
     def display_address(self, obj: EvmTxTask):  # pragma: no cover
         return obj.address
 
-    @admin.display(ordering="chain__chain", description="网络")
+    @admin.display(ordering="chain__code", description="网络")
     def display_chain(self, obj: EvmTxTask):  # pragma: no cover
         return obj.chain
 
@@ -89,7 +89,7 @@ class EvmScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
         "disable_selected_scanners",
         "sync_selected_to_latest",
     )
-    ordering = ("chain__chain",)
+    ordering = ("chain__code",)
     list_display = (
         "display_chain",
         "display_enabled",
@@ -102,7 +102,7 @@ class EvmScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
         "updated_at",
     )
     list_filter = ("enabled", "chain")
-    search_fields = ("chain__chain", "last_error")
+    search_fields = ("chain__code", "last_error")
     list_select_related = ("chain",)
     readonly_fields = (
         "chain",
@@ -121,7 +121,7 @@ class EvmScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return False
 
-    @admin.display(ordering="chain__chain", description="网络")
+    @admin.display(ordering="chain__code", description="网络")
     def display_chain(self, obj: EvmScanCursor):  # pragma: no cover
         return obj.chain
 

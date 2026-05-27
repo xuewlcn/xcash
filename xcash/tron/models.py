@@ -33,4 +33,4 @@ class TronWatchCursor(models.Model):
         verbose_name_plural = verbose_name
 
     def __str__(self) -> str:
-        return f"{self.chain.chain}:{self.contract_address}"
+        return f"{self.chain.code}:{self.contract_address}"

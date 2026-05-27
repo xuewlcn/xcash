@@ -35,8 +35,6 @@ class EvmTxTaskScheduleTests(TestCase):
             native_coin=self.native,
             active=True,
         )
-        self.chain.base_transfer_gas = 21_000
-        self.chain.erc20_transfer_gas = 65_000
         self.wallet = Wallet.objects.create()
         self.address = Address.objects.create(
             wallet=self.wallet,

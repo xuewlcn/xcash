@@ -144,7 +144,7 @@ class CreateWithdrawalSerializer(Serializer):
             logger.warning(
                 "is_contract 检查失败，跳过合约地址验证",
                 to=to,
-                chain=chain.chain,
+                chain=chain.code,
             )
             is_contract = False
 

@@ -51,7 +51,7 @@ class DepositAdmin(ReadOnlyModelAdmin):
 
     @display(description="链")
     def display_chain(self, instance: Deposit):
-        return instance.transfer.chain.chain
+        return instance.transfer.chain.code
 
     @display(description="币种")
     def display_crypto(self, instance: Deposit):

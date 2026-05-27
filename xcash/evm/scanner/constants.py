@@ -12,16 +12,6 @@ XCASH_NATIVE_RECEIVED_TOPIC0 = Web3.to_hex(
     Web3.keccak(text="XcashNativeReceived(address,uint256)")
 )
 
-# VaultSlot 归集事件签名主题；log.address 即 VaultSlot 地址。
-XCASH_COLLECTED_TOPIC0 = Web3.to_hex(
-    Web3.keccak(text="XcashCollected(address,uint256)")
-)
-
-# VaultSlotFactory 部署 VaultSlot 事件签名主题；log.address 即固定 Factory 地址。
-XCASH_VAULT_SLOT_DEPLOYED_TOPIC0 = Web3.to_hex(
-    Web3.keccak(text="XcashVaultSlotDeployed(address,address,bytes32)")
-)
-
 # 单次 EVM 日志扫描默认净推进块数：首版先保守一些，后续可结合链和节点能力再调大。
 DEFAULT_LOG_SCAN_BATCH_SIZE = 100
 

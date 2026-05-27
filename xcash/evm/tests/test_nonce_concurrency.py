@@ -40,7 +40,6 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             rpc="http://localhost:8545",
             native_coin=self.native,
             active=True,
-            base_transfer_gas=21_000,
         )
         self.wallet = Wallet.objects.create()
         self.address = Address.objects.create(

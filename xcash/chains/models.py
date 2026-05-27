@@ -19,7 +19,7 @@ from web3.exceptions import ExtraDataLengthError
 from web3.middleware import ExtraDataToPOAMiddleware
 
 from chains.constants import CHAIN_SPECS
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainSpec
 from chains.constants import ChainType  # noqa: F401  re-export 给下游模块过渡使用
 from common.fields import AddressField
@@ -37,21 +37,16 @@ logger = structlog.get_logger()
 
 
 class Chain(models.Model):
-    DEFAULT_BASE_TRANSFER_GAS = 21_000
-    DEFAULT_ERC20_TRANSFER_GAS = 65_000
-    base_transfer_gas = DEFAULT_BASE_TRANSFER_GAS
-    erc20_transfer_gas = DEFAULT_ERC20_TRANSFER_GAS
-
-    chain = models.CharField(
-        _("链"),
-        choices=ChainName,
+    code = models.CharField(
+        _("代码"),
+        choices=ChainCode,
         unique=True,
     )
     type = models.CharField(
         _("类型"),
         max_length=16,
         editable=False,
-        help_text=_("由 chain 常量自动决定，不可手动修改。"),
+        help_text=_("由 code 常量自动决定，不可手动修改。"),
     )
     latest_block_number = models.PositiveIntegerField(
         default=0, verbose_name=_("最新区块")
@@ -70,23 +65,14 @@ class Chain(models.Model):
         verbose_name = _("链")
         verbose_name_plural = _("链")
 
-    def __init__(self, *args, **kwargs):
-        base_transfer_gas = kwargs.pop("base_transfer_gas", None)
-        erc20_transfer_gas = kwargs.pop("erc20_transfer_gas", None)
-        super().__init__(*args, **kwargs)
-        if base_transfer_gas is not None:
-            self.base_transfer_gas = base_transfer_gas
-        if erc20_transfer_gas is not None:
-            self.erc20_transfer_gas = erc20_transfer_gas
-
     def __str__(self):
         return self.name
 
     def save(self, *args, **kwargs):
-        # type 是链固有属性的反规范化冗余，由 chain 常量自动推导，
+        # type 是链固有属性的反规范化冗余，由 code 常量自动推导，
         # 不让业务层手动设置，避免脏数据。
-        if self.chain and self.chain in CHAIN_SPECS:
-            self.type = CHAIN_SPECS[self.chain].type
+        if self.code and self.code in CHAIN_SPECS:
+            self.type = CHAIN_SPECS[self.code].type
         self.full_clean()
         with db_transaction.atomic():
             result = super().save(*args, **kwargs)
@@ -95,15 +81,11 @@ class Chain(models.Model):
 
     @property
     def spec(self) -> ChainSpec:
-        return CHAIN_SPECS[self.chain]
+        return CHAIN_SPECS[self.code]
 
     @property
     def name(self) -> str:
-        # admin add 表单与异常路径会对未设置 chain 的实例 stringify，
-        # 直接 ChainName("") 会抛 ValueError 掩盖真正的报错原因。
-        if not self.chain:
-            return "Chain(unsaved)"
-        return ChainName(self.chain).label
+        return ChainCode(self.code).label
 
     @property
     def chain_id(self) -> int | None:
@@ -144,9 +126,9 @@ class Chain(models.Model):
         Tron 无 chain_id 概念，跳过此校验；空 RPC 允许占位创建，配置完整时再校验。
         """
         super().clean()
-        # full_clean 会先收集 clean_fields 的错误再调用本方法，所以这里可能拿到非法 chain。
+        # full_clean 会先收集 clean_fields 的错误再调用本方法，所以这里可能拿到非法 code。
         # 让 clean_fields 的 choices 校验报错即可，本方法直接放行。
-        if self.chain not in CHAIN_SPECS:
+        if self.code not in CHAIN_SPECS:
             return
         # type 的权威来源是 CHAIN_SPECS，不能依赖 DB 字段（full_clean 时 type 可能尚未设置）。
         if self.spec.type != ChainType.EVM or not self.rpc:
@@ -199,7 +181,7 @@ class Chain(models.Model):
     def content(self):
         return {
             "name": self.name,
-            "code": self.chain,
+            "code": self.code,
             "type": self.type,
             "chain_id": self.chain_id,
             "native_coin": self.native_coin.symbol,
@@ -518,7 +500,6 @@ class TransferType(models.TextChoices):
     Invoice = "invoice", _("💳 支付")
     Deposit = "deposit", "💰 充币"
     Withdrawal = "withdrawal", "🏧 提币"
-    Prefunding = "prefunding", "🏦 注入热钱包资金"
     Collect = "collect", "💰 归集"
 
 
@@ -976,12 +957,10 @@ class Transfer(models.Model):
         # 非内部广播交易，且 EVM tx.from 已确认不是系统地址时，才按外部收款逻辑逐一尝试匹配。
         from deposits.service import DepositService
         from invoices.service import InvoiceService
-        from withdrawals.service import WithdrawalService
 
         (
             InvoiceService.try_match_invoice(self)
             or DepositService.try_create_deposit(self)
-            or WithdrawalService.try_record_hot_wallet_funding(self)
         )
         self._mark_processed()
 
@@ -1124,7 +1103,7 @@ class Transfer(models.Model):
             DepositService.confirm_deposit(self.deposit)
         elif self.type == TransferType.Withdrawal:
             self._dispatch_withdrawal_confirm()
-        elif self.type in {TransferType.Collect, TransferType.Prefunding}:
+        elif self.type in {TransferType.Collect}:
             return
 
     def _dispatch_business_drop(self) -> None:
@@ -1138,7 +1117,7 @@ class Transfer(models.Model):
             DepositService.drop_deposit(self.deposit)
         elif self.type == TransferType.Withdrawal:
             self._dispatch_withdrawal_drop()
-        elif self.type in {TransferType.Collect, TransferType.Prefunding}:
+        elif self.type in {TransferType.Collect}:
             return
 
     def _dispatch_withdrawal_confirm(self) -> None:

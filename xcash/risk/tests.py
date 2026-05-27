@@ -27,7 +27,7 @@ from chains.models import ChainType
 from chains.models import TransferType
 from chains.models import Transfer
 from chains.models import Wallet
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from core.models import SystemSettings
 from currencies.models import Crypto
 from currencies.models import Fiat
@@ -51,7 +51,7 @@ class RiskTestMixin:
             coingecko_id="risk-eth",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -648,8 +648,8 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_quicknode_unsupported_chain_is_skipped_without_external_query(self, score):
         invoice = self.make_invoice(worth=Decimal("500"))
-        self.chain.chain = ChainName.Polygon
-        self.chain.save(update_fields=["chain"])
+        self.chain.code = ChainCode.Polygon
+        self.chain.save(update_fields=["code"])
 
         RiskMarkingService.mark_invoice(invoice.pk)
 
@@ -667,8 +667,8 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         self.system_settings.misttrack_openapi_api_key = "openapi-secret"
         self.system_settings.save(update_fields=["misttrack_openapi_api_key"])
         # 切到 OpenAPI 也未映射的某条 EVM 链
-        self.chain.chain = ChainName.Scroll
-        self.chain.save(update_fields=["chain"])
+        self.chain.code = ChainCode.Scroll
+        self.chain.save(update_fields=["code"])
 
         RiskMarkingService.mark_invoice(invoice.pk)
 
@@ -760,7 +760,7 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
         deposit = self.make_deposit(worth=Decimal("500"))
         RiskMarkingService.write_cache(
             source=RiskSource.QUICKNODE_MISTTRACK,
-            chain=self.chain.chain,
+            chain=self.chain.code,
             address=self.transfer.from_address,
             result={
                 "risk_level": RiskLevel.MODERATE,

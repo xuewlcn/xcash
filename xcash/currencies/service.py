@@ -82,7 +82,7 @@ class CryptoService:
             .filter(crypto__active=True, chain__active=True)
         )
         if chain_codes is not None:
-            tokens = tokens.filter(chain__chain__in=chain_codes)
+            tokens = tokens.filter(chain__code__in=chain_codes)
 
         sanitized: dict[str, set[str]] = {}
         for token in tokens:
@@ -90,7 +90,7 @@ class CryptoService:
                 chain=token.chain,
                 crypto=token.crypto,
             ):
-                sanitized.setdefault(token.crypto.symbol, set()).add(token.chain.chain)
+                sanitized.setdefault(token.crypto.symbol, set()).add(token.chain.code)
 
         return sanitized
 
@@ -116,8 +116,8 @@ class CryptoService:
         if existing is not None:
             return existing, False
 
-        placeholder_key = f"{cls.PLACEHOLDER_PREFIX}:{chain.chain}:{address.lower()}"
-        placeholder_name = f"Pending {chain.chain} {address.lower()}"
+        placeholder_key = f"{cls.PLACEHOLDER_PREFIX}:{chain.code}:{address.lower()}"
+        placeholder_name = f"Pending {chain.code} {address.lower()}"
 
         crypto, _ = Crypto.objects.get_or_create(
             symbol=placeholder_key,

@@ -91,7 +91,7 @@ class TelegramAlertService:
                         "out_no": withdrawal.out_no,
                         "status": withdrawal.get_status_display(),
                         "crypto": withdrawal.crypto.symbol,
-                        "chain": withdrawal.chain.chain if withdrawal.chain else "-",
+                        "chain": withdrawal.chain.code if withdrawal.chain else "-",
                     }
                 ),
                 admin_url=reverse(

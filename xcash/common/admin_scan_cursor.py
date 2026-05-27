@@ -71,7 +71,7 @@ class SyncScanCursorToLatestActionMixin:
             except Exception as exc:  # noqa: BLE001
                 self.message_user(
                     request,
-                    f"{chain.chain} 获取最新区块失败，已跳过 {len(cursor_ids)} 个扫描游标：{exc}",
+                    f"{chain.code} 获取最新区块失败，已跳过 {len(cursor_ids)} 个扫描游标：{exc}",
                     level=messages.ERROR,
                 )
                 continue

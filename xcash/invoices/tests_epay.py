@@ -11,7 +11,7 @@ from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Chain
 from chains.models import Wallet
@@ -364,7 +364,7 @@ class EpaySubmitServiceTests(TestCase):
             coingecko_id="epay-submit-usdt",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -421,7 +421,7 @@ class EpaySubmitServiceTests(TestCase):
         self.assertEqual(invoice.notify_url, "https://merchant.example.com/notify")
         self.assertEqual(invoice.return_url, "https://merchant.example.com/return")
         self.assertEqual(invoice.methods, Invoice.available_methods(self.project))
-        self.assertEqual(invoice.methods[self.crypto.symbol], [self.chain.chain])
+        self.assertEqual(invoice.methods[self.crypto.symbol], [self.chain.code])
         self.assertEqual(epay_order.merchant, self.merchant)
         self.assertEqual(epay_order.trade_no, invoice.sys_no)
         self.assertEqual(epay_order.out_trade_no, invoice.out_no)

@@ -5,36 +5,32 @@ from dataclasses import dataclass
 from chains.models import Chain
 from chains.models import ChainType
 from evm.models import EvmScanCursor
-from evm.scanner.logs import EvmLogKindResult
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.logs import EvmLogScanResult
 from evm.scanner.rpc import EvmScannerRpcClient
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.watchers import load_watch_set
 
-RESCAN_MAX_BLOCK_SPAN = 64
+RECONCILE_MAX_BLOCK_SPAN = 64
 
 
 @dataclass(frozen=True)
-class EvmRescanResult:
-    """汇总一次重扫指定块的产出，供调用方观测命中情况。"""
+class EvmReconcileResult:
+    """汇总一次对账重扫的产出，供调用方观测命中情况。"""
 
     from_block: int
     to_block: int
-    observed_native: int
-    created_native: int
-    observed_erc20: int
-    created_erc20: int
+    created_transfers: int
 
 
 class EvmScannerService:
     """统一编排一条 EVM 链上的日志扫描流程。"""
 
     @staticmethod
-    def _iter_rescan_block_ranges(
+    def _iter_reconcile_block_ranges(
         block_numbers: set[int],
         *,
-        max_span: int = RESCAN_MAX_BLOCK_SPAN,
+        max_span: int = RECONCILE_MAX_BLOCK_SPAN,
     ):
         """把命中块拆成连续且限宽的扫描窗口，避免稀疏块拉成长区间。"""
         if max_span <= 0:
@@ -68,21 +64,20 @@ class EvmScannerService:
 
     @staticmethod
     def _empty_result(*, chain: Chain) -> EvmLogScanResult:
-        empty_kind = EvmLogKindResult(
+        """生成一次空扫描结果，用于扫描被跳过或失败时的占位返回。"""
+        return EvmLogScanResult(
             from_block=0,
             to_block=0,
             latest_block=chain.latest_block_number,
-            observed_logs=0,
+            raw_logs=[],
             created_transfers=0,
         )
-        return EvmLogScanResult(native=empty_kind, erc20=empty_kind)
 
     @staticmethod
     def scan_chain(*, chain: Chain) -> EvmLogScanResult:
+        """按链触发一次正向扫描，并吞掉 RPC 异常返回空结果。"""
         if chain.type != ChainType.EVM:
-            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.chain}")
-        if not EvmScannerService._is_enabled(chain=chain):
-            return EvmScannerService._empty_result(chain=chain)
+            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.name}")
 
         try:
             return EvmLogScanner.scan_chain(
@@ -93,56 +88,55 @@ class EvmScannerService:
             return EvmScannerService._empty_result(chain=chain)
 
     @classmethod
-    def rescan_blocks(
+    def reconcile_blocks(
         cls,
         *,
         chain: Chain,
         block_numbers: set[int],
-    ) -> EvmRescanResult:
-        """对指定块集合执行一次重扫，不推进任何游标。"""
+    ) -> EvmReconcileResult:
+        """对账：将外部指定的块号回放进外部入账扫描管线，不推进游标。
+
+        典型触发场景是需要对某些块做外部入账复扫。复用 EvmLogScanner.scan_range
+        做真值通路，确保 Transfer 落库、reorg 清理、observed_transfer 流转与
+        正常扫描完全一致。
+        """
         if chain.type != ChainType.EVM:
-            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.chain}")
+            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.code}")
         if not block_numbers:
-            return EvmRescanResult(
+            return EvmReconcileResult(
                 from_block=0,
                 to_block=-1,
-                observed_native=0,
-                created_native=0,
-                observed_erc20=0,
-                created_erc20=0,
+                created_transfers=0,
             )
 
         from_block = min(block_numbers)
         to_block = max(block_numbers)
+        if not cls._is_enabled(chain=chain):
+            return EvmReconcileResult(
+                from_block=from_block,
+                to_block=to_block,
+                created_transfers=0,
+            )
+
         rpc_client = EvmScannerRpcClient(chain=chain)
         watch_set = load_watch_set(chain=chain)
-        scanner_enabled = cls._is_enabled(chain=chain)
 
-        observed_native, created_native = 0, 0
-        observed_erc20, created_erc20 = 0, 0
+        created_transfers = 0
 
-        for range_from_block, range_to_block in cls._iter_rescan_block_ranges(
+        for range_from_block, range_to_block in cls._iter_reconcile_block_ranges(
             block_numbers
         ):
-            if not scanner_enabled:
-                continue
-            range_result = EvmLogScanner.scan_range_without_cursor(
+            range_result = EvmLogScanner.scan_range(
                 chain=chain,
                 rpc_client=rpc_client,
                 watch_set=watch_set,
                 from_block=range_from_block,
                 to_block=range_to_block,
             )
-            observed_native += range_result.native_observed
-            observed_erc20 += range_result.erc20_observed
-            created_native += range_result.native_created
-            created_erc20 += range_result.erc20_created
+            created_transfers += range_result.created_transfers
 
-        return EvmRescanResult(
+        return EvmReconcileResult(
             from_block=from_block,
             to_block=to_block,
-            observed_native=observed_native,
-            created_native=created_native,
-            observed_erc20=observed_erc20,
-            created_erc20=created_erc20,
+            created_transfers=created_transfers,
         )

@@ -18,7 +18,7 @@ from django.utils import timezone
 from web3 import Web3
 from web3.exceptions import ExtraDataLengthError
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Address
 from chains.models import AddressChainState
@@ -47,13 +47,15 @@ from chains.transfer_matching import raw_amount
 from chains.transfer_matching import transfer_matches
 from currencies.models import ChainToken
 from currencies.models import Crypto
+from evm.constants import DEFAULT_BASE_TRANSFER_GAS
+from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
 from evm.choices import TxKind
 
 
 class TransferMatchingTests(TestCase):
     def test_addresses_equal_normalizes_evm_addresses(self):
         chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -71,7 +73,7 @@ class TransferMatchingTests(TestCase):
             decimals=6,
         )
         chain = Chain.objects.create(
-            chain=ChainName.BSC,
+            code=ChainCode.BSC,
             rpc="",
             active=True,
         )
@@ -125,7 +127,7 @@ class TransferMatchingTests(TestCase):
             decimals=6,
         )
         chain = Chain.objects.create(
-            chain=ChainName.Polygon,
+            code=ChainCode.Polygon,
             rpc="",
             active=True,
         )
@@ -178,7 +180,7 @@ class TransferMatchingTests(TestCase):
 class ChainPoaRetryTests(TestCase):
     def setUp(self):
         self.chain = Chain.objects.create(
-            chain=ChainName.BSC,
+            code=ChainCode.BSC,
             rpc="",
             active=True,
         )
@@ -211,7 +213,7 @@ class TxTaskValidationTests(TestCase):
     def setUp(self):
         self.wallet = Wallet.objects.create()
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -252,7 +254,7 @@ class TxHashModelTests(TestCase):
     def setUp(self):
         self.wallet = Wallet.objects.create()
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -307,7 +309,7 @@ class TxHashModelTests(TestCase):
 
     def test_tx_hash_chain_must_match_tx_task_chain(self):
         other_chain = Chain.objects.create(
-            chain=ChainName.BSC,
+            code=ChainCode.BSC,
             rpc="",
             active=True,
         )
@@ -327,7 +329,7 @@ class TxTaskTxHashHistoryTests(TestCase):
     def setUp(self):
         self.wallet = Wallet.objects.create()
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -529,7 +531,7 @@ class AddressIdentityTests(TestCase):
 class AddressChainStateAcquireTests(TestCase):
     def setUp(self):
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -592,7 +594,7 @@ class TransferConfirmDispatchTests(TestCase):
             coingecko_id="ethereum-confirm-dispatch",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
             latest_block_number=100,
@@ -1354,7 +1356,7 @@ class UpdateLatestBlockTaskConfigTests(TestCase):
         from chains.tasks import update_the_latest_block
 
         chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="http://tron.invalid",
             active=True,
             latest_block_number=456,
@@ -1379,7 +1381,7 @@ class TransferServiceCreateObservedTests(TestCase):
             coingecko_id="ether-ot",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -1486,7 +1488,7 @@ class TxTaskTransitionTests(TestCase):
     def setUp(self):
         self.wallet = Wallet.objects.create()
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )
@@ -1668,7 +1670,7 @@ class BlockNumberUpdatedCompensationTests(TestCase):
             coingecko_id="ether-bn",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
             latest_block_number=200,
@@ -1759,10 +1761,8 @@ class BlockNumberUpdatedCompensationTests(TestCase):
 @pytest.mark.django_db
 def test_address_send_crypto_schedules_native_transfer_intent():
     chain = Chain.objects.create(
-        chain=ChainName.Ethereum,
+        code=ChainCode.Ethereum,
     )
-    chain.base_transfer_gas = 21_000
-    chain.erc20_transfer_gas = 60_000
     native = chain.native_coin
     address = Address.objects.create(
         wallet=Wallet.objects.create(),
@@ -1795,7 +1795,7 @@ def test_address_send_crypto_schedules_native_transfer_intent():
     assert intent.tx_kind == TxKind.NATIVE_TRANSFER
     assert intent.tx_type == TxTaskType.Withdrawal
     assert intent.value == 1_500_000_000_000_000_000
-    assert intent.gas == chain.base_transfer_gas
+    assert intent.gas == DEFAULT_BASE_TRANSFER_GAS
 
 
 @pytest.mark.django_db
@@ -1807,10 +1807,8 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
         decimals=6,
     )
     chain = Chain.objects.create(
-        chain=ChainName.Ethereum,
+        code=ChainCode.Ethereum,
     )
-    chain.base_transfer_gas = 21_000
-    chain.erc20_transfer_gas = 65_000
     ChainToken.objects.create(
         chain=chain,
         crypto=token,
@@ -1857,7 +1855,7 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
         "0x00000000000000000000000000000000001212c0"
     )
     assert intent.tx_type == TxTaskType.Withdrawal
-    assert intent.gas == chain.erc20_transfer_gas
+    assert intent.gas == DEFAULT_ERC20_TRANSFER_GAS
 
 
 class ProcessTransferAutoretryTests(SimpleTestCase):

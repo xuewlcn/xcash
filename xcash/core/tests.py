@@ -18,7 +18,7 @@ from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import AddressUsage
 from chains.models import TxTask
@@ -402,7 +402,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         # 节点查不到 hash 时，Transfer 被 drop，提币回退到 PENDING 等待重新匹配。
         self._require_anvil()
         chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc=self.EVM_RPC,
             active=True,
         )

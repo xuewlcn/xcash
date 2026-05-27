@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Chain
 from chains.test_signer import build_test_remote_signer_backend
@@ -64,7 +64,7 @@ class ProjectAdminTests(TestCase):
             coingecko_id="ethereum-project",
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="http://127.0.0.1:8545",
             active=True,
         )
@@ -212,7 +212,7 @@ class ProjectAdminTests(TestCase):
         self,
     ):
         second_chain = Chain.objects.create(
-            chain=ChainName.BSC,
+            code=ChainCode.BSC,
             rpc="http://127.0.0.1:8545",
             active=True,
         )

@@ -20,7 +20,7 @@ from tron.client import TronHttpClient
 from tron.codec import TronAddressCodec
 from tron.models import TronWatchCursor
 
-from chains.constants import ChainName
+from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Chain
 from chains.models import Transfer
@@ -334,7 +334,7 @@ class TronWatchCursorTests(TestCase):
             decimals=6,
         )
         chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             active=False,
         )
@@ -360,7 +360,7 @@ class TronWatchCursorTests(TestCase):
         """Out of scope, follow-up: Chain.save 不存在 RPC 清空 / API Key trim 逻辑。
         保存后 rpc 与 tron_api_key 保持原文不变，未来可按需引入规范化。"""
         chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             tron_api_key="  tron-key  ",
         )
@@ -371,7 +371,7 @@ class TronWatchCursorTests(TestCase):
 
     def test_cursor_is_unique_per_chain_and_contract_address(self):
         chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             active=True,
         )
@@ -390,7 +390,7 @@ class TronWatchCursorTests(TestCase):
 class TronWatchCursorAdminTests(TestCase):
     def setUp(self):
         self.chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             active=True,
             latest_block_number=66,
@@ -475,7 +475,7 @@ class TronUsdtPaymentScannerTests(TestCase):
             decimals=6,
         )
         self.chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             active=True,
         )
@@ -1229,7 +1229,7 @@ class TronUsdtPaymentScannerTests(TestCase):
             title="Tron Invoice",
             currency=self.usdt.symbol,
             amount=Decimal("1"),
-            methods={self.usdt.symbol: [self.chain.chain]},
+            methods={self.usdt.symbol: [self.chain.code]},
             expires_at=timezone.now() + timedelta(minutes=10),
         )
         invoice.select_method(self.usdt, self.chain)
@@ -1278,7 +1278,7 @@ class TronTaskTests(TestCase):
         from tron.tasks import scan_tron_chain
 
         tron_chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             tron_api_key="tron-key",
             active=True,
@@ -1294,7 +1294,7 @@ class TronTaskTests(TestCase):
 
         logger_info_mock.assert_called_once_with(
             "Tron USDT 扫描完成",
-            chain=tron_chain.chain,
+            chain=tron_chain.code,
             filter_addresses=3,
             blocks_scanned=7,
             events_seen=11,
@@ -1309,7 +1309,7 @@ class TronTaskTests(TestCase):
         from tron.tasks import scan_tron_chain
 
         tron_chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             active=True,
         )
@@ -1326,13 +1326,13 @@ class TronTaskTests(TestCase):
         from tron.tasks import scan_active_tron_chains
 
         tron_chain = Chain.objects.create(
-            chain=ChainName.Tron,
+            code=ChainCode.Tron,
             rpc="https://api.trongrid.io",
             tron_api_key="tron-key",
             active=True,
         )
         Chain.objects.create(
-            chain=ChainName.Ethereum,
+            code=ChainCode.Ethereum,
             rpc="",
             active=True,
         )

@@ -57,7 +57,7 @@ class Crypto(models.Model):
         # 通过 ChainToken 统一处理原生币和合约币，不再区分两种路径
         methods = {}
         for crypto in cls.objects.prefetch_related("chain_tokens__chain"):
-            chain_codes = [ct.chain.chain for ct in crypto.chain_tokens.all()]
+            chain_codes = [ct.chain.code for ct in crypto.chain_tokens.all()]
             if chain_codes:
                 methods[crypto.symbol] = chain_codes
         return methods
@@ -163,7 +163,7 @@ class ChainToken(models.Model):
         verbose_name_plural = _("代币部署")
 
     def __str__(self):
-        return f"{self.crypto.symbol} @ {self.chain.chain}"
+        return f"{self.crypto.symbol} @ {self.chain.code}"
 
 
 class Fiat(models.Model):

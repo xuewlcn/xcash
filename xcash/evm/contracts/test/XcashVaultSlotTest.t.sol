@@ -10,7 +10,7 @@ import {MockMalformedReturnERC20} from "./helpers/MockMalformedReturnERC20.sol";
 import {MockUsdtLike} from "./helpers/MockUsdtLike.sol";
 
 contract XcashVaultSlotTest is Test {
-    event XcashNativeReceived(address indexed payer, uint256 amount);
+    event XcashNativeReceived(address indexed from, uint256 amount);
     event XcashCollected(address indexed token, uint256 amount);
 
     address payable internal vault = payable(address(0xBEEF));

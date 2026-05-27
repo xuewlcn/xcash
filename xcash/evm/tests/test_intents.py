@@ -11,12 +11,13 @@ from web3 import Web3
 import evm.intents as intents_module
 from chains.models import TxTaskType
 from evm.choices import TxKind
+from evm.constants import DEFAULT_BASE_TRANSFER_GAS
+from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
 from evm.intents import EvmTxIntent
 from evm.intents import _normalize_hex_calldata
 from evm.intents import build_contract_call_intent
 from evm.intents import build_erc20_transfer_intent
 from evm.intents import build_native_transfer_intent
-from evm.intents import get_preflight_buffer_multiplier
 
 
 @pytest.fixture
@@ -78,11 +79,6 @@ def test_normalize_rejects_non_hex():
         _normalize_hex_calldata("zzzz")
 
 
-def test_preflight_buffer_multiplier_for_native_and_call():
-    assert get_preflight_buffer_multiplier(TxKind.NATIVE_TRANSFER) > 0
-    assert get_preflight_buffer_multiplier(TxKind.CONTRACT_CALL) > 0
-
-
 def _fake_crypto(symbol="USDT", decimals=6, token_address=None):
     class FakeCrypto:
         def __init__(self):
@@ -103,8 +99,6 @@ def _fake_chain(native_coin=None):
         def __init__(self):
             self.code = "ETH"
             self.native_coin = native_coin or _fake_crypto(symbol="ETH", decimals=18)
-            self.base_transfer_gas = 21000
-            self.erc20_transfer_gas = 65000
 
     return FakeChain()
 
@@ -131,7 +125,7 @@ def test_build_native_transfer_intent_sets_basic_fields():
     assert intent.to == Web3.to_checksum_address(recipient)
     assert intent.value == value
     assert intent.data == ""
-    assert intent.gas == chain.base_transfer_gas
+    assert intent.gas == DEFAULT_BASE_TRANSFER_GAS
 
 
 def test_build_native_transfer_intent_rejects_negative_value():
@@ -173,7 +167,7 @@ def test_build_erc20_transfer_intent_sets_basic_fields():
         recipient
     )
     assert decoded_value_raw == value_raw
-    assert intent.gas == chain.erc20_transfer_gas
+    assert intent.gas == DEFAULT_ERC20_TRANSFER_GAS
 
 
 def test_build_erc20_transfer_intent_rejects_negative_value_raw():

@@ -200,7 +200,7 @@ def build_dashboard_metrics() -> dict:
             crypto__isnull=False,
             chain__isnull=False,
         )
-        .values("crypto__symbol", "chain__chain")
+        .values("crypto__symbol", "chain__code")
         .annotate(
             order_count=Count("id"),
             gmv=Coalesce(Sum("worth"), ZERO_DECIMAL),
