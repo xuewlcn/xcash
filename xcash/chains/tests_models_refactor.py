@@ -1,4 +1,5 @@
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
 from chains.constants import ChainName
@@ -48,5 +49,5 @@ def test_chain_native_coin_get_or_create():
 @pytest.mark.django_db
 def test_chain_invalid_choice_rejected():
     chain = Chain(chain="not-a-real-chain")
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         chain.full_clean()

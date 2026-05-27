@@ -82,6 +82,10 @@ class Chain(models.Model):
 
     @property
     def name(self) -> str:
+        # admin add 表单与异常路径会对未设置 chain 的实例 stringify，
+        # 直接 ChainName("") 会抛 ValueError 掩盖真正的报错原因。
+        if not self.chain:
+            return "Chain(unsaved)"
         return ChainName(self.chain).label
 
     @property
