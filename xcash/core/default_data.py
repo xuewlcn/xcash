@@ -85,7 +85,6 @@ PRODUCTION_MAINNET_TOKEN_MAPPINGS = (
     {"chain_name": ChainCode.Scroll, "crypto_symbol": "USDT", "address": "0xf55BEC9cafDbE8730f096Aa55dad6D22d44099Df", "decimals": 6},
     # ── Tron ──
     {"chain_name": ChainCode.Tron, "crypto_symbol": "USDT", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "decimals": 6},
-    {"chain_name": ChainCode.Tron, "crypto_symbol": "USDC", "address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", "decimals": 6},
 )
 
 
@@ -94,10 +93,7 @@ def ensure_base_currencies(*, using: str = "default", stdout=None) -> None:
     fiat_manager = Fiat.objects.using(using)
     crypto_manager = Crypto.objects.using(using)
 
-    for fiat_code in (
-        "USD", "CNY", "EUR", "JPY", "GBP", "KRW", "HKD",
-        "SGD", "CHF", "AUD", "CAD", "INR", "RUB", "AED", "BRL",
-    ):
+    for fiat_code in ("USD", "CNY", "EUR", "JPY", "HKD"):
         fiat_manager.get_or_create(code=fiat_code)
 
     crypto_manager.get_or_create(
