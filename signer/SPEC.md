@@ -32,6 +32,7 @@ Go 版是对原 Django 版的 **drop-in 替换**：HTTP 边界（路径 / 请求
 - `chain_type` ∈ {`evm`}
 - `tx_dict` 必含：`chainId,nonce,from,to,value,data,gas,gasPrice`；`from`/`to` 校验和地址；
   `data` 为 `0x` 开头十六进制且长度 ≤ `2 + 64*20`
+- 请求体大小 ≤ 64 KiB（最外层闸，先于鉴权读取；超限返回 1011/413，不受 DEBUG 影响）
 
 ## 签名策略（/v1/sign/evm，必须复刻）
 
@@ -51,6 +52,7 @@ Go 版是对原 Django 版的 **drop-in 替换**：HTTP 边界（路径 / 请求
 | 1003 | 签名错误 | 403 |
 | 1009 | 请求重复 | 400 |
 | 1010 | 请求过于频繁 | 429 |
+| 1011 | 请求体过大 | 413 |
 
 ## 限流（DEBUG 下跳过）
 

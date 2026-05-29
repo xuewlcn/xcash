@@ -59,9 +59,10 @@ func (s *Server) Router() *gin.Engine {
 	// healthz 免鉴权、免限流、免审计。
 	r.GET("/healthz", s.handleHealthz)
 
-	// 受保护端点：审计（最外层，读 body + 落审计）→ 限流 → 鉴权。
+	// 受保护端点：体积上限（最外层，先于任何 body 读取）→ 审计（读 body + 落审计）
+	// → 限流 → 鉴权。
 	protected := r.Group("")
-	protected.Use(s.auditMiddleware(), s.rateLimitMiddleware(), s.authMiddleware())
+	protected.Use(s.bodyLimitMiddleware(), s.auditMiddleware(), s.rateLimitMiddleware(), s.authMiddleware())
 	protected.GET("/internal/admin-summary", s.handleAdminSummary)
 	protected.POST("/v1/wallets/create", s.handleCreateWallet)
 	protected.POST("/v1/wallets/derive-address", s.handleDeriveAddress)

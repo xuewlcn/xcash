@@ -39,10 +39,15 @@ func main() {
 		log.Fatalf("应用 schema 失败: %v", err)
 	}
 
+	// 超时全部显式设置：signer 是单实例、SQLite 单写连接，慢速读/写会长期占用
+	// 连接与 goroutine。签名是亚秒级操作，给到 15s 已极宽裕，足以挡住 slow-loris。
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           httpapi.New(cfg, st).Router(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// 优雅停机：收到 SIGINT/SIGTERM 后停止接收新请求并在超时内排空。

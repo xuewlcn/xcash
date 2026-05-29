@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,11 @@ const (
 	ctxKeyRequestID = "request_id"
 	// 上下文键：abortError 写入错误码，供审计中间件判定 failed / rate_limited。
 	ctxKeyErrorCode = "error_code"
+
+	// 请求体硬上限。signer 的最大请求体是带 tx_dict 的签名请求（calldata ≤ maxCalldataLen，
+	// 整体仅几 KB），64 KiB 留足冗余。注册在最外层，使「读 body」这一步在鉴权/限流前就有界，
+	// 杜绝未鉴权方用超大 body 撑爆内存。
+	maxRequestBodyBytes = 64 << 10
 )
 
 // signaturePayload 构造 HMAC 签名材料：METHOD\npath\nrequest_id\n<原始 body>。
@@ -34,6 +40,21 @@ func signaturePayload(method, path, requestID string, body []byte) []byte {
 	b.WriteByte('\n')
 	b.Write(body)
 	return b.Bytes()
+}
+
+// bodyLimitMiddleware 限制请求体大小，必须注册为受保护组最外层（在 audit 之前），
+// 因为 auditMiddleware 会先 GetRawData 把整个 body 读进内存。两道闸：
+//   - 诚实客户端会带 Content-Length，超限直接 413，连读都不读；
+//   - 分块/谎报长度的请求由 MaxBytesReader 兜底，把后续任何 body 读取截断在上限内。
+func (s *Server) bodyLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.ContentLength > maxRequestBodyBytes {
+			abortError(c, errRequestTooLarge, "")
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
+		c.Next()
+	}
 }
 
 // rateLimitMiddleware 按 (endpoint, 来源 IP) 做固定窗口限流，DEBUG 下跳过。

@@ -151,3 +151,19 @@ func TestRateLimitExceeded(t *testing.T) {
 		t.Fatalf("超限应 429/1010，实际 %d/%s", rec.Code, codeOf(t, rec))
 	}
 }
+
+// TestBodyLimitRejectsOversize 验证体积闸接在最外层：超大请求体在鉴权之前就被 413 拦下，
+// 故意不带合法签名也能命中——证明读 body 这一步先于鉴权/限流被 bound。
+func TestBodyLimitRejectsOversize(t *testing.T) {
+	engine := newMigratedServer(t).Router()
+
+	big := bytes.Repeat([]byte("a"), maxRequestBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/wallets/create", bytes.NewReader(big))
+	req.Header.Set(headerRequestID, "oversize")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge || codeOf(t, rec) != "1011" {
+		t.Fatalf("超大请求体应 413/1011，实际 %d/%s", rec.Code, codeOf(t, rec))
+	}
+}

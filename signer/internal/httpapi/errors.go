@@ -16,6 +16,9 @@ var (
 	errAccessDeny = apiError{code: "1005", message: "无访问权限", status: 403}
 	errReplay     = apiError{code: "1009", message: "请求重复", status: 400}
 	errRateLimit  = apiError{code: "1010", message: "请求过于频繁", status: 429}
+	// errRequestTooLarge 在鉴权前拦截超大请求体，防止内存耗尽 DoS。客户端对任何非 2xx
+	// 都按失败处理，故新增该码不破坏 drop-in 契约。
+	errRequestTooLarge = apiError{code: "1011", message: "请求体过大", status: 413}
 )
 
 // errInternal 用于派生/数据库等内部故障（原 Django 版会 500）。不在主应用客户端的
