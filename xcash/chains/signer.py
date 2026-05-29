@@ -106,6 +106,7 @@ class SignerBackend:
     ) -> EvmSignedPayload:
         raise NotImplementedError
 
+
 class RemoteSignerBackend(SignerBackend):
     def __init__(self, *, base_url: str, timeout: float, shared_secret: str):
         self.base_url = base_url.rstrip("/")
@@ -205,7 +206,7 @@ class RemoteSignerBackend(SignerBackend):
         response_wallet_id = payload.get("wallet_id")
         if not response_wallet_id:
             raise SignerServiceError("远端 signer 返回缺少 wallet_id")
-        response_wallet_id = int(response_wallet_id)
+        response_wallet_id = int(response_wallet_id)  # noqa
         if response_wallet_id != wallet_id:
             raise SignerServiceError("远端 signer 返回 wallet_id 不匹配")
         return response_wallet_id

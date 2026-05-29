@@ -59,8 +59,8 @@ def confirm_transfer(self, pk):
 
     if isinstance(raw_result, Exception):
         # 指数退避：8s → 16s → 32s → 64s → 128s，避免节点抖动时密集重试。
-        countdown = 8 * (2**self.request.retries)
-        raise self.retry(exc=raw_result, countdown=countdown)
+        countdown = 8 * (2**self.request.retries)  # noqa
+        raise self.retry(exc=raw_result, countdown=countdown)  # noqa
     result_meta = raw_result if isinstance(raw_result, TxCheckResult) else None
     result = result_meta.status if result_meta is not None else raw_result
     if result == TxCheckStatus.SUCCEEDED:
@@ -71,11 +71,11 @@ def confirm_transfer(self, pk):
             return
         transfer.confirm()
     elif result == TxCheckStatus.MISSING:
-        if self.request.retries >= self.max_retries:
+        if self.request.retries >= self.max_retries:  # noqa
             transfer.drop()
             return
-        countdown = 8 * (2**self.request.retries)
-        raise self.retry(
+        countdown = 8 * (2**self.request.retries)  # noqa
+        raise self.retry(  # noqa
             exc=RuntimeError(f"交易 receipt 暂不可见: {transfer.hash}"),
             countdown=countdown,
         )

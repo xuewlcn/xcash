@@ -85,7 +85,7 @@ class DepositAdmin(ReadOnlyModelAdmin):
                 )
             except DepositStatusError:
                 skipped_count += 1
-            except Exception:
+            except Exception:  # noqa
                 failed_count += 1
                 logger.exception("后台重调度 VaultSlot 归集失败", deposit_id=deposit.pk)
             else:

@@ -6,10 +6,7 @@ from chains.models import ChainType
 class ChainProductCapabilityService:
     """集中维护链类型在各产品入口中的能力边界。"""
 
-    INVOICE_RECIPIENT_CHAIN_TYPES = frozenset(
-        {ChainType.EVM, ChainType.TRON}
-    )
-    COLLECTION_RECIPIENT_CHAIN_TYPES = frozenset({ChainType.EVM})
+    INVOICE_RECIPIENT_CHAIN_TYPES = frozenset({ChainType.EVM, ChainType.TRON})
     DEPOSIT_CHAIN_TYPES = frozenset({ChainType.EVM})
     WITHDRAWAL_CHAIN_TYPES = frozenset({ChainType.EVM})
 
@@ -32,14 +29,12 @@ class ChainProductCapabilityService:
 
     @classmethod
     def supports_deposit_address(cls, *, chain, crypto) -> bool:
-        return (
-            chain.type in cls.DEPOSIT_CHAIN_TYPES
-            and crypto.support_this_chain(chain)
+        return chain.type in cls.DEPOSIT_CHAIN_TYPES and crypto.support_this_chain(
+            chain
         )
 
     @classmethod
     def supports_withdrawal(cls, *, chain, crypto) -> bool:
-        return (
-            chain.type in cls.WITHDRAWAL_CHAIN_TYPES
-            and crypto.support_this_chain(chain)
+        return chain.type in cls.WITHDRAWAL_CHAIN_TYPES and crypto.support_this_chain(
+            chain
         )

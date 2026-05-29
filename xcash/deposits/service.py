@@ -54,7 +54,7 @@ class DepositService:
     def refresh_worth(deposit: Deposit) -> None:
         try:
             worth = deposit.transfer.crypto.usd_amount(deposit.transfer.amount)
-        except Exception:
+        except Exception:  # noqa
             logger.exception(
                 "calculate_worth 失败，worth 保持默认值 0", deposit_id=deposit.pk
             )
@@ -75,7 +75,7 @@ class DepositService:
             WebhookService.create_event(
                 project=deposit.customer.project, payload=payload
             )
-        except Exception:
+        except Exception:  # noqa
             logger.exception("创建充币 webhook 通知失败", deposit_id=deposit.pk)
 
     @classmethod
@@ -139,7 +139,7 @@ class DepositService:
         if cls._transition_status(deposit, DepositStatus.COMPLETED):
             try:
                 cls.schedule_collect_for_completed_deposit(deposit)
-            except Exception:
+            except Exception:  # noqa
                 logger.exception("调度 VaultSlot 归集任务失败", deposit_id=deposit.pk)
             cls.notify_completed(deposit)
             send_internal_callback(

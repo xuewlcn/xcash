@@ -85,7 +85,7 @@ class InvoiceCreateSerializer(Serializer):
     notify_url = serializers.URLField(required=False)
     return_url = serializers.URLField(required=False)
     billing_mode = serializers.ChoiceField(
-        choices=InvoiceBillingMode.choices,
+        choices=InvoiceBillingMode,
         default=InvoiceBillingMode.DIFFER,
         required=False,
     )
@@ -191,9 +191,7 @@ class InvoiceCreateSerializer(Serializer):
         methods = attrs.get("methods") or {}
 
         chain_codes = {
-            chain_code
-            for chain_codes in methods.values()
-            for chain_code in chain_codes
+            chain_code for chain_codes in methods.values() for chain_code in chain_codes
         }
         chains = list(Chain.objects.filter(code__in=chain_codes, active=True))
         if not chains:
@@ -220,9 +218,7 @@ class InvoiceCreateSerializer(Serializer):
         methods = attrs.get("methods") or {}
 
         chain_codes = {
-            chain_code
-            for chain_codes in methods.values()
-            for chain_code in chain_codes
+            chain_code for chain_codes in methods.values() for chain_code in chain_codes
         }
         chains = list(Chain.objects.filter(code__in=chain_codes, active=True))
         if not chains:
@@ -235,7 +231,6 @@ class InvoiceCreateSerializer(Serializer):
             for chain_code in chain_codes
         ):
             raise APIError(ErrorCode.DIFFER_BILLING_TRON_ONLY)
-
 
 
 class InvoicePublicSerializer(serializers.ModelSerializer):

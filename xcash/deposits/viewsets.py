@@ -53,7 +53,7 @@ class DepositViewSet(viewsets.GenericViewSet):
 
         uid = request.GET.get("uid")
         chain_code = request.GET.get("chain")
-        crypto_symbol = request.GET.get("crypto")
+        crypto_symbol = request.GET.get("crypto", "")
 
         if not uid or not _UID_PATTERN.match(uid):
             raise APIError(ErrorCode.INVALID_UID)

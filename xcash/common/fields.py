@@ -35,7 +35,7 @@ class HashField(models.CharField):
     def deconstruct(self):
         name, path, args, kwargs = super().deconstruct()
         # 默认 unique=True；当业务显式覆盖为 False 时，必须把该状态写回迁移，避免反复漂移。
-        if self.unique is False:
+        if not self.unique:
             kwargs["unique"] = False
         return name, path, args, kwargs
 

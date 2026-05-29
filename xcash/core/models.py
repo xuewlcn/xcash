@@ -91,7 +91,9 @@ class SystemSettings(models.Model):
         _("VaultSlot 归集延迟(分钟)"),
         default=360,
         validators=[MinValueValidator(1)],
-        help_text=_("ERC20 到账确认后等待该时间再聚合归集，期间同槽位同币种不重复创建归集计划。"),
+        help_text=_(
+            "ERC20 到账确认后等待该时间再聚合归集，期间同槽位同币种不重复创建归集计划。"
+        ),
     )
     risk_marking_enabled = models.BooleanField(
         _("开启风险标记"),
@@ -156,8 +158,8 @@ class SystemSettings(models.Model):
         verbose_name = _("系统运行参数")
         verbose_name_plural = verbose_name
 
-    def __str__(self) -> str:
-        return str(_("系统运行参数"))
+    def __str__(self):
+        return _("系统运行参数")
 
     def save(self, *args, **kwargs):
         # 强制收口为单例记录，避免后台误建第二份配置导致读取口径分叉。
@@ -196,8 +198,8 @@ class SystemWallet(models.Model):
         verbose_name = _("系统级热钱包")
         verbose_name_plural = verbose_name
 
-    def __str__(self) -> str:
-        return str(_("系统级热钱包"))
+    def __str__(self):
+        return _("系统级热钱包")
 
     def save(self, *args, **kwargs):
         # 强制收口为单例记录，避免系统级热钱包入口分叉。
@@ -221,7 +223,9 @@ class SystemWallet(models.Model):
                 try:
                     get_signer_backend().create_wallet(wallet_id=wallet.pk)
                 except SignerServiceError as exc:
-                    raise RuntimeError("signer 服务不可用，无法创建系统级热钱包") from exc
+                    raise RuntimeError(
+                        "signer 服务不可用，无法创建系统级热钱包"
+                    ) from exc
                 return system_wallet
         except IntegrityError:
             return cls.objects.select_related("wallet").get(singleton_key=1)

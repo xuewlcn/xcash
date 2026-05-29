@@ -41,7 +41,7 @@ class WebhookEvent(models.Model):
 
     status = models.CharField(
         _("状态"),
-        choices=Status.choices,
+        choices=Status,
         default=Status.PENDING,
     )
     schedule_locked_until = models.DateTimeField(

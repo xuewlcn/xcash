@@ -152,11 +152,11 @@ class Project(models.Model):
         # 错误项采用统一的"短名词 + 状态"格式，便于前端横排拼接（如"通知地址未配置、差额账单收款地址未配置"）
         errors: list[str] = []
         if not self.ip_white_list:
-            errors.append(_("IP 白名单未配置"))
+            errors.append(_("IP 白名单未配置"))  # noqa
         if not self.webhook:
-            errors.append(_("通知地址未配置"))
+            errors.append(_("通知地址未配置"))  # noqa
         if not DifferRecipientAddress.objects.filter(project=self).exists():
-            errors.append(_("差额账单收款地址未配置"))
+            errors.append(_("差额账单收款地址未配置"))  # noqa
         return (not errors), errors
 
     def recipients(self, chain: Chain):

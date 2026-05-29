@@ -98,9 +98,9 @@ def _deliver_internal_callback(
             appid=appid,
             sys_no=sys_no,
             error=str(exc),
-            retry=self.request.retries,
+            retry=self.request.retries,  # noqa
         )
         # DEBUG 环境不做指数退避重试，只通知一次
         if settings.DEBUG:
             return
-        self.retry(countdown=_retry_countdown(self.request.retries), exc=exc)
+        self.retry(countdown=_retry_countdown(self.request.retries), exc=exc)  # noqa

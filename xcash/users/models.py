@@ -1,7 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from sequences import get_next_value
+from sequences import get_next_value  # noqa
 
 from users.managers import UserManager
 
@@ -109,8 +109,8 @@ class AdminAccessLog(models.Model):
     )
     ip = models.GenericIPAddressField(_("IP"), null=True, blank=True)
     user_agent = models.TextField(_("User-Agent"), blank=True, default="")
-    action = models.CharField(_("动作"), choices=Action.choices, max_length=32)
-    result = models.CharField(_("结果"), choices=Result.choices, max_length=16)
+    action = models.CharField(_("动作"), choices=Action, max_length=32)
+    result = models.CharField(_("结果"), choices=Result, max_length=16)
     reason = models.TextField(_("原因"), blank=True, default="")
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
 
