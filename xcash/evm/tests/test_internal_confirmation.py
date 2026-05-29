@@ -83,13 +83,12 @@ class EvmInternalTaskConfirmationTests(TestCase):
             "0x00000000000000000000000000000000000000c3"
         )
         value_raw = 12_340_000
-        encoded_args = (
-            recipient.lower().replace("0x", "").rjust(64, "0")
-            + hex(value_raw)[2:].rjust(64, "0")
-        )
+        encoded_args = recipient.lower().replace("0x", "").rjust(64, "0") + hex(
+            value_raw
+        )[2:].rjust(64, "0")
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
@@ -103,7 +102,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         )
         evm_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000c1"),
@@ -230,7 +229,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
 
         with patch.object(
             EvmTaskPoller,
-            "_process_succeeded_receipt",
+            "process_succeeded_receipt",
         ) as process_mock:
             EvmTaskPoller.poll_chain(chain=self.chain)
 
@@ -275,7 +274,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self,
         chain_w3_mock,
     ):
-        """超时后查到 receipt status=1，协调器调用 _process_succeeded_receipt 收口内部交易。"""
+        """超时后查到 receipt status=1，协调器调用 process_succeeded_receipt 收口内部交易。"""
         from evm.poller import EvmTaskPoller
 
         tx_hash = "0x" + "b" * 64
@@ -292,7 +291,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
 
         with patch.object(
             EvmTaskPoller,
-            "_process_succeeded_receipt",
+            "process_succeeded_receipt",
         ) as process_mock:
             EvmTaskPoller.poll_chain(chain=self.chain)
             process_mock.assert_called_once()
@@ -376,7 +375,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
 
         with patch.object(
             EvmTaskPoller,
-            "_process_succeeded_receipt",
+            "process_succeeded_receipt",
         ) as process_mock:
             EvmTaskPoller.poll_chain(chain=self.chain)
             process_mock.assert_called_once()

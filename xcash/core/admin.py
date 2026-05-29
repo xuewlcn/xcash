@@ -55,6 +55,10 @@ class SystemSettingsAdmin(ModelAdmin):
             },
         ),
         (
+            "VaultSlot",
+            {"fields": ("vault_slot_collect_delay_minutes",)},
+        ),
+        (
             "风控系统",
             {
                 "fields": (

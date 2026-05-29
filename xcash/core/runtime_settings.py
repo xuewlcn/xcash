@@ -104,6 +104,13 @@ def get_webhook_event_timeout() -> timedelta:
     return timedelta(minutes=15)
 
 
+def get_vault_slot_collect_delay() -> timedelta:
+    system_settings = get_system_settings()
+    if system_settings is not None:
+        return timedelta(minutes=system_settings.vault_slot_collect_delay_minutes)
+    return timedelta(hours=6)
+
+
 def get_risk_marking_enabled() -> bool:
     system_settings = get_system_settings()
     if system_settings is not None:

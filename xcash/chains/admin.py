@@ -173,7 +173,7 @@ class TxTaskAdmin(ReadOnlyModelAdmin):
     # TxTask 是跨链统一锚点；后台只做观察与排障，禁止人工修改，避免写入非法的 status 状态。
     ordering = ("-created_at",)
     list_display = (
-        "display_address",
+        "display_sender",
         "display_chain",
         "display_tx_type",
         "display_tx_hash",
@@ -181,12 +181,12 @@ class TxTaskAdmin(ReadOnlyModelAdmin):
         "created_at",
     )
     list_filter = ("status", "tx_type", "chain")
-    list_select_related = ("address", "chain")
-    search_fields = ("tx_hash", "address__address")
+    list_select_related = ("sender", "chain")
+    search_fields = ("tx_hash", "sender__address")
 
-    @admin.display(ordering="address__address", description=_("地址"))
-    def display_address(self, obj: TxTask):
-        return obj.address
+    @admin.display(ordering="sender__address", description=_("发送地址"))
+    def display_sender(self, obj: TxTask):
+        return obj.sender
 
     @admin.display(ordering="chain__code", description=_("网络"))
     def display_chain(self, obj: TxTask):

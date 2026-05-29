@@ -14,7 +14,6 @@ from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from web3 import Web3
-from web3.exceptions import ExtraDataLengthError
 from web3.middleware import ExtraDataToPOAMiddleware
 
 from chains.constants import CHAIN_SPECS
@@ -43,6 +42,7 @@ class Chain(models.Model):
     )
     type = models.CharField(
         _("类型"),
+        choices=ChainType,
         max_length=16,
         editable=False,
         help_text=_("由 code 常量自动决定，不可手动修改。"),
@@ -51,13 +51,18 @@ class Chain(models.Model):
         default=0, verbose_name=_("最新区块")
     )
     active = models.BooleanField(default=False, verbose_name=_("启用"))
+
+    # For EVM
     evm_log_max_block_range = models.PositiveIntegerField(
         _("EVM 单次日志请求最大区块数"),
         default=10,
         help_text=_("EVM 扫描器单次 eth_getLogs 请求允许覆盖的最大区块数。"),
     )
     rpc = models.CharField(_("RPC"), blank=True, default="")
+
+    # For Tron
     tron_api_key = models.CharField(_("Tron API Key"), blank=True, default="")
+
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
 
     class Meta:
@@ -196,28 +201,6 @@ class Chain(models.Model):
             w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         return w3
 
-    def get_block_with_poa_retry(
-        self,
-        block_identifier: int | str,
-        *,
-        full_transactions: bool = False,
-    ):
-        """读取区块时遇到 POA extraData 校验错误，用 force_poa 重建 w3 重试一次。
-
-        常量层已把 BSC/Polygon 标 POA，正常路径不会触发兜底；
-        若新接入链未及时打 POA 标记，这里仅做即时降级，不再回写 DB。
-        """
-        try:
-            return self.w3.eth.get_block(
-                block_identifier, full_transactions=full_transactions
-            )
-        except ExtraDataLengthError:
-            retry_w3 = self._build_w3(force_poa=True)
-            self.__dict__["w3"] = retry_w3
-            return retry_w3.eth.get_block(
-                block_identifier, full_transactions=full_transactions
-            )
-
     @property
     def adapter(self) -> AdapterInterface:  # noqa: F821
         from chains.adapters import AdapterFactory  # noqa: PLC0415
@@ -250,7 +233,6 @@ class AddressChainState(models.Model):
         verbose_name=_("链"),
     )
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
-    updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
 
     class Meta:
         constraints = [
@@ -263,7 +245,7 @@ class AddressChainState(models.Model):
         verbose_name_plural = verbose_name
 
     def __str__(self) -> str:
-        return f"{self.address_id}:{self.chain_id}"
+        return f"{self.address.address}:{self.chain.code}"
 
     @classmethod
     def acquire_for_update(
@@ -361,7 +343,7 @@ class Wallet(UndeletableModel):
                 f"signer 服务不可用，无法为钱包 {self.pk} 派生地址"
             ) from exc
 
-        created = False
+        created = False  # noqa
         try:
             addr_obj, created = Address.objects.get_or_create(
                 wallet=self,
@@ -397,7 +379,7 @@ class Wallet(UndeletableModel):
 
         # 地址身份一旦确定，bip44_account 和 address 都必须与 HD 推导结果一致，否则就是脏数据。
         if (
-            addr_obj.bip44_account != bip44_account
+            addr_obj.bip44_account != bip44_account  # noqa
             or addr_obj.address != expected_address
         ):
             raise RuntimeError(
@@ -463,7 +445,7 @@ class Address(UndeletableModel):
             value_raw = int(amount * Decimal(10**decimals))
             if crypto == chain.native_coin:
                 intent = build_native_transfer_intent(
-                    address=self,
+                    sender=self,
                     chain=chain,
                     to=to,
                     value=value_raw,
@@ -471,7 +453,7 @@ class Address(UndeletableModel):
                 )
             else:
                 intent = build_erc20_transfer_intent(
-                    address=self,
+                    sender=self,
                     chain=chain,
                     crypto=crypto,
                     to=to,
@@ -513,9 +495,7 @@ class TxTaskStatus(models.TextChoices):
 # 终局状态集合：链上交易已得出确定结果（成功确认或永久失败），不再推进。
 # 区块链上链周期是固定的线性流程 + 末端分叉，因此用单枚举表达，
 # 终局态用该集合判定，避免再维护 stage/success 两字段的跨字段不变式。
-TERMINAL_TX_TASK_STATUSES = frozenset(
-    {TxTaskStatus.CONFIRMED, TxTaskStatus.FAILED}
-)
+TERMINAL_TX_TASK_STATUSES = frozenset({TxTaskStatus.CONFIRMED, TxTaskStatus.FAILED})
 
 
 class TxHash(models.Model):
@@ -572,10 +552,10 @@ class TxTask(UndeletableModel):
     - Withdrawal 等业务对象统一外键到该模型，不再直接依赖具体链实现或 tx hash。
     """
 
-    address = models.ForeignKey(
+    sender = models.ForeignKey(
         "Address",
         on_delete=models.PROTECT,
-        verbose_name=_("地址"),
+        verbose_name=_("发送地址"),
     )
     chain = models.ForeignKey(
         "Chain",
@@ -648,7 +628,7 @@ class TxTask(UndeletableModel):
             .aggregate(max_version=models.Max("version"))
             .get("max_version")
         )
-        next_version = 1 if max_version is None else int(max_version) + 1
+        next_version = 1 if max_version is None else int(max_version) + 1  # noqa
         created = TxHash.objects.create(
             tx_task=locked_task,
             chain=locked_task.chain,

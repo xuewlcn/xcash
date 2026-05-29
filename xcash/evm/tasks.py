@@ -16,6 +16,7 @@ from common.time import ago
 from evm.internal_tx.routing import NON_TRANSFER_TX_TASK_TYPES
 from evm.internal_tx.routing import get_handler
 from evm.models import EvmTxTask
+from evm.models import VaultSlotCollectSchedule
 from evm.poller import EvmTaskPoller
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.service import EvmScannerService
@@ -47,7 +48,7 @@ def _broadcast_evm_task(pk: int) -> None:
         logger.info(
             "EVM 广播被阻断",
             task_pk=tx_task.pk,
-            address=tx_task.address.address,
+            sender=tx_task.sender.address,
             chain=tx_task.chain.code,
             nonce=tx_task.nonce,
             reason=(
@@ -66,13 +67,13 @@ def _broadcast_evm_task(pk: int) -> None:
 
 
 def _chain_dispatch_next(completed_task: EvmTxTask) -> None:
-    """广播成功后立即调度同地址下一个 QUEUED nonce，避免等待下一轮 dispatch 周期。"""
+    """广播成功后立即调度同发送地址下一个 QUEUED nonce，避免等待下一轮 dispatch 周期。"""
     if completed_task.is_pipeline_full():
         return
     next_task = (
         EvmTxTask.objects.select_related("base_task")
         .filter(
-            address=completed_task.address,
+            sender=completed_task.sender,
             chain=completed_task.chain,
             base_task__status=TxTaskStatus.QUEUED,
         )
@@ -90,8 +91,8 @@ def dispatch_evm_tx_tasks() -> None:
     """定时调度 QUEUED 状态的 EVM 交易任务（Celery Beat 每 5 秒）。
 
     调度规则：
-    - 每个 (address, chain) 只放行最低 nonce 的任务，保证 nonce 按顺序进入 mempool
-    - pipeline 未满（同地址 PENDING_CHAIN < EVM_PIPELINE_DEPTH）才放行
+    - 每个 (sender, chain) 只放行最低 nonce 的任务，保证 nonce 按顺序进入 mempool
+    - pipeline 未满（同发送地址 PENDING_CHAIN < EVM_PIPELINE_DEPTH）才放行
     - 4 分钟内已尝试过的不重复投递
     - 每轮最多投递 8 笔
     """
@@ -103,7 +104,7 @@ def dispatch_evm_tx_tasks() -> None:
             created_at__lt=ago(seconds=4),
             base_task__status=TxTaskStatus.QUEUED,
         )
-        .order_by("address_id", "nonce", "created_at")
+        .order_by("sender_id", "nonce", "created_at")
     )
 
     selected: list[EvmTxTask] = []
@@ -165,6 +166,14 @@ def confirm_non_transfer_tx_tasks() -> None:
             )
             if updated:
                 get_handler(TxTaskType(task.tx_type)).finalize_failed(task)
+
+
+@shared_task(ignore_result=True)
+@singleton_task(timeout=55)
+def execute_due_vault_slot_collect_schedules() -> None:
+    created_count = VaultSlotCollectSchedule.execute_due()
+    if created_count:
+        logger.info("VaultSlot 到期归集计划已创建链上任务", count=created_count)
 
 
 @shared_task(ignore_result=True)

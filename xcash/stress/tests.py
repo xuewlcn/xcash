@@ -32,6 +32,7 @@ from stress.tasks import execute_stress_case_payment
 from stress.tasks import prepare_stress
 from stress.views import _handle_webhook
 
+from chains.constants import ChainCode
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import Wallet
@@ -44,6 +45,14 @@ from projects.models import Project
 @override_settings(STRESS_WEBHOOK_BASE_URL="http://localhost")
 class StressServiceTests(SimpleTestCase):
     databases = {"default"}
+
+    def setUp(self):
+        # StressService.prepare 起手会调用 _cleanup_orphan_stress_project 做一次真实
+        # DELETE 查询；本类是纯单元测试（Project 创建等均已 mock），不应触达数据库，
+        # 否则会按当前连接打到 dev 库并随模型演进（如新增 Project.vault）而失败。
+        cleanup_patch = patch("stress.service._cleanup_orphan_stress_project")
+        cleanup_patch.start()
+        self.addCleanup(cleanup_patch.stop)
 
     def test_create_invoice_posts_project_available_local_methods(self):
         from invoices.models import InvoiceBillingMode
@@ -203,6 +212,10 @@ class StressServiceTests(SimpleTestCase):
                 "stress.service.Project.objects.create", return_value=created_project
             ),
             patch("stress.service._setup_differ_recipient_addresses"),
+            # 新架构下 EVM 账单一律走 CONTRACT/VaultSlot，prepare 必然触发钱包与
+            # Vault 注资；本单元测试只关心生成的 case，故 mock 掉这些远端依赖。
+            patch("stress.service._setup_wallet_for_withdrawal"),
+            patch("stress.service._fund_vault_for_withdrawal"),
             patch(
                 "stress.service.InvoiceStressCase.objects.bulk_create", bulk_create_mock
             ),
@@ -269,6 +282,10 @@ class StressServiceTests(SimpleTestCase):
                 "stress.service.Project.objects.create", return_value=created_project
             ),
             patch("stress.service._setup_differ_recipient_addresses"),
+            # 新架构下 EVM 账单一律走 CONTRACT/VaultSlot，prepare 必然触发钱包与
+            # Vault 注资；本测试只关心 SaaS 权限缓存预置，故 mock 掉这些远端依赖。
+            patch("stress.service._setup_wallet_for_withdrawal"),
+            patch("stress.service._fund_vault_for_withdrawal"),
             patch("stress.service.cache", create=True) as cache_mock,
             patch("stress.service.InvoiceStressCase.objects.bulk_create"),
             patch("stress.service.random.random", return_value=0.9),
@@ -905,13 +922,9 @@ class StressRecipientSetupTests(TestCase):
             },
         )
         self.ethereum_local, _ = Chain.objects.update_or_create(
-            code="ethereum-local",
+            code=ChainCode.Anvil,
             defaults={
-                "name": "Ethereum Local",
-                "type": ChainType.EVM,
-                "native_coin": self.eth,
-                "chain_id": 31337,
-                "rpc": "http://127.0.0.1:8545",
+                "rpc": "",
                 "active": True,
             },
         )

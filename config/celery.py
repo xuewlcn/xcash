@@ -45,6 +45,10 @@ EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS = get_int_default(
     "CELERY_EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS",
     60,
 )
+EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS = get_int_default(
+    "CELERY_EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS",
+    60,
+)
 TRON_SCAN_SCHEDULE_SECONDS = get_int(
     "CELERY_TRON_SCAN_SCHEDULE_SECONDS",
     "tron_scan_seconds",
@@ -102,6 +106,10 @@ evm_tasks = {
     "confirm_non_transfer_tx_tasks": {
         "task": "evm.tasks.confirm_non_transfer_tx_tasks",
         "schedule": EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS,
+    },
+    "execute_due_vault_slot_collect_schedules": {
+        "task": "evm.tasks.execute_due_vault_slot_collect_schedules",
+        "schedule": EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS,
     },
 }
 

@@ -149,13 +149,6 @@ SIDEBAR_UNFOLD = {
                         "link": reverse_lazy("admin:withdrawals_withdrawal_changelist"),
                     },
                     {
-                        "title": _("金库注资"),
-                        "icon": "account_balance",
-                        "link": reverse_lazy(
-                            "admin:withdrawals_vaultfunding_changelist"
-                        ),
-                    },
-                    {
                         "title": _("审核日志"),
                         "icon": "fact_check",
                         "link": reverse_lazy(

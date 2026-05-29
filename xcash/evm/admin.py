@@ -6,20 +6,38 @@ from common.admin_scan_cursor import SyncScanCursorToLatestActionMixin
 from evm.models import EvmScanCursor
 from evm.models import EvmTxTask
 from evm.models import VaultSlot
+from evm.models import VaultSlotCollectSchedule
 
 
 @admin.register(VaultSlot)
 class VaultSlotAdmin(ReadOnlyModelAdmin):
-    list_display = ("customer", "chain", "address", "vault_address", "created_at")
+    list_display = ("customer", "chain", "address", "created_at")
     list_filter = ("chain",)
-    search_fields = ("customer__uid", "address", "vault_address")
+    search_fields = ("customer__uid", "address")
     readonly_fields = (
         "customer",
         "chain",
         "address",
-        "vault_address",
         "salt",
         "created_at",
+    )
+
+
+@admin.register(VaultSlotCollectSchedule)
+class VaultSlotCollectScheduleAdmin(ReadOnlyModelAdmin):
+    ordering = ("due_at",)
+    list_display = ("vault_slot", "chain", "crypto", "due_at", "tx_task", "created_at")
+    list_filter = ("chain", "crypto")
+    search_fields = ("vault_slot__address", "tx_task__base_task__tx_hash")
+    list_select_related = ("vault_slot", "chain", "crypto", "tx_task")
+    readonly_fields = (
+        "chain",
+        "vault_slot",
+        "crypto",
+        "due_at",
+        "tx_task",
+        "created_at",
+        "updated_at",
     )
 
 
@@ -28,7 +46,7 @@ class EvmTxTaskAdmin(ReadOnlyModelAdmin):
     ordering = ("-created_at",)
     exclude = ("signed_payload",)
     list_display = (
-        "display_address",
+        "display_sender",
         "display_chain",
         "tx_type",
         "tx_kind",
@@ -40,9 +58,9 @@ class EvmTxTaskAdmin(ReadOnlyModelAdmin):
         "formatted_last_attempt_at",
     )
     # 状态展示优先读取统一父任务，后台查询一并预加载，避免 N+1。
-    list_select_related = ("base_task", "address", "chain")
+    list_select_related = ("base_task", "sender", "chain")
     list_filter = ("tx_kind",)
-    search_fields = ("base_task__tx_hash", "address__address", "to")
+    search_fields = ("base_task__tx_hash", "sender__address", "to")
 
     @admin.display(ordering="last_attempt_at", description="执行时间")
     def formatted_last_attempt_at(self, obj: EvmTxTask):
@@ -67,9 +85,9 @@ class EvmTxTaskAdmin(ReadOnlyModelAdmin):
     def tx_type(self, obj: EvmTxTask):  # pragma: no cover
         return obj.base_task.get_tx_type_display() if obj.base_task_id else "—"
 
-    @admin.display(ordering="address__address", description="地址")
-    def display_address(self, obj: EvmTxTask):  # pragma: no cover
-        return obj.address
+    @admin.display(ordering="sender__address", description="发送地址")
+    def display_sender(self, obj: EvmTxTask):  # pragma: no cover
+        return obj.sender
 
     @admin.display(ordering="chain__code", description="网络")
     def display_chain(self, obj: EvmTxTask):  # pragma: no cover

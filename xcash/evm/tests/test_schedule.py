@@ -3,10 +3,10 @@ from unittest.mock import patch
 from django.test import TestCase
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressChainState
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import TxTask
 from chains.models import TxTaskStatus
@@ -16,6 +16,7 @@ from currencies.models import Crypto
 from evm.choices import TxKind
 from evm.intents import EvmTxIntent
 from evm.models import EvmTxTask
+from evm.tests._fixtures import make_evm_chain
 
 
 class EvmTxTaskScheduleTests(TestCase):
@@ -26,14 +27,9 @@ class EvmTxTaskScheduleTests(TestCase):
             decimals=18,
             coingecko_id="schedule-ether",
         )
-        self.chain = Chain.objects.create(
-            code="eth-schedule",
-            name="Ethereum Schedule",
-            type=ChainType.EVM,
-            chain_id=999_901,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://localhost:8545",
-            native_coin=self.native,
-            active=True,
         )
         self.wallet = Wallet.objects.create()
         self.address = Address.objects.create(
@@ -52,7 +48,7 @@ class EvmTxTaskScheduleTests(TestCase):
 
     def _intent(self, **overrides):
         values = {
-            "address": self.address,
+            "sender": self.address,
             "chain": self.chain,
             "tx_kind": TxKind.NATIVE_TRANSFER,
             "to": self.recipient,
@@ -76,7 +72,7 @@ class EvmTxTaskScheduleTests(TestCase):
 
         task = EvmTxTask.schedule(intent)
 
-        self.assertEqual(task.address, intent.address)
+        self.assertEqual(task.sender, intent.sender)
         self.assertEqual(task.chain, intent.chain)
         self.assertEqual(task.tx_kind, intent.tx_kind)
         self.assertEqual(task.to, intent.to)
@@ -87,7 +83,7 @@ class EvmTxTaskScheduleTests(TestCase):
 
         base_task = task.base_task
         self.assertEqual(base_task.chain, intent.chain)
-        self.assertEqual(base_task.address, intent.address)
+        self.assertEqual(base_task.sender, intent.sender)
         self.assertEqual(base_task.tx_type, intent.tx_type)
         self.assertEqual(base_task.status, TxTaskStatus.QUEUED)
 

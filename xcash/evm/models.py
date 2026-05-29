@@ -7,7 +7,8 @@ from django.db import models
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-from eth_utils import keccak
+from eth_typing import HexStr  # noqa
+from eth_utils import keccak  # noqa
 from web3 import Web3
 
 from chains.models import TERMINAL_TX_TASK_STATUSES
@@ -25,6 +26,7 @@ from common.fields import AddressField
 from common.fields import EvmAddressField
 from common.models import UndeletableModel
 from core.models import SystemWallet
+from core.runtime_settings import get_vault_slot_collect_delay
 from evm.adapter import EvmAdapter
 from evm.choices import TxKind
 from evm.constants import EVM_PIPELINE_DEPTH
@@ -46,6 +48,13 @@ class VaultSlotUsage(models.TextChoices):
 class VaultSlot(models.Model):
     """项目在指定 EVM 链上的 XcashVaultSlot。"""
 
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, verbose_name=_("链"))
+    usage = models.CharField(
+        _("用途"),
+        choices=VaultSlotUsage,
+        max_length=16,
+        db_index=True,
+    )
     customer = models.ForeignKey(
         Customer,
         on_delete=models.CASCADE,
@@ -58,21 +67,12 @@ class VaultSlot(models.Model):
         on_delete=models.CASCADE,
         verbose_name=_("项目"),
     )
-    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, verbose_name=_("链"))
-    usage = models.CharField(
-        _("用途"),
-        choices=VaultSlotUsage,
-        default=VaultSlotUsage.DEPOSIT,
-        max_length=16,
-        db_index=True,
-    )
     invoice_index = models.PositiveIntegerField(
         _("账单槽位序号"),
         null=True,
         blank=True,
     )
     address = AddressField(_("VaultSlot 地址"))
-    vault_address = AddressField(_("Vault 地址"))
     salt = models.BinaryField(_("CREATE2 Salt"), max_length=32)
     deploy_tx_task = models.OneToOneField(
         "evm.EvmTxTask",
@@ -223,7 +223,6 @@ class VaultSlot(models.Model):
                 customer=customer,
                 defaults={
                     "address": slot_address,
-                    "vault_address": vault_address,
                     "salt": salt,
                 },
             )
@@ -281,7 +280,6 @@ class VaultSlot(models.Model):
                 invoice_index=invoice_index,
                 defaults={
                     "address": slot_address,
-                    "vault_address": vault_address,
                     "salt": salt,
                 },
             )
@@ -323,50 +321,27 @@ class VaultSlot(models.Model):
             chain_type=ChainType.EVM,
             usage=AddressUsage.HotWallet,
         )
-        configured_vault_address = slot.project.vault
-        if not configured_vault_address:
+        vault_address = slot.project.vault
+        if not vault_address:
             raise RuntimeError(f"Project {slot.project_id} VaultSlot Vault 地址未配置")
-        current_vault_address = Web3.to_checksum_address(configured_vault_address)
-        slot_vault_address = Web3.to_checksum_address(slot.vault_address)
-        if current_vault_address != slot_vault_address:
-            raise RuntimeError(
-                "VaultSlot Vault 地址不一致："
-                f"slot_id={slot.pk} expected={slot_vault_address} "
-                f"actual={current_vault_address}"
-            )
+        vault_address = Web3.to_checksum_address(vault_address)
 
         intent = build_vault_slot_deploy_intent(
-            address=sender,
+            sender=sender,
             chain=slot.chain,
             factory_address=XCASH_VAULT_SLOT_FACTORY_ADDRESS,
-            vault_address=slot_vault_address,
+            vault_address=vault_address,
             salt=bytes(slot.salt),
         )
-        existing_task = (
-            EvmTxTask.objects.filter(
-                address=sender,
-                chain=slot.chain,
-                to=intent.to,
-                data=intent.data,
-                base_task__tx_type=TxTaskType.VaultSlotDeploy,
-            )
-            .exclude(base_task__status__in=TERMINAL_TX_TASK_STATUSES)
-            .first()
-        )
-        if existing_task is not None:
-            if slot.deploy_tx_task_id != existing_task.pk:
-                VaultSlot.objects.filter(pk=slot.pk).update(
-                    deploy_tx_task=existing_task
-                )
-            return existing_task
-
         task = EvmTxTask.schedule(intent)
         if isinstance(task, EvmTxTask):
             VaultSlot.objects.filter(pk=slot.pk).update(deploy_tx_task=task)
         return task
 
     @staticmethod
-    def schedule_collect_for_deposit(deposit_pk: int) -> EvmTxTask | None:
+    def schedule_collect_for_deposit(
+        deposit_pk: int,
+    ) -> VaultSlotCollectSchedule | None:
         from deposits.models import Deposit
 
         deposit = Deposit.objects.select_related(
@@ -378,7 +353,7 @@ class VaultSlot(models.Model):
         chain = transfer.chain
         crypto = transfer.crypto
 
-        if crypto.pk == chain.native_coin_id:
+        if crypto == chain.native_coin:
             return None
 
         try:
@@ -395,53 +370,19 @@ class VaultSlot(models.Model):
                 f"customer_id={deposit.customer_id} address={transfer.to_address}"
             ) from exc
 
-        sender = deposit.customer.project.wallet.get_address(
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.HotWallet,
-        )
-        configured_vault_address = deposit.customer.project.vault
-        if not configured_vault_address:
-            raise RuntimeError(
-                f"Project {deposit.customer.project_id} VaultSlot Vault 地址未配置"
-            )
-        current_vault_address = Web3.to_checksum_address(configured_vault_address)
-        slot_vault_address = Web3.to_checksum_address(slot.vault_address)
-        if current_vault_address != slot_vault_address:
-            raise RuntimeError(
-                "VaultSlot Vault 地址不一致："
-                f"slot_id={slot.pk} expected={slot_vault_address} actual={current_vault_address}"
-            )
-
-        token_address = crypto.address(chain)
-        if not token_address:
-            raise RuntimeError(
-                f"Crypto {crypto.symbol} 未部署在链 {chain.code}，无法调度 VaultSlot 归集"
-            )
-
-        intent = build_vault_slot_collect_intent(
-            address=sender,
+        return VaultSlot.schedule_collect_for_slot(
             chain=chain,
-            vault_slot_address=slot.address,
-            token_address=token_address,
+            crypto=crypto,
+            slot=slot,
+            missing_token_message=(
+                f"Crypto {crypto.symbol} 未部署在链 {chain.code}，无法调度 VaultSlot 归集"
+            ),
         )
-        existing_task = (
-            EvmTxTask.objects.filter(
-                address=sender,
-                chain=chain,
-                to=intent.to,
-                data=intent.data,
-                base_task__tx_type=TxTaskType.VaultSlotCollect,
-            )
-            .exclude(base_task__status__in=TERMINAL_TX_TASK_STATUSES)
-            .first()
-        )
-        if existing_task is not None:
-            return existing_task
-
-        return EvmTxTask.schedule(intent)
 
     @staticmethod
-    def schedule_collect_for_invoice(invoice_pk: int) -> EvmTxTask | None:
+    def schedule_collect_for_invoice(
+        invoice_pk: int,
+    ) -> VaultSlotCollectSchedule | None:
         from invoices.models import Invoice
         from invoices.models import InvoiceBillingMode
 
@@ -462,7 +403,7 @@ class VaultSlot(models.Model):
 
         chain = invoice.chain
         crypto = invoice.crypto
-        if crypto.pk == chain.native_coin_id:
+        if crypto == chain.native_coin:
             return None
 
         try:
@@ -479,38 +420,57 @@ class VaultSlot(models.Model):
                 f"project_id={invoice.project_id} address={invoice.pay_address}"
             ) from exc
 
-        sender = invoice.project.wallet.get_address(
+        return VaultSlot.schedule_collect_for_slot(
+            chain=chain,
+            crypto=crypto,
+            slot=slot,
+            missing_token_message=(
+                f"Crypto {crypto.symbol} 未部署在链 {chain.code}，无法调度 Invoice VaultSlot 归集"
+            ),
+        )
+
+    @staticmethod
+    def schedule_collect_for_slot(
+        *,
+        chain: Chain,
+        crypto,
+        slot: VaultSlot,
+        missing_token_message: str,
+    ) -> VaultSlotCollectSchedule:
+        if not crypto.address(chain):
+            raise RuntimeError(missing_token_message)
+
+        return VaultSlotCollectSchedule.ensure_pending(
+            chain=chain,
+            vault_slot=slot,
+            crypto=crypto,
+        )
+
+    @staticmethod
+    def create_collect_tx_task_for_slot(
+        *,
+        chain: Chain,
+        crypto,
+        slot: VaultSlot,
+        missing_token_message: str,
+    ) -> EvmTxTask:
+        token_address = crypto.address(chain)
+        if not token_address:
+            raise RuntimeError(missing_token_message)
+
+        sender = slot.project.wallet.get_address(
             chain_type=ChainType.EVM,
             usage=AddressUsage.HotWallet,
         )
-        configured_vault_address = invoice.project.vault
-        if not configured_vault_address:
-            raise RuntimeError(
-                f"Project {invoice.project_id} VaultSlot Vault 地址未配置"
-            )
-        current_vault_address = Web3.to_checksum_address(configured_vault_address)
-        slot_vault_address = Web3.to_checksum_address(slot.vault_address)
-        if current_vault_address != slot_vault_address:
-            raise RuntimeError(
-                "VaultSlot Vault 地址不一致："
-                f"slot_id={slot.pk} expected={slot_vault_address} actual={current_vault_address}"
-            )
-
-        token_address = crypto.address(chain)
-        if not token_address:
-            raise RuntimeError(
-                f"Crypto {crypto.symbol} 未部署在链 {chain.code}，无法调度 Invoice VaultSlot 归集"
-            )
-
         intent = build_vault_slot_collect_intent(
-            address=sender,
+            sender=sender,
             chain=chain,
             vault_slot_address=slot.address,
             token_address=token_address,
         )
         existing_task = (
             EvmTxTask.objects.filter(
-                address=sender,
+                sender=sender,
                 chain=chain,
                 to=intent.to,
                 data=intent.data,
@@ -523,6 +483,118 @@ class VaultSlot(models.Model):
             return existing_task
 
         return EvmTxTask.schedule(intent)
+
+
+class VaultSlotCollectSchedule(models.Model):
+    """VaultSlot ERC20 归集窗口计划。
+
+    计划只负责把同一链、同一 VaultSlot、同一币种的多次到账聚合到 due_at；
+    到期后创建的 EvmTxTask 继续承载广播、确认和失败状态。
+    """
+
+    vault_slot = models.ForeignKey(
+        VaultSlot,
+        on_delete=models.CASCADE,
+        related_name="collect_schedules",
+        verbose_name=_("VaultSlot"),
+    )
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, verbose_name=_("链"))
+    crypto = models.ForeignKey(
+        "currencies.Crypto",
+        on_delete=models.PROTECT,
+        verbose_name=_("币种"),
+    )
+    due_at = models.DateTimeField(_("计划执行时间"), db_index=True)
+    tx_task = models.OneToOneField(
+        "evm.EvmTxTask",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vault_slot_collect_schedule",
+        verbose_name=_("链上任务"),
+    )
+    created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("chain", "vault_slot", "crypto"),
+                condition=models.Q(tx_task__isnull=True),
+                name="uniq_pending_vault_slot_collect",
+            ),
+        ]
+        ordering = ("due_at", "pk")
+        verbose_name = _("VaultSlot 归集计划")
+        verbose_name_plural = verbose_name
+
+    def __str__(self) -> str:
+        return f"{self.chain_id}:{self.vault_slot_id}:{self.crypto_id}"
+
+    @classmethod
+    def ensure_pending(
+        cls,
+        *,
+        chain: Chain,
+        vault_slot: VaultSlot,
+        crypto,
+    ) -> VaultSlotCollectSchedule:
+        existing = cls.objects.filter(
+            chain=chain,
+            vault_slot=vault_slot,
+            crypto=crypto,
+            tx_task__isnull=True,
+        ).first()
+        if existing is not None:
+            return existing
+
+        due_at = timezone.now() + get_vault_slot_collect_delay()
+        try:
+            return cls.objects.create(
+                chain=chain,
+                vault_slot=vault_slot,
+                crypto=crypto,
+                due_at=due_at,
+            )
+        except IntegrityError:
+            return cls.objects.get(
+                chain=chain,
+                vault_slot=vault_slot,
+                crypto=crypto,
+                tx_task__isnull=True,
+            )
+
+    def create_tx_task(self) -> EvmTxTask:
+        return VaultSlot.create_collect_tx_task_for_slot(
+            chain=self.chain,
+            crypto=self.crypto,
+            slot=self.vault_slot,
+            missing_token_message=(
+                f"Crypto {self.crypto.symbol} 未部署在链 {self.chain.code}，无法调度 VaultSlot 归集"
+            ),
+        )
+
+    @classmethod
+    def execute_due(cls, *, limit: int = 32) -> int:
+        now = timezone.now()
+        created_count = 0
+        with db_transaction.atomic():
+            schedules = list(
+                cls.objects.select_for_update(skip_locked=True)
+                .select_related(
+                    "chain",
+                    "crypto",
+                    "vault_slot__project__wallet",
+                )
+                .filter(tx_task__isnull=True, due_at__lte=now)
+                .order_by("due_at", "pk")[:limit]
+            )
+            for schedule in schedules:
+                tx_task = schedule.create_tx_task()
+                schedule.tx_task = tx_task
+                schedule.save(update_fields=["tx_task", "updated_at"])
+                created_count += 1
+        return created_count
 
 
 class EvmScanCursor(models.Model):
@@ -569,10 +641,10 @@ class EvmTxTask(UndeletableModel):
         related_name="evm_task",
         verbose_name=_("通用链上任务"),
     )
-    address = models.ForeignKey(
+    sender = models.ForeignKey(
         "chains.Address",
         on_delete=models.PROTECT,
-        verbose_name=_("地址"),
+        verbose_name=_("发送地址"),
     )
     chain = models.ForeignKey(
         "chains.Chain",
@@ -604,9 +676,9 @@ class EvmTxTask(UndeletableModel):
         # 统一采用具名 UniqueConstraint，便于数据库约束报错定位和后续约束扩展。
         constraints = [
             models.UniqueConstraint(
-                fields=("address", "chain", "nonce"),
+                fields=("sender", "chain", "nonce"),
                 # 约束名直接采用 TxTask 语义，保持当前模型命名一致。
-                name="uniq_evm_tx_task_address_chain_nonce",
+                name="uniq_evm_tx_task_sender_chain_nonce",
             ),
             models.CheckConstraint(
                 condition=models.Q(
@@ -624,10 +696,10 @@ class EvmTxTask(UndeletableModel):
         verbose_name_plural = verbose_name
 
     def __str__(self) -> str:
-        return self.base_task.tx_hash or f"{self.address_id}:{self.nonce}"
+        return self.base_task.tx_hash or f"{self.sender_id}:{self.nonce}"
 
     def broadcast(self, *, allow_pending_chain_rebroadcast: bool = False) -> None:
-        if not self._can_broadcast_for_current_stage(
+        if not self._can_broadcast_for_current_status(
             allow_pending_chain_rebroadcast=allow_pending_chain_rebroadcast
         ):
             return
@@ -661,7 +733,7 @@ class EvmTxTask(UndeletableModel):
         if self.gas_price is None:
             raise ValueError("EVM 任务尚未签名，gas_price 不可为空")
         current_native_balance = self.chain.w3.eth.get_balance(
-            self.address.address
+            self.sender.address
         )  # noqa: SLF001
         signed_gas_price = int(self.gas_price)
         buffer_required = int(self.value) + 2 * self.gas * signed_gas_price
@@ -674,7 +746,7 @@ class EvmTxTask(UndeletableModel):
 
     def _send_signed_payload(self) -> None:
         # pre-flight 通过，真正广播。
-        raw_payload = Web3.to_bytes(hexstr=self.signed_payload)
+        raw_payload = Web3.to_bytes(hexstr=HexStr(self.signed_payload))
         try:
             self.chain.w3.eth.send_raw_transaction(raw_payload)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
@@ -697,7 +769,7 @@ class EvmTxTask(UndeletableModel):
             .first()
         )
         if base_tx_hash:
-            hashes.append(base_tx_hash)
+            hashes.append(base_tx_hash)  # noqa
 
         for tx_hash in (
             TxHash.objects.filter(tx_task_id=self.base_task_id)
@@ -745,7 +817,7 @@ class EvmTxTask(UndeletableModel):
         status = receipt.get("status")
         if status == 1:
             self._mark_pending_chain()
-            EvmTaskPoller._process_succeeded_receipt(
+            EvmTaskPoller.process_succeeded_receipt(
                 evm_task=self,
                 tx_hash=tx_hash,
                 receipt=receipt,
@@ -753,11 +825,11 @@ class EvmTxTask(UndeletableModel):
             return True
         if status == 0:
             self._mark_pending_chain()
-            EvmTaskPoller._finalize_failed_task(evm_task=self)
+            EvmTaskPoller.finalize_failed_task(evm_task=self)
             return True
         raise RuntimeError("EVM receipt status missing or invalid")
 
-    def _can_broadcast_for_current_stage(
+    def _can_broadcast_for_current_status(
         self, *, allow_pending_chain_rebroadcast: bool
     ) -> bool:
         """校验当前父任务状态是否允许进入真实广播副作用。"""
@@ -778,7 +850,7 @@ class EvmTxTask(UndeletableModel):
         current_gas_price = self.chain.w3.eth.gas_price  # noqa: SLF001
         if not self.signed_payload or self.gas_price is None:
             signed = get_signer_backend().sign_evm_transaction(
-                address=self.address,
+                address=self.sender,
                 chain=self.chain,
                 tx_dict=self._build_transaction_dict(gas_price=current_gas_price),
             )
@@ -796,7 +868,7 @@ class EvmTxTask(UndeletableModel):
             current_gas_price=int(current_gas_price),
         )
         signed = get_signer_backend().sign_evm_transaction(
-            address=self.address,
+            address=self.sender,
             chain=self.chain,
             tx_dict=self._build_transaction_dict(gas_price=replacement_gas_price),
         )
@@ -811,7 +883,7 @@ class EvmTxTask(UndeletableModel):
         return {
             "chainId": self.chain.chain_id,
             "nonce": self.nonce,
-            "from": self.address.address,
+            "from": self.sender.address,
             "to": self.to,
             "value": int(self.value),
             "data": self.data if self.data else "0x",
@@ -836,7 +908,7 @@ class EvmTxTask(UndeletableModel):
     def has_lower_queued_nonce(self) -> bool:
         """同账户更低 nonce 尚未提交到节点（QUEUED）时阻断，保证 nonce 按顺序进入 mempool。"""
         return EvmTxTask.objects.filter(
-            address=self.address,
+            sender=self.sender,
             chain=self.chain,
             nonce__lt=self.nonce,
             base_task__status=TxTaskStatus.QUEUED,
@@ -846,7 +918,7 @@ class EvmTxTask(UndeletableModel):
         """同地址同链已有 >=EVM_PIPELINE_DEPTH 笔在 mempool 中等待确认时阻断。"""
         return (
             EvmTxTask.objects.filter(
-                address=self.address,
+                sender=self.sender,
                 chain=self.chain,
                 base_task__status=TxTaskStatus.PENDING_CHAIN,
             ).count()
@@ -883,16 +955,16 @@ class EvmTxTask(UndeletableModel):
     def schedule(cls, intent: EvmTxIntent) -> EvmTxTask:
         """按 EvmTxIntent 原子创建待执行交易任务。
 
-        通过 AddressChainState 行锁对 (address, chain) 串行化，杜绝并发 nonce
+        通过 AddressChainState 行锁对 (sender, chain) 串行化，杜绝并发 nonce
         冲突。verify_fn 必须在行锁内、nonce 分配前执行；验证失败时整个事务
         回滚，避免留下未通过业务二次校验的 TxTask 或 nonce 空洞。
 
         首次签名和首个 tx_hash 生成延后到 broadcast()；内部稳定身份只依赖
-        (address, chain, nonce)。
+        (sender, chain, nonce)。
         """
         with db_transaction.atomic():
             AddressChainState.acquire_for_update(
-                address=intent.address,
+                address=intent.sender,
                 chain=intent.chain,
             )
 
@@ -900,17 +972,17 @@ class EvmTxTask(UndeletableModel):
             if intent.verify_fn is not None:
                 intent.verify_fn()
 
-            nonce = cls._next_nonce(intent.address, intent.chain)
+            nonce = cls._next_nonce(intent.sender, intent.chain)
             base_task = TxTask.objects.create(
                 chain=intent.chain,
-                address=intent.address,
+                sender=intent.sender,
                 tx_type=intent.tx_type,
                 status=TxTaskStatus.QUEUED,
             )
 
             return EvmTxTask.objects.create(
                 base_task=base_task,
-                address=intent.address,
+                sender=intent.sender,
                 chain=intent.chain,
                 to=intent.to,
                 value=intent.value,
@@ -928,8 +1000,8 @@ class EvmTxTask(UndeletableModel):
         确保基于 EvmTxTask 推导 nonce 与创建任务处于同一串行化区间。
         """
         latest_nonce = (
-            EvmTxTask.objects.filter(address=address, chain=chain)
+            EvmTxTask.objects.filter(sender=address, chain=chain)
             .aggregate(max_nonce=models.Max("nonce"))
             .get("max_nonce")
         )
-        return 0 if latest_nonce is None else int(latest_nonce) + 1
+        return 0 if latest_nonce is None else int(latest_nonce) + 1  # noqa

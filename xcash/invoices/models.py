@@ -332,7 +332,7 @@ class Invoice(models.Model):
             chain=chain,
             crypto_amount=crypto_amount,
         )
-        return slot.address, slot.vault_address, crypto_amount
+        return slot.address, slot.project.vault, crypto_amount
 
     @db_transaction.atomic
     def select_method(self, crypto: "Crypto", chain: "Chain"):

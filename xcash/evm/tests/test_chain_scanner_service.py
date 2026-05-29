@@ -8,9 +8,9 @@ from django.test import TestCase
 from django.test import override_settings
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import TxHash
 from chains.models import TxTask
@@ -28,6 +28,7 @@ from evm.models import EvmTxTask
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.service import EvmScannerService
 from evm.scanner.watchers import EvmWatchSet
+from evm.tests._fixtures import make_evm_chain
 
 
 class EvmChainScannerServiceTests(TestCase):
@@ -38,14 +39,10 @@ class EvmChainScannerServiceTests(TestCase):
             symbol="ETHSS",
             coingecko_id="ethereum-scanner-service",
         )
-        self.chain = Chain.objects.create(
-            code="eth-scanner-service",
-            name="Ethereum Scanner Service",
-            type=ChainType.EVM,
-            chain_id=20001,
+        self.chain = make_evm_chain(
+            code=ChainCode.Anvil,
             rpc="http://localhost:8545",
             native_coin=self.native,
-            active=True,
             latest_block_number=88,
         )
 
@@ -54,7 +51,7 @@ class EvmChainScannerServiceTests(TestCase):
         super().tearDown()
 
     @patch("evm.scanner.service.EvmLogScanner.scan_chain")
-    def test_scan_chain_skips_disabled_cursor(
+    def test_scan_chain_runs_even_when_cursor_disabled(
         self,
         scan_chain_mock,
     ):
@@ -65,8 +62,8 @@ class EvmChainScannerServiceTests(TestCase):
 
         result = EvmScannerService.scan_chain(chain=self.chain)
 
-        scan_chain_mock.assert_not_called()
-        self.assertEqual(result, 0)
+        scan_chain_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
+        self.assertIsNone(result)
 
     @patch("evm.scanner.service.EvmLogScanner.scan_chain")
     def test_scan_chain_scans_native_and_erc20(
@@ -91,7 +88,7 @@ class EvmChainScannerServiceTests(TestCase):
         result = EvmScannerService.scan_chain(chain=self.chain)
 
         scan_chain_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
-        self.assertEqual(result, 0)
+        self.assertIsNone(result)
 
     @patch("evm.scanner.service.load_watch_set")
     @patch("evm.scanner.service.EvmLogScanner.scan_range")
@@ -129,14 +126,10 @@ class EvmChainScannerServiceTests(TestCase):
             symbol="ETHRS",
             coingecko_id="ethereum-remote-signer",
         )
-        chain = Chain.objects.create(
-            code="eth-remote-signer",
-            name="Ethereum Remote Signer",
-            type=ChainType.EVM,
-            chain_id=20002,
+        chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://localhost:8545",
             native_coin=native,
-            active=True,
         )
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
@@ -156,13 +149,13 @@ class EvmChainScannerServiceTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=Web3.to_checksum_address("0x0000000000000000000000000000000000000002"),
@@ -189,14 +182,10 @@ class EvmChainScannerServiceTests(TestCase):
             symbol="ETHDS",
             coingecko_id="ethereum-deferred-signing",
         )
-        chain = Chain.objects.create(
-            code="eth-deferred-sign",
-            name="Ethereum Deferred Signing",
-            type=ChainType.EVM,
-            chain_id=1,
+        chain = make_evm_chain(
+            code=ChainCode.BSC,
             rpc="http://localhost:8545",
             native_coin=native,
-            active=True,
         )
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
@@ -211,7 +200,7 @@ class EvmChainScannerServiceTests(TestCase):
         )
         task = EvmTxTask.schedule(
             build_native_transfer_intent(
-                address=addr,
+                sender=addr,
                 chain=chain,
                 to=Web3.to_checksum_address(
                     "0x00000000000000000000000000000000000000f2"
@@ -238,14 +227,10 @@ class EvmChainScannerServiceTests(TestCase):
             symbol="ETHTXH",
             coingecko_id="ethereum-txhash-history-evm",
         )
-        chain = Chain.objects.create(
-            code="eth-txhash-history",
-            name="Ethereum TxHash History",
-            type=ChainType.EVM,
-            chain_id=101,
+        chain = make_evm_chain(
+            code=ChainCode.Polygon,
             rpc="http://localhost:8545",
             native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -267,7 +252,7 @@ class EvmChainScannerServiceTests(TestCase):
 
         task = EvmTxTask.schedule(
             build_native_transfer_intent(
-                address=addr,
+                sender=addr,
                 chain=chain,
                 to=Web3.to_checksum_address(
                     "0x00000000000000000000000000000000000000fb"
@@ -303,14 +288,10 @@ class EvmChainScannerServiceTests(TestCase):
             symbol="ETHNS",
             coingecko_id="ethereum-nonce-state",
         )
-        chain = Chain.objects.create(
-            code="eth-nonce-state",
-            name="Ethereum Nonce State",
-            type=ChainType.EVM,
-            chain_id=3,
+        chain = make_evm_chain(
+            code=ChainCode.Base,
             rpc="http://localhost:8545",
             native_coin=native,
-            active=True,
         )
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
@@ -327,13 +308,13 @@ class EvmChainScannerServiceTests(TestCase):
         for n in range(5):
             filler_base = TxTask.objects.create(
                 chain=chain,
-                address=addr,
+                sender=addr,
                 tx_type=TxTaskType.Withdrawal,
                 status=TxTaskStatus.CONFIRMED,
             )
             EvmTxTask.objects.create(
                 base_task=filler_base,
-                address=addr,
+                sender=addr,
                 chain=chain,
                 to=Web3.to_checksum_address(
                     "0x00000000000000000000000000000000000000f6"
@@ -346,14 +327,14 @@ class EvmChainScannerServiceTests(TestCase):
             )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "ef" * 32,
             status=TxTaskStatus.QUEUED,
         )
         EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f6"),
             value=0,
@@ -373,7 +354,7 @@ class EvmChainScannerServiceTests(TestCase):
 
         task = EvmTxTask.schedule(
             build_native_transfer_intent(
-                address=addr,
+                sender=addr,
                 chain=chain,
                 to=Web3.to_checksum_address(
                     "0x00000000000000000000000000000000000000f7"
@@ -397,14 +378,10 @@ class EvmChainScannerServiceTests(TestCase):
             symbol="ETHGP",
             coingecko_id="ethereum-gas-price-prefetch",
         )
-        chain = Chain.objects.create(
-            code="eth-gas-prefetch",
-            name="Ethereum Gas Price Prefetch",
-            type=ChainType.EVM,
-            chain_id=4,
+        chain = make_evm_chain(
+            code=ChainCode.Optimism,
             rpc="http://localhost:8545",
             native_coin=native,
-            active=True,
         )
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
@@ -433,7 +410,7 @@ class EvmChainScannerServiceTests(TestCase):
 
         EvmTxTask.schedule(
             build_native_transfer_intent(
-                address=addr,
+                sender=addr,
                 chain=chain,
                 to=Web3.to_checksum_address(
                     "0x00000000000000000000000000000000000000f9"
@@ -453,13 +430,7 @@ class EvmChainScannerServiceTests(TestCase):
         transfer_create_mock,
     ):
         # 只要链上已经观察到该 EVM hash，就应推进统一父任务进入待确认。
-        chain = Chain(
-            code="eth",
-            name="Ethereum",
-            type=ChainType.EVM,
-            chain_id=1,
-            native_coin=Crypto(name="Ethereum", symbol="ETH", coingecko_id="ethereum"),
-        )
+        chain = self.chain
         crypto = chain.native_coin
         transfer_create_mock.return_value = Mock()
         observed = ObservedTransferPayload(

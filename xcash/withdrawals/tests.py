@@ -110,14 +110,14 @@ class WithdrawalTxTaskTests(TestCase):
         )
         tx_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "2" * 64,
             status=TxTaskStatus.QUEUED,
         )
         EvmTxTask.objects.create(
             base_task=tx_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to="0x0000000000000000000000000000000000000002",
@@ -419,7 +419,7 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
             name="Tron Withdrawal Guard Project",
             wallet=wallet,
         )
-        trx = Crypto.objects.create(
+        Crypto.objects.create(
             name="Tron Native Withdrawal",
             symbol="TRXW",
             coingecko_id="tron-native-withdrawal",
@@ -1693,7 +1693,7 @@ class WithdrawalStateTransitionTests(TestCase):
         )
         tx_task = TxTask.objects.create(
             chain=self.chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CONFIRM,
@@ -1736,7 +1736,7 @@ class WithdrawalStateTransitionTests(TestCase):
         )
         tx_task = TxTask.objects.create(
             chain=self.chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.FAILED,
@@ -1820,7 +1820,7 @@ class WithdrawalStateTransitionTests(TestCase):
         )
         tx_task = TxTask.objects.create(
             chain=self.chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.FAILED,
@@ -1901,14 +1901,14 @@ class WithdrawalTryMatchTests(TestCase):
         recipient = "0x0000000000000000000000000000000000000002"
         tx_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=status,
         )
         EvmTxTask.objects.create(
             base_task=tx_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=recipient,

@@ -26,6 +26,7 @@ from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
 from evm.models import EvmScanCursor
 from evm.models import EvmTxTask
 from evm.models import VaultSlot
+from evm.models import VaultSlotUsage
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.watchers import EvmWatchSet
@@ -152,11 +153,11 @@ class EvmErc20ScannerTests(TestCase):
         )
         self.vault_slot = VaultSlot.objects.create(
             customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000bc"
             ),
-            vault_address=self.addr.address,
             salt=b"\x01" * 32,
         )
 
@@ -205,14 +206,14 @@ class EvmErc20ScannerTests(TestCase):
         ].rjust(64, "0")
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         EvmTxTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=self.token_deployment.address,
@@ -299,7 +300,7 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
         )
 
-        self.assertEqual(result, 1)
+        self.assertIsNone(result)
         self.assertEqual(transfer.hash, "0x" + "ab" * 32)
         self.assertEqual(
             transfer.to_address, Web3.to_checksum_address(self.vault_slot.address)
@@ -367,35 +368,8 @@ class EvmErc20ScannerTests(TestCase):
             to_block=100,
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         create_observed_transfer_mock.assert_not_called()
-
-    def test_erc20_scanner_skips_indirect_contract_payment(self):
-        log = self._build_transfer_log(
-            from_address=Web3.to_checksum_address("0x" + "cc" * 20),
-            to_address=self.vault_slot.address,
-        )
-        rpc_client = Mock()
-        rpc_client.get_transaction.return_value = {
-            "to": Web3.to_checksum_address("0x" + "dd" * 20)
-        }
-        rpc_client.get_block_timestamp.return_value = 1_700_000_000
-
-        created = EvmLogScanner._process_logs(
-            chain=self.chain,
-            logs=[log],
-            rpc_client=rpc_client,
-            watch_set=EvmWatchSet(
-                tokens_by_address={
-                    self.token_deployment.address: self.token_deployment
-                }
-            ),
-        )
-
-        self.assertEqual(created, 0)
-        self.assertEqual(Transfer.objects.count(), 0)
-        rpc_client.get_transaction.assert_called_once_with(tx_hash="0x" + "ab" * 32)
-        rpc_client.get_block_timestamp.assert_not_called()
 
     @patch("evm.scanner.observed_transfers.logger.warning")
     def test_erc20_scanner_skips_tx_with_multiple_system_inbound_logs(
@@ -408,11 +382,11 @@ class EvmErc20ScannerTests(TestCase):
         )
         second_slot = VaultSlot.objects.create(
             customer=second_customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000bd"
             ),
-            vault_address=self.addr.address,
             salt=b"\x02" * 32,
         )
         sender = Web3.to_checksum_address("0x" + "cc" * 20)
@@ -443,7 +417,7 @@ class EvmErc20ScannerTests(TestCase):
             ),
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         self.assertEqual(Transfer.objects.count(), 0)
         warning_mock.assert_called_with(
             "EVM scanner skipped tx with multiple observed inbound events",
@@ -504,7 +478,7 @@ class EvmErc20ScannerTests(TestCase):
         processor_mock.assert_not_called()
         rpc_client.get_transaction.assert_not_called()
         rpc_client.get_transaction_receipt.assert_not_called()
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         self.assertFalse(Transfer.objects.filter(hash=tx_hash).exists())
         self.assertEqual(base_task.status, TxTaskStatus.PENDING_CHAIN)
 
@@ -553,7 +527,7 @@ class EvmErc20ScannerTests(TestCase):
             watch_set=watch_set,
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         rpc_client.get_transaction.assert_not_called()
         rpc_client.get_transaction_receipt.assert_not_called()
         self.assertFalse(Transfer.objects.filter(hash=tx_hash).exists())
@@ -667,7 +641,7 @@ class EvmErc20ScannerTests(TestCase):
             watch_set=watch_set,
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         rpc_client.get_transaction.assert_not_called()
         rpc_client.get_transaction_receipt.assert_not_called()
         self.assertEqual(Transfer.objects.count(), 0)

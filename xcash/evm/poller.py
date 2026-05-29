@@ -28,13 +28,13 @@ class EvmTaskPoller:
     @classmethod
     def poll_chain(cls, *, chain: Chain) -> None:
         queryset = (
-            EvmTxTask.objects.select_related("base_task", "address")
+            EvmTxTask.objects.select_related("base_task", "sender")
             .filter(
                 chain=chain,
                 base_task__status=TxTaskStatus.PENDING_CHAIN,
                 last_attempt_at__lt=ago(seconds=EVM_PENDING_RECEIPT_POLL_DELAY),
             )
-            .order_by("address_id", "nonce", "created_at")
+            .order_by("sender_id", "nonce", "created_at")
         )
 
         for evm_task in queryset:
@@ -46,7 +46,7 @@ class EvmTaskPoller:
                 logger.warning(
                     "EVM 任务轮询查链失败",
                     chain=chain.code,
-                    address=evm_task.address.address,
+                    sender=evm_task.sender.address,
                     nonce=evm_task.nonce,
                     error=str(status),
                 )
@@ -56,7 +56,7 @@ class EvmTaskPoller:
                 assert tx_hash is not None  # SUCCEEDED 分支一定携带命中的 hash
                 assert receipt is not None
                 try:
-                    cls._process_succeeded_receipt(
+                    cls.process_succeeded_receipt(
                         evm_task=evm_task,
                         tx_hash=tx_hash,
                         receipt=receipt,
@@ -65,19 +65,19 @@ class EvmTaskPoller:
                     logger.exception(
                         "轮询器处理成功 receipt 失败",
                         chain=chain.code,
-                        address=evm_task.address.address,
+                        sender=evm_task.sender.address,
                         nonce=evm_task.nonce,
                         tx_hash=tx_hash,
                     )
                     continue
             elif status == TxCheckStatus.FAILED:
                 try:
-                    cls._finalize_failed_task(evm_task=evm_task)
+                    cls.finalize_failed_task(evm_task=evm_task)
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "轮询器收口失败交易异常",
                         chain=chain.code,
-                        address=evm_task.address.address,
+                        sender=evm_task.sender.address,
                         nonce=evm_task.nonce,
                     )
                     continue
@@ -93,14 +93,14 @@ class EvmTaskPoller:
                     logger.exception(
                         "PENDING_CHAIN 超时重新执行失败",
                         chain=chain.code,
-                        address=evm_task.address.address,
+                        sender=evm_task.sender.address,
                         nonce=evm_task.nonce,
                     )
                 else:
                     logger.info(
                         "PENDING_CHAIN 超时且无链上记录，已重新广播",
                         chain=chain.code,
-                        address=evm_task.address.address,
+                        sender=evm_task.sender.address,
                         nonce=evm_task.nonce,
                     )
 
@@ -137,7 +137,7 @@ class EvmTaskPoller:
         return TxCheckStatus.MISSING, None, None
 
     @staticmethod
-    def _process_succeeded_receipt(
+    def process_succeeded_receipt(
         *,
         evm_task: EvmTxTask,
         tx_hash: str,
@@ -152,7 +152,7 @@ class EvmTaskPoller:
 
     @staticmethod
     @db_transaction.atomic
-    def _finalize_failed_task(*, evm_task: EvmTxTask) -> bool:
+    def finalize_failed_task(*, evm_task: EvmTxTask) -> bool:
         from evm.internal_tx.routing import get_handler
 
         locked_task = EvmTxTask.objects.select_for_update().get(pk=evm_task.pk)

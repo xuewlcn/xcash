@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 class EvmTxIntent:
     """由 builder 构造并传给 schedule 的 EVM 交易入参容器。"""
 
-    address: Address
+    sender: Address
     chain: Chain
     tx_kind: TxKind
     to: str
@@ -66,7 +66,7 @@ def _function_selector(signature: str) -> str:
 
 def build_native_transfer_intent(
     *,
-    address: Address,
+    sender: Address,
     chain: Chain,
     to: str,
     value: int,
@@ -78,7 +78,7 @@ def build_native_transfer_intent(
 
     to_checksum = Web3.to_checksum_address(to)
     return EvmTxIntent(
-        address=address,
+        sender=sender,
         chain=chain,
         tx_kind=TxKind.NATIVE_TRANSFER,
         to=to_checksum,
@@ -92,7 +92,7 @@ def build_native_transfer_intent(
 
 def build_contract_call_intent(
     *,
-    address: Address,
+    sender: Address,
     chain: Chain,
     contract_address: str,
     data: str,
@@ -107,7 +107,7 @@ def build_contract_call_intent(
         raise ValueError("value must be >= 0")
 
     return EvmTxIntent(
-        address=address,
+        sender=sender,
         chain=chain,
         tx_kind=TxKind.CONTRACT_CALL,
         to=Web3.to_checksum_address(contract_address),
@@ -121,7 +121,7 @@ def build_contract_call_intent(
 
 def build_erc20_transfer_intent(
     *,
-    address: Address,
+    sender: Address,
     chain: Chain,
     crypto: Crypto,
     to: str,
@@ -144,7 +144,7 @@ def build_erc20_transfer_intent(
     ).hex()
 
     return build_contract_call_intent(
-        address=address,
+        sender=sender,
         chain=chain,
         contract_address=token_addr,
         data=f"{ERC20_TRANSFER_SELECTOR}{encoded_args}",
@@ -156,7 +156,7 @@ def build_erc20_transfer_intent(
 
 def build_vault_slot_deploy_intent(
     *,
-    address: Address,
+    sender: Address,
     chain: Chain,
     factory_address: str,
     vault_address: str,
@@ -175,7 +175,7 @@ def build_vault_slot_deploy_intent(
     ).hex()
 
     return build_contract_call_intent(
-        address=address,
+        sender=sender,
         chain=chain,
         contract_address=factory_checksum,
         data=f"0x{selector}{encoded_args}",
@@ -187,7 +187,7 @@ def build_vault_slot_deploy_intent(
 
 def build_vault_slot_collect_intent(
     *,
-    address: Address,
+    sender: Address,
     chain: Chain,
     vault_slot_address: str,
     token_address: str,
@@ -199,7 +199,7 @@ def build_vault_slot_collect_intent(
     encoded_args = eth_abi.encode(["address"], [token_checksum]).hex()
 
     return build_contract_call_intent(
-        address=address,
+        sender=sender,
         chain=chain,
         contract_address=vault_slot_checksum,
         data=f"0x{selector}{encoded_args}",

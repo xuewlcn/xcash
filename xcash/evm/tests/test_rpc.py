@@ -7,12 +7,13 @@ from django.test import TestCase
 from web3 import Web3
 from web3.exceptions import ExtraDataLengthError
 
+from chains.constants import ChainCode
 from chains.models import Chain
-from chains.models import ChainType
 from currencies.models import Crypto
 from evm.scanner import rpc as rpc_module
 from evm.scanner.rpc import EvmScannerRpcClient
 from evm.scanner.rpc import EvmScannerRpcError
+from evm.tests._fixtures import make_evm_chain
 
 
 @patch.object(rpc_module, "_EVM_RPC_RETRY_BACKOFF_SECONDS", (0, 0))
@@ -123,14 +124,9 @@ class EvmScannerRpcClientTests(TestCase):
             symbol="BNBR",
             coingecko_id="binancecoin-rpc",
         )
-        self.chain = Chain.objects.create(
-            code="bsc-rpc-test",
-            name="BSC RPC Test",
-            type=ChainType.EVM,
-            chain_id=56_001,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://bsc.rpc.local",
-            native_coin=self.native,
-            active=True,
         )
 
     def test_get_logs_splits_request_by_chain_max_block_range(self):
@@ -220,8 +216,8 @@ class EvmScannerRpcClientTests(TestCase):
         self,
         build_poa_retry_w3_mock,
     ):
-        # BSC 等 POA 链若因 is_poa 配置失真未注入 middleware，应能自动重试并自愈。
-        self.chain.is_poa = False
+        # 遇到 POA extraData 校验错误时应自动用 POA middleware 重建 w3 重试一次。
+        # is_poa 现由链常量推导且只读，POA 重试不再回写 DB，故仅验证重试路径被触发。
         failing_w3 = SimpleNamespace(
             eth=SimpleNamespace(
                 get_block=Mock(
@@ -242,8 +238,6 @@ class EvmScannerRpcClientTests(TestCase):
         )
 
         self.assertEqual(timestamp, 1_776_734_136)
-        self.chain.refresh_from_db()
-        self.assertTrue(self.chain.is_poa)
         build_poa_retry_w3_mock.assert_called_once()
 
     @patch.object(rpc_module, "_EVM_RPC_RETRY_BACKOFF_SECONDS", (0, 0))
@@ -299,7 +293,7 @@ class EvmScannerRpcClientTests(TestCase):
         self,
         build_poa_retry_w3_mock,
     ):
-        self.chain.is_poa = False
+        # is_poa 现由链常量推导且只读，POA 重试不再回写 DB，故仅验证重试路径被触发。
         failing_w3 = SimpleNamespace(
             eth=SimpleNamespace(
                 get_block=Mock(
@@ -324,6 +318,4 @@ class EvmScannerRpcClientTests(TestCase):
         )
 
         self.assertEqual(block["number"], 93_739_122)
-        self.chain.refresh_from_db()
-        self.assertTrue(self.chain.is_poa)
         build_poa_retry_w3_mock.assert_called_once()

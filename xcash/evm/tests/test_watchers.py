@@ -3,17 +3,19 @@ from django.test import TestCase
 from django.test import override_settings
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import Wallet
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from evm.models import VaultSlot
+from evm.models import VaultSlotUsage
 from evm.scanner.watchers import clear_evm_watch_set_cache
-from evm.scanner.watchers import load_watch_set
 from evm.scanner.watchers import load_matched_addresses_for_candidates
+from evm.scanner.watchers import load_watch_set
+from evm.tests._fixtures import make_evm_chain
 from projects.models import DifferRecipientAddress
 from projects.models import Project
 from users.models import Customer
@@ -35,15 +37,9 @@ class EvmWatchSetCacheTests(TestCase):
             symbol="WNATIVE",
             coingecko_id="watcher-native",
         )
-        self.chain = Chain.objects.create(
-            code="watcher-chain",
-            name="Watcher Chain",
-            type=ChainType.EVM,
-            chain_id=88_001,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://watcher.local",
-            native_coin=self.native,
-            confirm_block_count=6,
-            active=True,
         )
         self.token = Crypto.objects.create(
             name="Watcher Token",
@@ -77,11 +73,11 @@ class EvmWatchSetCacheTests(TestCase):
         )
         self.vault_slot = VaultSlot.objects.create(
             customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000bc"
             ),
-            vault_address=self.address.address,
             salt=b"\x01" * 32,
         )
 
@@ -139,20 +135,9 @@ class EvmWatchSetCacheTests(TestCase):
         self.assertEqual(matched_addresses, frozenset())
 
     def test_candidate_lookup_scopes_vault_slots_to_chain(self):
-        other_native = Crypto.objects.create(
-            name="Watcher Other Native",
-            symbol="WOTHER",
-            coingecko_id="watcher-other-native",
-        )
-        other_chain = Chain.objects.create(
-            code="watcher-other-chain",
-            name="Watcher Other Chain",
-            type=ChainType.EVM,
-            chain_id=88_002,
+        other_chain = make_evm_chain(
+            code=ChainCode.BSC,
             rpc="http://watcher-other.local",
-            native_coin=other_native,
-            confirm_block_count=6,
-            active=True,
         )
         other_customer = Customer.objects.create(
             project=self.project,
@@ -163,9 +148,9 @@ class EvmWatchSetCacheTests(TestCase):
         )
         VaultSlot.objects.create(
             customer=other_customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=other_chain,
             address=other_slot_address,
-            vault_address=self.address.address,
             salt=b"\x03" * 32,
         )
 

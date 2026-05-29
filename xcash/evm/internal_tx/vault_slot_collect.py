@@ -122,10 +122,10 @@ def vault_slot_collect_matcher(
     slot_address = Web3.to_checksum_address(evm_task.to)
     slot = (
         VaultSlot.objects.filter(chain=chain, address__iexact=slot_address)
-        .only("vault_address")
+        .select_related("project")
         .first()
     )
-    if slot is None:
+    if slot is None or not slot.project.vault:
         return None
 
     token_address = _decode_collect_token(evm_task.data)
@@ -135,7 +135,7 @@ def vault_slot_collect_matcher(
     if crypto is None:
         return None
 
-    vault_address = Web3.to_checksum_address(slot.vault_address)
+    vault_address = Web3.to_checksum_address(slot.project.vault)
     collected_log = _find_collected_log(
         receipt=receipt,
         slot_address=slot_address,
@@ -160,7 +160,7 @@ def vault_slot_collect_matcher(
     return MatchedTransferFact(
         from_address=slot_address,
         to_address=vault_address,
-        crypto=crypto,
+        crypto=crypto,  # noqa
         value=collected_log.value,
         amount=collected_log.value.scaleb(-crypto.get_decimals(chain)),
     )

@@ -295,7 +295,7 @@ class WithdrawalService:
 
         if crypto == chain.native_coin:
             intent = build_native_transfer_intent(
-                address=vault_address,
+                sender=vault_address,
                 chain=chain,
                 to=to,
                 value=value_raw,
@@ -304,7 +304,7 @@ class WithdrawalService:
             )
         else:
             intent = build_erc20_transfer_intent(
-                address=vault_address,
+                sender=vault_address,
                 chain=chain,
                 crypto=crypto,
                 to=to,
@@ -626,7 +626,7 @@ class WithdrawalService:
             transfer,
             chain=expected_chain,
             crypto=withdrawal.crypto,
-            from_address=tx_task.address.address,
+            from_address=tx_task.sender.address,
             to_address=withdrawal.to,
             value=expected_value,
         ):

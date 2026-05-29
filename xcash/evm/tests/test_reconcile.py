@@ -7,13 +7,14 @@ from django.test import TestCase
 from django.test import override_settings
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import Wallet
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from evm.models import EvmScanCursor
+from evm.tests._fixtures import make_evm_chain
 
 
 @override_settings(DEBUG=False)
@@ -23,15 +24,9 @@ class EvmReconcileBlocksTests(TestCase):
     def setUp(self):
         cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
         self.native = crypto_create("Ether Recon Scan", "ETHRS", "ethereum-recon-scan")
-        self.chain = Chain.objects.create(
-            code="eth-recon-scan",
-            name="Ether Recon Scan",
-            type=ChainType.EVM,
-            chain_id=90_002,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://eth-recon-scan.local",
-            native_coin=self.native,
-            confirm_block_count=6,
-            active=True,
             latest_block_number=500,
         )
         self.wallet = Wallet.objects.create()
@@ -94,7 +89,7 @@ class EvmReconcileBlocksTests(TestCase):
         self.cursor.save(update_fields=["enabled"])
         erc20_scan_mock.return_value = None
 
-        result = EvmScannerService.reconcile_blocks(
+        EvmScannerService.reconcile_blocks(
             chain=self.chain,
             block_numbers={10},
         )

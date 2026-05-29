@@ -75,7 +75,7 @@ class InvoiceTestMixin:
             coingecko_id=f"{crypto_symbol.lower()}-test",
         )
         self.chain = Chain.objects.create(
-            chain=chain_name,
+            code=chain_name,
             rpc="",
             active=True,
         )
@@ -1518,7 +1518,7 @@ class InvoiceBillingModeFieldTest(TestCase, InvoiceTestMixin):
         )
         self.assertIsNone(slot.customer_id)
         self.assertEqual(slot.address, pay_address)
-        self.assertEqual(slot.vault_address, recipient_address)
+        self.assertEqual(recipient_address, vault_address)
         self.assertEqual(pay_amount, Decimal("10"))
 
     def test_contract_slot_selection_returns_invoice_vault_slot(self):
@@ -1544,7 +1544,7 @@ class InvoiceBillingModeFieldTest(TestCase, InvoiceTestMixin):
         self.assertEqual(slot.usage, VaultSlotUsage.INVOICE)
         self.assertEqual(slot.invoice_index, 0)
         self.assertIsNone(slot.customer_id)
-        self.assertEqual(slot.vault_address, vault_address)
+        self.assertEqual(slot.project.vault, vault_address)
 
     def test_contract_slot_reuses_existing_slot_when_payment_does_not_overlap(self):
         vault_address = Web3.to_checksum_address(

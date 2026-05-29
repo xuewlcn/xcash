@@ -23,7 +23,7 @@ from evm.intents import build_native_transfer_intent
 @pytest.fixture
 def simple_intent():
     return EvmTxIntent(
-        address=object(),
+        sender=object(),
         chain=object(),
         tx_kind=TxKind.NATIVE_TRANSFER,
         to="0x" + "a" * 40,
@@ -114,7 +114,7 @@ def test_build_native_transfer_intent_sets_basic_fields():
     value = 1234567890000000000
 
     intent = build_native_transfer_intent(
-        address=_fake_address(),
+        sender=_fake_address(),
         chain=chain,
         to=recipient,
         value=value,
@@ -131,7 +131,7 @@ def test_build_native_transfer_intent_sets_basic_fields():
 def test_build_native_transfer_intent_rejects_negative_value():
     with pytest.raises(ValueError, match="value must be >= 0"):
         build_native_transfer_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=_fake_chain(),
             to="0x1111111111111111111111111111111111111111",
             value=-1,
@@ -147,7 +147,7 @@ def test_build_erc20_transfer_intent_sets_basic_fields():
     value_raw = 1234567
 
     intent = build_erc20_transfer_intent(
-        address=_fake_address(),
+        sender=_fake_address(),
         chain=chain,
         crypto=crypto,
         to=recipient,
@@ -175,7 +175,7 @@ def test_build_erc20_transfer_intent_rejects_negative_value_raw():
 
     with pytest.raises(ValueError, match="value_raw must be >= 0"):
         build_erc20_transfer_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=_fake_chain(),
             crypto=crypto,
             to="0x3333333333333333333333333333333333333333",
@@ -190,7 +190,7 @@ def test_build_erc20_transfer_intent_rejects_crypto_not_deployed_on_chain():
 
     with pytest.raises(ValueError, match="Crypto USDC is not deployed on chain ETH"):
         build_erc20_transfer_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=chain,
             crypto=crypto,
             to="0x3333333333333333333333333333333333333333",
@@ -203,7 +203,7 @@ def test_build_contract_call_intent_sets_basic_fields():
     chain = _fake_chain()
     contract_address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     intent = build_contract_call_intent(
-        address=_fake_address(),
+        sender=_fake_address(),
         chain=chain,
         contract_address=contract_address,
         data="A9059CBB",
@@ -221,7 +221,7 @@ def test_build_contract_call_intent_sets_basic_fields():
 
 def test_build_contract_call_intent_defaults_value_to_zero():
     intent = build_contract_call_intent(
-        address=_fake_address(),
+        sender=_fake_address(),
         chain=_fake_chain(),
         contract_address="0x2222222222222222222222222222222222222222",
         data="0x",
@@ -235,7 +235,7 @@ def test_build_contract_call_intent_defaults_value_to_zero():
 def test_build_contract_call_intent_rejects_non_positive_gas():
     with pytest.raises(ValueError, match="gas must be > 0"):
         build_contract_call_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=_fake_chain(),
             contract_address="0x2222222222222222222222222222222222222222",
             data="0x",
@@ -247,7 +247,7 @@ def test_build_contract_call_intent_rejects_non_positive_gas():
 def test_build_contract_call_intent_rejects_negative_value():
     with pytest.raises(ValueError, match="value must be >= 0"):
         build_contract_call_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=_fake_chain(),
             contract_address="0x2222222222222222222222222222222222222222",
             data="0x",
@@ -260,7 +260,7 @@ def test_build_contract_call_intent_rejects_negative_value():
 def test_build_contract_call_intent_rejects_non_hex_data():
     with pytest.raises(ValueError, match="hex string"):
         build_contract_call_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=_fake_chain(),
             contract_address="0x2222222222222222222222222222222222222222",
             data="zzzz",

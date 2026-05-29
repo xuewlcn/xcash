@@ -1,5 +1,5 @@
 """
-轮询器 _process_succeeded_receipt 和 ERC20 Transfer 日志工具的单元测试。
+轮询器 process_succeeded_receipt 和 ERC20 Transfer 日志工具的单元测试。
 
 覆盖：
 - 原生币路径：get_transaction + receipt → 内部交易处理器
@@ -184,7 +184,7 @@ class Erc20TransferLogUtilsTest(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Task 4：_process_succeeded_receipt — 原生币路径
+# Task 4：process_succeeded_receipt — 原生币路径
 # ---------------------------------------------------------------------------
 class ProcessSucceededReceiptNativeTest(TestCase):
     """原生币路径：从 get_transaction 取 from/to/value，交给内部交易处理器。"""
@@ -207,13 +207,13 @@ class ProcessSucceededReceiptNativeTest(TestCase):
         )
         self.base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.address,
+            sender=self.address,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         self.evm_task = EvmTxTask.objects.create(
             base_task=self.base_task,
-            address=self.address,
+            sender=self.address,
             chain=self.chain,
             to=Web3.to_checksum_address(_RECEIVER_HEX),
             value=Decimal("1500000000000000000"),
@@ -223,7 +223,7 @@ class ProcessSucceededReceiptNativeTest(TestCase):
         )
 
     def test_native_succeeded_receipt_feeds_to_internal_processor(self):
-        """原生币 receipt 成功时，_process_succeeded_receipt 用正确载荷调用内部处理器。"""
+        """原生币 receipt 成功时，process_succeeded_receipt 用正确载荷调用内部处理器。"""
         tx_hash = "0x" + "ab" * 32
         receipt = {
             "blockNumber": 100,
@@ -252,7 +252,7 @@ class ProcessSucceededReceiptNativeTest(TestCase):
                 "evm.internal_tx.processor.process_internal_transaction"
             ) as process_mock,
         ):
-            EvmTaskPoller._process_succeeded_receipt(
+            EvmTaskPoller.process_succeeded_receipt(
                 evm_task=self.evm_task,
                 tx_hash=tx_hash,
                 receipt=receipt,
@@ -266,7 +266,7 @@ class ProcessSucceededReceiptNativeTest(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Task 5b：_process_succeeded_receipt — ERC-20 路径
+# Task 5b：process_succeeded_receipt — ERC-20 路径
 # ---------------------------------------------------------------------------
 class ProcessSucceededReceiptErc20Test(TestCase):
     """ERC-20 路径：从 receipt.logs 解析 Transfer，无需调用 get_transaction。"""
@@ -300,14 +300,14 @@ class ProcessSucceededReceiptErc20Test(TestCase):
         )
         self.base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.address,
+            sender=self.address,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         # ERC-20 发送时 value=0，data 包含 transfer calldata
         self.evm_task = EvmTxTask.objects.create(
             base_task=self.base_task,
-            address=self.address,
+            sender=self.address,
             chain=self.chain,
             to=Web3.to_checksum_address(_CONTRACT_HEX),
             value=Decimal("0"),
@@ -349,7 +349,7 @@ class ProcessSucceededReceiptErc20Test(TestCase):
                 "evm.internal_tx.processor.process_internal_transaction"
             ) as process_mock,
         ):
-            EvmTaskPoller._process_succeeded_receipt(
+            EvmTaskPoller.process_succeeded_receipt(
                 evm_task=self.evm_task,
                 tx_hash=tx_hash,
                 receipt=receipt,
@@ -392,7 +392,7 @@ class ProcessSucceededReceiptErc20Test(TestCase):
                 "evm.internal_tx.processor.process_internal_transaction"
             ) as process_mock,
         ):
-            EvmTaskPoller._process_succeeded_receipt(
+            EvmTaskPoller.process_succeeded_receipt(
                 evm_task=self.evm_task,
                 tx_hash=tx_hash,
                 receipt=receipt,
@@ -453,7 +453,7 @@ class PollerIntegrationTest(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
@@ -466,7 +466,7 @@ class PollerIntegrationTest(TestCase):
         )
         evm_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=_CONTRACT_HEX,
@@ -505,7 +505,7 @@ class PollerIntegrationTest(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
@@ -518,7 +518,7 @@ class PollerIntegrationTest(TestCase):
         )
         evm_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=_RECEIVER_HEX,
@@ -556,6 +556,7 @@ class PollerIntegrationTest(TestCase):
         project = Project.objects.create(
             name=f"proj-slot-{tx_hash[-6:]}",
             wallet=self.wallet,
+            vault=vault_address,
         )
         VaultSlot.objects.create(
             project=project,
@@ -563,18 +564,17 @@ class PollerIntegrationTest(TestCase):
             usage=VaultSlotUsage.INVOICE,
             invoice_index=1,
             address=slot_address,
-            vault_address=vault_address,
             salt=b"\x01" * 32,
         )
         intent = build_vault_slot_collect_intent(
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             vault_slot_address=slot_address,
             token_address=_CONTRACT_HEX,
         )
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.VaultSlotCollect,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
@@ -587,7 +587,7 @@ class PollerIntegrationTest(TestCase):
         )
         evm_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=intent.to,
@@ -606,7 +606,7 @@ class PollerIntegrationTest(TestCase):
 
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            sender=self.addr,
             tx_type=TxTaskType.VaultSlotDeploy,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
@@ -619,7 +619,7 @@ class PollerIntegrationTest(TestCase):
         )
         evm_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            sender=self.addr,
             chain=self.chain,
             nonce=0,
             to=Web3.to_checksum_address("0x" + "de" * 20),
@@ -1065,14 +1065,14 @@ class PollerIntegrationTest(TestCase):
         def create_evm_task(*, tx_hash: str, nonce: int) -> EvmTxTask:
             base_task = TxTask.objects.create(
                 chain=self.chain,
-                address=self.addr,
+                sender=self.addr,
                 tx_type=TxTaskType.Withdrawal,
                 tx_hash=tx_hash,
                 status=TxTaskStatus.PENDING_CHAIN,
             )
             return EvmTxTask.objects.create(
                 base_task=base_task,
-                address=self.addr,
+                sender=self.addr,
                 chain=self.chain,
                 nonce=nonce,
                 to=_RECEIVER_HEX,
@@ -1095,7 +1095,7 @@ class PollerIntegrationTest(TestCase):
 
         with patch.object(
             EvmTaskPoller,
-            "_finalize_failed_task",
+            "finalize_failed_task",
             side_effect=[RuntimeError("handler failed"), True],
         ) as finalize_failed_mock:
             EvmTaskPoller.poll_chain(chain=self.chain)

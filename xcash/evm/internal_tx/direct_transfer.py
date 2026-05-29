@@ -177,7 +177,7 @@ def match_direct_transfer_fact(
     if fields is None:
         return None
 
-    from_address = Web3.to_checksum_address(tx_task.address.address)
+    from_address = Web3.to_checksum_address(tx_task.sender.address)
     if fields.crypto == chain.native_coin:
         if not _native_tx_matches_expected(
             tx=tx,

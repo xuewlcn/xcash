@@ -1,3 +1,4 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,9 +9,9 @@ from django.utils import timezone
 from eth_utils import keccak
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import Transfer
 from chains.models import TransferStatus
@@ -18,6 +19,7 @@ from chains.models import TransferType
 from chains.models import TxTaskStatus
 from chains.models import TxTaskType
 from chains.models import Wallet
+from core.models import SystemSettings
 from core.models import SystemWallet
 from currencies.models import ChainToken
 from currencies.models import Crypto
@@ -31,7 +33,9 @@ from evm.intents import build_vault_slot_collect_intent
 from evm.intents import build_vault_slot_deploy_intent
 from evm.models import EvmTxTask
 from evm.models import VaultSlot
+from evm.models import VaultSlotCollectSchedule
 from evm.models import VaultSlotUsage
+from evm.tests._fixtures import make_evm_chain
 from invoices.models import Invoice
 from invoices.models import InvoiceBillingMode
 from invoices.models import InvoiceStatus
@@ -57,7 +61,7 @@ def test_build_vault_slot_deploy_intent_encodes_factory_call():
     salt = bytes.fromhex("11" * 32)
 
     intent = build_vault_slot_deploy_intent(
-        address=_fake_address(),
+        sender=_fake_address(),
         chain=_fake_chain(),
         factory_address=factory_address,
         vault_address=vault_address,
@@ -77,7 +81,7 @@ def test_build_vault_slot_deploy_intent_encodes_factory_call():
 def test_build_vault_slot_deploy_intent_rejects_non_32_byte_salt():
     with pytest.raises(ValueError, match="salt must be 32 bytes"):
         build_vault_slot_deploy_intent(
-            address=_fake_address(),
+            sender=_fake_address(),
             chain=_fake_chain(),
             factory_address="0x" + "a" * 40,
             vault_address="0x" + "b" * 40,
@@ -90,7 +94,7 @@ def test_build_vault_slot_collect_intent_encodes_slot_call():
     token_address = "0x" + "d" * 40
 
     intent = build_vault_slot_collect_intent(
-        address=_fake_address(),
+        sender=_fake_address(),
         chain=_fake_chain(),
         vault_slot_address=vault_slot_address,
         token_address=token_address,
@@ -107,19 +111,9 @@ def test_build_vault_slot_collect_intent_encodes_slot_call():
 
 class VaultSlotAddressSchedulingTests(TestCase):
     def setUp(self):
-        self.native = Crypto.objects.create(
-            name="Deposit Slot Native",
-            symbol="DSN",
-            coingecko_id="vault-slot-native",
-        )
-        self.chain = Chain.objects.create(
-            code="vault-slot-chain",
-            name="Deposit Slot Chain",
-            type=ChainType.EVM,
-            chain_id=991_100,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://vault-slot.local",
-            native_coin=self.native,
-            active=True,
         )
         self.wallet = Wallet.objects.create()
         self.project = Project.objects.create(
@@ -212,7 +206,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         intent = schedule.call_args.args[0]
         self.assertEqual(intent.tx_type, TxTaskType.VaultSlotDeploy)
-        self.assertEqual(intent.address, self.system_sender)
+        self.assertEqual(intent.sender, self.system_sender)
         self.assertEqual(intent.to, XCASH_VAULT_SLOT_FACTORY_ADDRESS)
         self.assertIn(self.project.vault[2:].lower(), intent.data)
 
@@ -278,7 +272,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         with signer_patch:
             task = VaultSlot.schedule_deploy(slot.pk)
 
-        self.assertEqual(task.address, self.system_sender)
+        self.assertEqual(task.sender, self.system_sender)
 
     def test_schedule_deploy_skips_when_slot_already_deployed_on_chain(self):
         slot = self._create_vault_slot()
@@ -358,14 +352,9 @@ class VaultSlotAddressSchedulingTests(TestCase):
         )
 
     def test_same_customer_can_reuse_vault_slot_address_across_evm_chains(self):
-        second_chain = Chain.objects.create(
-            code="vault-slot-chain-2",
-            name="Deposit Slot Chain 2",
-            type=ChainType.EVM,
-            chain_id=991_101,
+        second_chain = make_evm_chain(
+            code=ChainCode.BSC,
             rpc="http://vault-slot-2.local",
-            native_coin=self.native,
-            active=True,
         )
         signer_patch = self._patch_signer()
 
@@ -413,7 +402,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(schedule.call_count, 1)
         intent = schedule.call_args.args[0]
         self.assertEqual(intent.tx_type, TxTaskType.VaultSlotDeploy)
-        self.assertEqual(intent.address, self.system_sender)
+        self.assertEqual(intent.sender, self.system_sender)
         self.assertEqual(intent.to, XCASH_VAULT_SLOT_FACTORY_ADDRESS)
 
     def test_existing_slot_with_same_deploy_task_does_not_duplicate_schedule(self):
@@ -435,23 +424,6 @@ class VaultSlotAddressSchedulingTests(TestCase):
             EvmTxTask.objects.filter(pk=existing_task.pk).count(),
             1,
         )
-        schedule.assert_not_called()
-
-    def test_schedule_deploy_rejects_current_vault_address_mismatch(self):
-        slot = self._create_vault_slot(
-            vault_address=Web3.to_checksum_address(
-                "0x0000000000000000000000000000000000000bad"
-            )
-        )
-        signer_patch = self._patch_signer()
-
-        with (
-            signer_patch,
-            patch.object(EvmTxTask, "schedule") as schedule,
-            self.assertRaisesRegex(RuntimeError, "Vault 地址不一致"),
-        ):
-            VaultSlot.schedule_deploy(slot.pk)
-
         schedule.assert_not_called()
 
     def test_second_get_address_returns_existing_address_without_scheduling(self):
@@ -482,11 +454,11 @@ class VaultSlotAddressSchedulingTests(TestCase):
     def test_integrity_error_lookup_path_does_not_schedule_duplicate_deploy(self):
         slot = VaultSlot.objects.create(
             customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000a11"
             ),
-            vault_address=self.vault.address,
             salt=b"\x11" * 32,
         )
         signer_patch = self._patch_signer()
@@ -540,19 +512,26 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertIs(raised.exception, original_error)
 
     def test_schedule_collect_for_deposit_uses_vault_sender_and_slot_target(self):
+        SystemSettings.objects.create(vault_slot_collect_delay_minutes=30)
         slot = self._create_vault_slot()
         deposit = self._create_deposit(slot=slot)
         signer_patch = self._patch_signer()
+        before = timezone.now()
 
         with signer_patch:
-            task = VaultSlot.schedule_collect_for_deposit(deposit.pk)
+            schedule = VaultSlot.schedule_collect_for_deposit(deposit.pk)
 
-        self.assertEqual(task.address, self.vault)
-        self.assertEqual(task.chain, self.chain)
-        self.assertEqual(task.to, slot.address)
-        self.assertEqual(task.base_task.tx_type, TxTaskType.VaultSlotCollect)
-        self.assertTrue(task.data.startswith(f"0x{_selector('collect(address)')}"))
-        self.assertIn(self.token_address[2:].lower(), task.data)
+        self.assertEqual(schedule.chain, self.chain)
+        self.assertEqual(schedule.vault_slot, slot)
+        self.assertEqual(schedule.crypto, self.token)
+        self.assertIsNone(schedule.tx_task)
+        self.assertGreaterEqual(schedule.due_at, before + timedelta(minutes=30))
+        self.assertLessEqual(schedule.due_at, timezone.now() + timedelta(minutes=30))
+        self.assertFalse(
+            EvmTxTask.objects.filter(
+                base_task__tx_type=TxTaskType.VaultSlotCollect
+            ).exists()
+        )
 
     def test_schedule_collect_for_invoice_uses_contract_slot_and_token(self):
         slot = VaultSlot.objects.create(
@@ -563,7 +542,6 @@ class VaultSlotAddressSchedulingTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000a21"
             ),
-            vault_address=self.project.vault,
             salt=b"\x21" * 32,
         )
         invoice = Invoice.objects.create(
@@ -583,16 +561,14 @@ class VaultSlotAddressSchedulingTests(TestCase):
         )
 
         with self._patch_signer():
-            task = VaultSlot.schedule_collect_for_invoice(invoice.pk)
+            schedule = VaultSlot.schedule_collect_for_invoice(invoice.pk)
 
-        self.assertEqual(task.address, self.vault)
-        self.assertEqual(task.chain, self.chain)
-        self.assertEqual(task.to, slot.address)
-        self.assertEqual(task.base_task.tx_type, TxTaskType.VaultSlotCollect)
-        self.assertTrue(task.data.startswith(f"0x{_selector('collect(address)')}"))
-        self.assertIn(self.token_address[2:].lower(), task.data)
+        self.assertEqual(schedule.chain, self.chain)
+        self.assertEqual(schedule.vault_slot, slot)
+        self.assertEqual(schedule.crypto, self.token)
+        self.assertIsNone(schedule.tx_task)
 
-    def test_schedule_collect_for_deposit_is_idempotent_for_unfinalized_task(self):
+    def test_schedule_collect_for_deposit_is_idempotent_for_pending_schedule(self):
         slot = self._create_vault_slot()
         deposit = self._create_deposit(slot=slot)
         signer_patch = self._patch_signer()
@@ -606,74 +582,82 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(task.pk, existing.pk)
         schedule.assert_not_called()
 
-    def test_schedule_collect_for_deposit_reuses_unknown_unfinalized_tasks(self):
+    def test_schedule_collect_for_deposit_reuses_pending_schedule_across_deposits(self):
         slot = self._create_vault_slot()
         signer_patch = self._patch_signer()
 
-        for index, status in enumerate(
-            (
-                TxTaskStatus.QUEUED,
-                TxTaskStatus.PENDING_CHAIN,
-                TxTaskStatus.PENDING_CONFIRM,
-            ),
-            start=1,
-        ):
-            deposit = self._create_deposit(slot=slot, tx_hash_suffix=str(index))
-            with signer_patch:
-                existing = VaultSlot.schedule_collect_for_deposit(deposit.pk)
-            existing.base_task.status = status
-            existing.base_task.save(update_fields=["status", "updated_at"])
+        first_deposit = self._create_deposit(slot=slot, tx_hash_suffix="1")
+        second_deposit = self._create_deposit(slot=slot, tx_hash_suffix="2")
+        with signer_patch:
+            existing = VaultSlot.schedule_collect_for_deposit(first_deposit.pk)
 
-            with signer_patch, patch.object(EvmTxTask, "schedule") as schedule:
-                task = VaultSlot.schedule_collect_for_deposit(deposit.pk)
+        with signer_patch, patch.object(EvmTxTask, "schedule") as schedule:
+            task = VaultSlot.schedule_collect_for_deposit(second_deposit.pk)
 
-            self.assertEqual(task.pk, existing.pk)
-            schedule.assert_not_called()
-            existing.base_task.status = TxTaskStatus.FAILED
-            existing.base_task.save(update_fields=["status", "updated_at"])
+        self.assertEqual(task.pk, existing.pk)
+        schedule.assert_not_called()
+        self.assertEqual(
+            VaultSlotCollectSchedule.objects.filter(
+                chain=self.chain,
+                vault_slot=slot,
+                crypto=self.token,
+                tx_task__isnull=True,
+            ).count(),
+            1,
+        )
 
-    def test_schedule_collect_for_deposit_recreates_after_finalized_failed_task(self):
+    def test_due_collect_schedule_creates_tx_task_and_binds_it(self):
         slot = self._create_vault_slot()
         deposit = self._create_deposit(slot=slot)
         signer_patch = self._patch_signer()
 
         with signer_patch:
-            failed_task = VaultSlot.schedule_collect_for_deposit(deposit.pk)
-        failed_task.base_task.status = TxTaskStatus.FAILED
-        failed_task.base_task.save(update_fields=["status", "updated_at"])
+            schedule = VaultSlot.schedule_collect_for_deposit(deposit.pk)
+        schedule.due_at = timezone.now() - timedelta(seconds=1)
+        schedule.save(update_fields=["due_at", "updated_at"])
 
         with signer_patch:
-            new_task = VaultSlot.schedule_collect_for_deposit(deposit.pk)
+            created_count = VaultSlotCollectSchedule.execute_due()
 
-        self.assertNotEqual(new_task.pk, failed_task.pk)
+        self.assertEqual(created_count, 1)
+        schedule.refresh_from_db()
+        self.assertIsNotNone(schedule.tx_task)
+        self.assertEqual(schedule.tx_task.sender, self.vault)
+        self.assertEqual(schedule.tx_task.chain, self.chain)
+        self.assertEqual(schedule.tx_task.to, slot.address)
+        self.assertEqual(schedule.tx_task.base_task.tx_type, TxTaskType.VaultSlotCollect)
+        self.assertTrue(schedule.tx_task.data.startswith(f"0x{_selector('collect(address)')}"))
+        self.assertIn(self.token_address[2:].lower(), schedule.tx_task.data)
+
+    def test_schedule_collect_for_deposit_creates_new_schedule_after_task_bound(self):
+        slot = self._create_vault_slot()
+        first_deposit = self._create_deposit(slot=slot, tx_hash_suffix="1")
+        second_deposit = self._create_deposit(slot=slot, tx_hash_suffix="2")
+        signer_patch = self._patch_signer()
+
+        with signer_patch:
+            schedule = VaultSlot.schedule_collect_for_deposit(first_deposit.pk)
+        schedule.due_at = timezone.now() - timedelta(seconds=1)
+        schedule.save(update_fields=["due_at", "updated_at"])
+
+        with signer_patch:
+            VaultSlotCollectSchedule.execute_due()
+            new_schedule = VaultSlot.schedule_collect_for_deposit(second_deposit.pk)
+
+        self.assertNotEqual(new_schedule.pk, schedule.pk)
+        self.assertIsNone(new_schedule.tx_task)
         self.assertEqual(
-            EvmTxTask.objects.filter(
-                base_task__tx_type=TxTaskType.VaultSlotCollect
+            VaultSlotCollectSchedule.objects.filter(
+                chain=self.chain,
+                vault_slot=slot,
+                crypto=self.token,
             ).count(),
             2,
         )
 
-    def test_schedule_collect_for_deposit_rejects_vault_mismatch_without_task(self):
-        slot = self._create_vault_slot(
-            vault_address=Web3.to_checksum_address(
-                "0x0000000000000000000000000000000000000bad"
-            )
-        )
-        deposit = self._create_deposit(slot=slot)
-        signer_patch = self._patch_signer()
-
-        with signer_patch, self.assertRaisesRegex(RuntimeError, "Vault 地址不一致"):
-            VaultSlot.schedule_collect_for_deposit(deposit.pk)
-
-        self.assertFalse(
-            EvmTxTask.objects.filter(
-                base_task__tx_type=TxTaskType.VaultSlotCollect
-            ).exists()
-        )
-
     def test_schedule_collect_for_deposit_skips_native_deposit(self):
         slot = self._create_vault_slot()
-        deposit = self._create_deposit(slot=slot, crypto=self.native)
+        deposit = self._create_deposit(slot=slot, crypto=self.chain.native_coin)
 
         task = VaultSlot.schedule_collect_for_deposit(deposit.pk)
 
@@ -683,8 +667,9 @@ class VaultSlotAddressSchedulingTests(TestCase):
                 base_task__tx_type=TxTaskType.VaultSlotCollect
             ).exists()
         )
+        self.assertFalse(VaultSlotCollectSchedule.objects.exists())
 
-    def _create_vault_slot(self, *, vault_address: str | None = None) -> VaultSlot:
+    def _create_vault_slot(self) -> VaultSlot:
         if self.project.vault is None:
             self.project.vault = Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000f01"
@@ -692,11 +677,11 @@ class VaultSlotAddressSchedulingTests(TestCase):
             self.project.save(update_fields=["vault"])
         return VaultSlot.objects.create(
             customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000a11"
             ),
-            vault_address=vault_address or self.project.vault,
             salt=b"\x11" * 32,
         )
 

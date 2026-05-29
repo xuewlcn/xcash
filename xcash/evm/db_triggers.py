@@ -9,7 +9,7 @@ from django.db import connections
 # nonce 连续性触发器：
 # - 无记录时 nonce 必须为 0
 # - 有记录时 nonce 必须为 max(nonce) + 1
-# 配合 UNIQUE(address, chain, nonce) 约束，从数据库层面杜绝 nonce 乱序或跳跃。
+# 配合 UNIQUE(sender, chain, nonce) 约束，从数据库层面杜绝 nonce 乱序或跳跃。
 _NONCE_SEQUENTIAL_FUNC = """
 CREATE OR REPLACE FUNCTION evm_check_nonce_sequential()
 RETURNS TRIGGER AS $$
@@ -19,19 +19,19 @@ BEGIN
     SELECT MAX(nonce)
       INTO max_nonce
       FROM evm_evmtxtask
-     WHERE address_id = NEW.address_id
+     WHERE sender_id = NEW.sender_id
        AND chain_id   = NEW.chain_id;
 
     IF max_nonce IS NULL AND NEW.nonce != 0 THEN
         RAISE EXCEPTION
-            'first nonce must be 0, got % (address_id=%, chain_id=%)',
-            NEW.nonce, NEW.address_id, NEW.chain_id;
+            'first nonce must be 0, got % (sender_id=%, chain_id=%)',
+            NEW.nonce, NEW.sender_id, NEW.chain_id;
     END IF;
 
     IF max_nonce IS NOT NULL AND NEW.nonce != max_nonce + 1 THEN
         RAISE EXCEPTION
-            'nonce must be max+1: expected %, got % (address_id=%, chain_id=%)',
-            max_nonce + 1, NEW.nonce, NEW.address_id, NEW.chain_id;
+            'nonce must be max+1: expected %, got % (sender_id=%, chain_id=%)',
+            max_nonce + 1, NEW.nonce, NEW.sender_id, NEW.chain_id;
     END IF;
 
     RETURN NEW;

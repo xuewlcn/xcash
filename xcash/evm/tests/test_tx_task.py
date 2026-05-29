@@ -19,27 +19,17 @@ from chains.models import TxTask
 from chains.models import TxTaskStatus
 from chains.models import TxTaskType
 from chains.models import Wallet
-from currencies.models import Crypto
 from evm.choices import TxKind
 from evm.constants import DEFAULT_BASE_TRANSFER_GAS
 from evm.models import EvmTxTask
+from evm.tests._fixtures import make_evm_chain
 
 
 class EvmTxTaskTests(TestCase):
     def test_create_without_tx_kind_is_rejected_by_database(self):
-        native = Crypto.objects.create(
-            name="Ethereum TxKind Constraint",
-            symbol="ETHTKC",
-            coingecko_id="ethereum-tx-kind-constraint",
-        )
-        chain = Chain.objects.create(
-            code="eth-tx-kind-constraint",
-            name="Ethereum TxKind Constraint",
-            type=ChainType.EVM,
-            chain_id=999_401,
+        chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
@@ -52,7 +42,7 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
@@ -60,7 +50,7 @@ class EvmTxTaskTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             EvmTxTask.objects.create(
                 base_task=base_task,
-                address=addr,
+                sender=addr,
                 chain=chain,
                 to="0x0000000000000000000000000000000000000002",
                 value=0,
@@ -72,19 +62,9 @@ class EvmTxTaskTests(TestCase):
 
     def test_next_nonce_returns_count_of_existing_tasks(self):
         # nonce 基于已有任务数量推算，事务回滚时自动复用，不会产生空洞。
-        native = Crypto.objects.create(
-            name="Ethereum Nonce",
-            symbol="ETHN",
-            coingecko_id="ethereum-nonce",
-        )
-        chain = Chain.objects.create(
-            code="eth-nonce",
-            name="Ethereum Nonce",
-            type=ChainType.EVM,
-            chain_id=999,
+        chain = make_evm_chain(
+            code=ChainCode.BSC,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         wallet = Wallet.objects.create()
         addr = Address.objects.create(
@@ -102,14 +82,14 @@ class EvmTxTaskTests(TestCase):
         # 创建一个任务后 nonce 应为 1
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "a1" * 32,
             status=TxTaskStatus.QUEUED,
         )
         EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             to="0x0000000000000000000000000000000000000002",
             value=0,
@@ -123,19 +103,9 @@ class EvmTxTaskTests(TestCase):
 
     def test_broadcast_records_last_attempt_without_marking_completion(self):
         # EVM 主执行对象只记录发送尝试；是否上链由统一父任务状态推进。
-        native = Crypto.objects.create(
-            name="Ethereum Last Attempt",
-            symbol="ETHLA",
-            coingecko_id="ethereum-last-attempt",
-        )
-        chain = Chain.objects.create(
-            code="eth-last-attempt",
-            name="Ethereum Last Attempt",
-            type=ChainType.EVM,
-            chain_id=999_402,
+        chain = make_evm_chain(
+            code=ChainCode.Polygon,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
@@ -157,13 +127,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to="0x0000000000000000000000000000000000000002",
@@ -180,19 +150,9 @@ class EvmTxTaskTests(TestCase):
         self.assertIsNotNone(tx_task.last_attempt_at)
 
     def test_broadcast_preflight_skips_send_when_withdrawal_balance_insufficient(self):
-        native = Crypto.objects.create(
-            name="Ethereum Vault Reraise",
-            symbol="ETHVR",
-            coingecko_id="ethereum-vault-reraise",
-        )
-        chain = Chain.objects.create(
-            code="eth-vault-reraise",
-            name="Ethereum Vault Reraise",
-            type=ChainType.EVM,
-            chain_id=20199,
+        chain = make_evm_chain(
+            code=ChainCode.ArbitrumOne,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -219,14 +179,14 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "d" * 64,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -247,19 +207,9 @@ class EvmTxTaskTests(TestCase):
         self.assertIsNotNone(tx_task.last_attempt_at)
 
     def test_broadcast_does_not_estimate_gas_before_send(self):
-        native = Crypto.objects.create(
-            name="Ethereum No Estimate",
-            symbol="ETHNE",
-            coingecko_id="ethereum-no-estimate",
-        )
-        chain = Chain.objects.create(
-            code="eth-no-estimate",
-            name="Ethereum No Estimate",
-            type=ChainType.EVM,
-            chain_id=20501,
+        chain = make_evm_chain(
+            code=ChainCode.Optimism,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -281,13 +231,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=Web3.to_checksum_address("0x" + "76" * 20),
@@ -308,19 +258,9 @@ class EvmTxTaskTests(TestCase):
 
     def test_broadcast_preflight_success_proceeds_to_send(self):
         # pre-flight 通过时继续进入 send_raw_transaction 流程，base_task 进入 PENDING_CHAIN。
-        native = Crypto.objects.create(
-            name="Ethereum Preflight Ok",
-            symbol="ETHPOK",
-            coingecko_id="ethereum-preflight-ok",
-        )
-        chain = Chain.objects.create(
-            code="eth-preflight-ok",
-            name="Ethereum Preflight Ok",
-            type=ChainType.EVM,
-            chain_id=20401,
+        chain = make_evm_chain(
+            code=ChainCode.Base,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -348,13 +288,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -377,19 +317,9 @@ class EvmTxTaskTests(TestCase):
     def test_broadcast_preflight_buffer_uses_task_gas_for_native_transfer(self):
         # NATIVE_TRANSFER 的主动余额阈值按任务自身 gas 计算；余额刚好覆盖
         # value + 2 * base_transfer_gas * gas_price 时应通过并进入真实广播。
-        native = Crypto.objects.create(
-            name="Ethereum Preflight Native Gas",
-            symbol="ETHPNG",
-            coingecko_id="ethereum-preflight-native-gas",
-        )
-        chain = Chain.objects.create(
-            code="eth-preflight-native-gas",
-            name="Ethereum Preflight Native Gas",
-            type=ChainType.EVM,
-            chain_id=20411,
+        chain = make_evm_chain(
+            code=ChainCode.Avalanche,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -420,13 +350,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -444,19 +374,9 @@ class EvmTxTaskTests(TestCase):
 
     def test_broadcast_preflight_contract_call_passes_at_exact_task_gas_buffer(self):
         # CONTRACT_CALL 使用任务自定义 gas；余额刚好等于新公式阈值时应通过。
-        native = Crypto.objects.create(
-            name="Ethereum Preflight Contract Gas",
-            symbol="ETHPCG",
-            coingecko_id="ethereum-preflight-contract-gas",
-        )
-        chain = Chain.objects.create(
-            code="eth-preflight-contract-gas",
-            name="Ethereum Preflight Contract Gas",
-            type=ChainType.EVM,
-            chain_id=20412,
+        chain = make_evm_chain(
+            code=ChainCode.ZkSyncEra,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -485,13 +405,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=contract,
@@ -509,19 +429,9 @@ class EvmTxTaskTests(TestCase):
         send_raw_mock.assert_called_once()
 
     def test_balance_preflight_uses_signed_gas_price_not_current_lower_price(self):
-        native = Crypto.objects.create(
-            name="Ethereum Signed Gas",
-            symbol="ETHSG",
-            coingecko_id="ethereum-signed-gas",
-        )
-        chain = Chain.objects.create(
-            code="eth-signed-gas",
-            name="Ethereum Signed Gas",
-            type=ChainType.EVM,
-            chain_id=20502,
+        chain = make_evm_chain(
+            code=ChainCode.Linea,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -541,13 +451,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=Web3.to_checksum_address("0x" + "a2" * 20),
@@ -569,19 +479,9 @@ class EvmTxTaskTests(TestCase):
     def test_pending_chain_rebroadcast_ignores_pipeline_full(self, _pipeline_full_mock):
         # 低 nonce 的 PENDING_CHAIN 任务超时重播是为了释放同地址 pipeline；
         # 如果它也被 pipeline_full 阻断，满 pipeline 会无法自愈。
-        native = Crypto.objects.create(
-            name="Ethereum Rebroadcast Pipeline",
-            symbol="ETHRBP",
-            coingecko_id="ethereum-rebroadcast-pipeline",
-        )
-        chain = Chain.objects.create(
-            code="eth-rebroadcast-pipeline",
-            name="Ethereum Rebroadcast Pipeline",
-            type=ChainType.EVM,
-            chain_id=20403,
+        chain = make_evm_chain(
+            code=ChainCode.Scroll,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -607,13 +507,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -630,19 +530,9 @@ class EvmTxTaskTests(TestCase):
 
     @patch("evm.models.get_signer_backend")
     def test_rebroadcast_bumps_gas_price_by_125_percent(self, get_signer_backend_mock):
-        native = Crypto.objects.create(
-            name="Ethereum Fee Bump",
-            symbol="ETHFB",
-            coingecko_id="ethereum-fee-bump",
-        )
-        chain = Chain.objects.create(
-            code="eth-fee-bump",
-            name="Ethereum Fee Bump",
-            type=ChainType.EVM,
-            chain_id=20503,
+        chain = make_evm_chain(
+            code=ChainCode.Anvil,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -667,14 +557,14 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "a5" * 32,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=Web3.to_checksum_address("0x" + "a6" * 20),
@@ -692,19 +582,9 @@ class EvmTxTaskTests(TestCase):
         assert tx_dict["gasPrice"] == 113
 
     def test_broadcast_keeps_fee_too_low_error_retryable_without_finalizing(self):
-        native = Crypto.objects.create(
-            name="Ethereum Fee Too Low",
-            symbol="ETHFTL",
-            coingecko_id="ethereum-fee-too-low",
-        )
-        chain = Chain.objects.create(
-            code="eth-fee-too-low",
-            name="Ethereum Fee Too Low",
-            type=ChainType.EVM,
-            chain_id=20102,
+        chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -731,14 +611,14 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "2" * 64,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -760,19 +640,9 @@ class EvmTxTaskTests(TestCase):
         self.assertEqual(base_task.status, TxTaskStatus.PENDING_CHAIN)
 
     def test_broadcast_reraises_nonce_too_low_without_marking_pending(self):
-        native = Crypto.objects.create(
-            name="Ethereum Nonce Too Low",
-            symbol="ETHNTL",
-            coingecko_id="ethereum-nonce-too-low",
-        )
-        chain = Chain.objects.create(
-            code="eth-nonce-too-low",
-            name="Ethereum Nonce Too Low",
-            type=ChainType.EVM,
-            chain_id=20103,
+        chain = make_evm_chain(
+            code=ChainCode.BSC,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -797,14 +667,14 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "3" * 64,
             status=TxTaskStatus.PENDING_CHAIN,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -823,19 +693,9 @@ class EvmTxTaskTests(TestCase):
         self.assertEqual(base_task.status, TxTaskStatus.PENDING_CHAIN)
 
     def test_broadcast_blocks_higher_nonce_until_lower_nonce_settles(self):
-        native = Crypto.objects.create(
-            name="Ethereum Nonce Block",
-            symbol="ETHNB",
-            coingecko_id="ethereum-nonce-block",
-        )
-        chain = Chain.objects.create(
-            code="eth-nonce-block",
-            name="Ethereum Nonce Block",
-            type=ChainType.EVM,
-            chain_id=20104,
+        chain = make_evm_chain(
+            code=ChainCode.Polygon,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -859,13 +719,13 @@ class EvmTxTaskTests(TestCase):
         )
         lower_base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         EvmTxTask.objects.create(
             base_task=lower_base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=lower_recipient,
@@ -880,13 +740,13 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=1,
             to=recipient,
@@ -905,19 +765,9 @@ class EvmTxTaskTests(TestCase):
         self.assertIsNone(tx_task.last_attempt_at)
 
     def test_broadcast_treats_already_known_as_idempotent_success(self):
-        native = Crypto.objects.create(
-            name="Ethereum Already Known",
-            symbol="ETHAK",
-            coingecko_id="ethereum-already-known",
-        )
-        chain = Chain.objects.create(
-            code="eth-already-known",
-            name="Ethereum Already Known",
-            type=ChainType.EVM,
-            chain_id=20104,
+        chain = make_evm_chain(
+            code=ChainCode.ArbitrumOne,
             rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
         )
         addr = Address.objects.create(
             wallet=Wallet.objects.create(),
@@ -942,14 +792,14 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash="0x" + "4" * 64,
             status=TxTaskStatus.QUEUED,
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -968,11 +818,6 @@ class EvmTxTaskTests(TestCase):
 
     def test_queued_task_with_existing_hash_recovers_from_confirmed_receipt(self):
         """首播已被节点接受但阶段仍是 QUEUED 时，应先查 receipt 自愈而不是重发。"""
-        native = Crypto.objects.create(
-            name="Ethereum Queued Receipt Recovery",
-            symbol="ETHQRR",
-            coingecko_id="ethereum-queued-receipt-recovery",
-        )
         chain = Chain.objects.create(
             code=ChainCode.Anvil,
             rpc="",
@@ -1005,7 +850,7 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.QUEUED,
@@ -1018,7 +863,7 @@ class EvmTxTaskTests(TestCase):
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -1030,7 +875,7 @@ class EvmTxTaskTests(TestCase):
         )
 
         with patch(
-            "evm.poller.EvmTaskPoller._process_succeeded_receipt"
+            "evm.poller.EvmTaskPoller.process_succeeded_receipt"
         ) as process_mock:
             tx_task.broadcast()
 
@@ -1041,11 +886,6 @@ class EvmTxTaskTests(TestCase):
 
     def test_nonce_too_low_checks_existing_hash_before_reraising(self):
         """nonce too low 时若历史 hash 已有 receipt，应自动恢复而不是继续卡 QUEUED。"""
-        native = Crypto.objects.create(
-            name="Ethereum Nonce Too Low Recovery",
-            symbol="ETHNTLR",
-            coingecko_id="ethereum-nonce-too-low-recovery",
-        )
         chain = Chain.objects.create(
             code=ChainCode.Anvil,
             rpc="",
@@ -1081,7 +921,7 @@ class EvmTxTaskTests(TestCase):
         )
         base_task = TxTask.objects.create(
             chain=chain,
-            address=addr,
+            sender=addr,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.QUEUED,
@@ -1094,7 +934,7 @@ class EvmTxTaskTests(TestCase):
         )
         tx_task = EvmTxTask.objects.create(
             base_task=base_task,
-            address=addr,
+            sender=addr,
             chain=chain,
             nonce=0,
             to=recipient,
@@ -1106,7 +946,7 @@ class EvmTxTaskTests(TestCase):
         )
 
         with patch(
-            "evm.poller.EvmTaskPoller._process_succeeded_receipt"
+            "evm.poller.EvmTaskPoller.process_succeeded_receipt"
         ) as process_mock:
             tx_task.broadcast()
 

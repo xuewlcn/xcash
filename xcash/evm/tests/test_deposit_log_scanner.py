@@ -16,6 +16,7 @@ from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from currencies.models import ChainToken
 from evm.models import EvmScanCursor
 from evm.models import VaultSlot
+from evm.models import VaultSlotUsage
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 from evm.scanner.constants import XCASH_NATIVE_RECEIVED_TOPIC0
 from evm.scanner.logs import EvmLogScanner
@@ -61,9 +62,9 @@ class EvmLogScannerTests(TestCase):
         )
         self.slot = VaultSlot.objects.create(
             customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=Web3.to_checksum_address("0x" + "bd" * 20),
-            vault_address=self.vault.address,
             salt=b"\x01" * 32,
         )
         self.payer = Web3.to_checksum_address("0x" + "cc" * 20)
@@ -132,7 +133,7 @@ class EvmLogScannerTests(TestCase):
         self.assertEqual(processor_kwargs["rpc_client"], rpc_client)
         self.assertEqual(processor_kwargs["raw_logs"], [native_log])
         self.assertEqual(processor_kwargs["watch_set"], watch_set)
-        self.assertEqual(result, 0)
+        self.assertIsNone(result)
 
     @patch("chains.service.TransferService._mark_tx_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
@@ -262,7 +263,7 @@ class EvmLogScannerTests(TestCase):
         tx_hash = "0x" + "23" * 32
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=self.vault,
+            sender=self.vault,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=TxTaskStatus.PENDING_CHAIN,
@@ -285,6 +286,6 @@ class EvmLogScannerTests(TestCase):
             ),
         )
 
-        self.assertEqual(result, 0)
+        self.assertIsNone(result)
         self.assertFalse(Transfer.objects.filter(hash=tx_hash).exists())
         rpc_client.get_block_timestamp.assert_not_called()

@@ -24,6 +24,7 @@ from deposits.models import DepositStatus
 from deposits.service import DepositService
 from evm.models import EvmTxTask
 from evm.models import VaultSlot
+from evm.models import VaultSlotUsage
 from projects.models import Project
 from users.models import Customer
 
@@ -68,7 +69,7 @@ class DepositServiceCoreTests(TestCase):
 
     def test_content_property_handles_null_customer(self):
         transfer = SimpleNamespace(
-            chain=SimpleNamespace(chain="ethereum"),
+            chain=SimpleNamespace(code="ethereum"),
             block=100,
             block_hash="0x" + "aa" * 32,
             hash="0x" + "a" * 64,
@@ -331,10 +332,10 @@ def create_deposit_context(*, native: bool = False):
         VaultSlot.objects.create(
             customer=customer,
             chain=chain,
+            usage=VaultSlotUsage.DEPOSIT,
             address=Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000a11"
             ),
-            vault_address=vault.address,
             salt=b"\x11" * 32,
         )
     transfer = Transfer.objects.create(

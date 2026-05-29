@@ -9,11 +9,11 @@ from currencies.models import ChainToken
 from evm.choices import TxKind
 from evm.internal_tx.direct_transfer import decode_direct_transfer_fields
 from evm.models import EvmTxTask
-from evm.tests._fixtures import make_tx_task
 from evm.tests._fixtures import make_crypto
 from evm.tests._fixtures import make_erc20_token
 from evm.tests._fixtures import make_evm_chain
 from evm.tests._fixtures import make_evm_system_address
+from evm.tests._fixtures import make_tx_task
 
 _TRANSFER_SELECTOR = "0xa9059cbb"
 _TRANSFER_FROM_SELECTOR = "0x23b872dd"
@@ -40,7 +40,7 @@ def _make_evm_task(
     )
     return EvmTxTask.objects.create(
         base_task=base_task,
-        address=address,
+        sender=address,
         chain=chain,
         nonce=nonce,
         to=to,

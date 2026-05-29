@@ -11,7 +11,7 @@ dependencies = [
     "eth-abi==5.2.0",
     "base58==2.1.1",
     "bip-utils==2.12.1",
-    "redis==7.4.0",
+    "redis==8.0.0",
     "hiredis==3.3.1",
     "cryptography==48.0.0",
     "ulid-py==1.1.0",

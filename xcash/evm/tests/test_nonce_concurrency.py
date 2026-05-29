@@ -5,9 +5,9 @@ from django.db import connections
 from django.test import TransactionTestCase
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import TxTaskType
 from chains.models import Wallet
@@ -15,6 +15,7 @@ from currencies.models import Crypto
 from evm.choices import TxKind
 from evm.intents import build_native_transfer_intent
 from evm.models import EvmTxTask
+from evm.tests._fixtures import make_evm_chain
 
 
 class EvmNonceConcurrencyTests(TransactionTestCase):
@@ -32,14 +33,9 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             symbol="ETHCC",
             coingecko_id="ethereum-concurrency",
         )
-        self.chain = Chain.objects.create(
-            code="eth-concurrency",
-            name="Ethereum Concurrency",
-            type=ChainType.EVM,
-            chain_id=99901,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://localhost:8545",
-            native_coin=self.native,
-            active=True,
         )
         self.wallet = Wallet.objects.create()
         self.address = Address.objects.create(
@@ -68,7 +64,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                 barrier.wait(timeout=5)
                 task = EvmTxTask.schedule(
                     build_native_transfer_intent(
-                        address=self.address,
+                        sender=self.address,
                         chain=self.chain,
                         to=recipient,
                         value=thread_idx + 1,
@@ -103,14 +99,14 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         self.assertEqual(state.chain, self.chain)
         self.assertEqual(
             EvmTxTask.objects.filter(
-                address=self.address, chain=self.chain
+                sender=self.address, chain=self.chain
             ).count(),
             self.THREAD_COUNT,
         )
         self.assertEqual(
             set(
                 EvmTxTask.objects.filter(
-                    address=self.address,
+                    sender=self.address,
                     chain=self.chain,
                 ).values_list("tx_kind", flat=True)
             ),
@@ -146,7 +142,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                 barrier.wait(timeout=5)
                 task = EvmTxTask.schedule(
                     build_native_transfer_intent(
-                        address=addr,
+                        sender=addr,
                         chain=self.chain,
                         to=recipient,
                         value=1,
@@ -195,7 +191,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                 batch_barrier.wait(timeout=10)
                 task = EvmTxTask.schedule(
                     build_native_transfer_intent(
-                        address=self.address,
+                        sender=self.address,
                         chain=self.chain,
                         to=recipient,
                         value=1,
@@ -231,7 +227,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
 
         # 数据库记录数一致
         db_count = EvmTxTask.objects.filter(
-            address=self.address, chain=self.chain
+            sender=self.address, chain=self.chain
         ).count()
         self.assertEqual(db_count, task_count)
 
@@ -248,6 +244,6 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         from django.db.models import Max
 
         max_nonce = EvmTxTask.objects.filter(
-            address=self.address, chain=self.chain
+            sender=self.address, chain=self.chain
         ).aggregate(m=Max("nonce"))["m"]
         self.assertEqual(max_nonce, task_count - 1)

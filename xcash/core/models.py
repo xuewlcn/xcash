@@ -87,6 +87,12 @@ class SystemSettings(models.Model):
         validators=[MinValueValidator(1)],
         help_text=_("待投递 Webhook 事件超过该时间仍未送达时，进入异常巡检。"),
     )
+    vault_slot_collect_delay_minutes = models.PositiveIntegerField(
+        _("VaultSlot 归集延迟(分钟)"),
+        default=360,
+        validators=[MinValueValidator(1)],
+        help_text=_("ERC20 到账确认后等待该时间再聚合归集，期间同槽位同币种不重复创建归集计划。"),
+    )
     risk_marking_enabled = models.BooleanField(
         _("开启风险标记"),
         default=False,

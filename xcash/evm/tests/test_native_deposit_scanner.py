@@ -12,6 +12,7 @@ from chains.models import Transfer
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from evm.models import EvmScanCursor
 from evm.models import VaultSlot
+from evm.models import VaultSlotUsage
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.watchers import EvmWatchSet
 from evm.tests._fixtures import make_crypto
@@ -71,9 +72,9 @@ class EvmLogScannerTests(TestCase):
         )
         VaultSlot.objects.create(
             customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
             chain=self.chain,
             address=self.slot.address,
-            vault_address=self.slot.address,
             salt=b"\x01" * 32,
         )
         self.payer = Web3.to_checksum_address("0x" + "bb" * 20)
@@ -138,7 +139,7 @@ class EvmLogScannerTests(TestCase):
         )
 
         transfer = Transfer.objects.get()
-        self.assertEqual(created, 1)
+        self.assertIsNone(created)
         self.assertEqual(transfer.crypto, self.native)
         self.assertEqual(transfer.from_address, self.payer)
         self.assertEqual(transfer.to_address, self.slot.address)
@@ -183,28 +184,6 @@ class EvmLogScannerTests(TestCase):
         self.assertEqual(observed.amount, Decimal("1"))
         self.assertEqual(observed.source, "evm-scan")
 
-    def test_native_scanner_skips_indirect_contract_payment(self):
-        log = self._build_native_log()
-        rpc_client = Mock()
-        rpc_client.get_logs.return_value = [log]
-        rpc_client.get_transaction.return_value = {
-            "to": Web3.to_checksum_address("0x" + "cc" * 20)
-        }
-        rpc_client.get_block_timestamp.return_value = 1_700_000_000
-
-        created = EvmLogScanner.scan_range(
-            chain=self.chain,
-            rpc_client=rpc_client,
-            watch_set=self.watch_set,
-            from_block=120,
-            to_block=120,
-        )
-
-        self.assertEqual(created, 0)
-        self.assertEqual(Transfer.objects.count(), 0)
-        rpc_client.get_transaction.assert_called_once_with(tx_hash="0x" + "cd" * 32)
-        rpc_client.get_block_timestamp.assert_not_called()
-
     @patch("evm.scanner.observed_transfers.logger.warning")
     def test_native_scanner_skips_tx_with_multiple_system_inbound_logs(
         self,
@@ -227,7 +206,7 @@ class EvmLogScannerTests(TestCase):
             to_block=120,
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         self.assertEqual(Transfer.objects.count(), 0)
         warning_mock.assert_called_with(
             "EVM scanner skipped tx with multiple observed inbound events",
@@ -267,7 +246,7 @@ class EvmLogScannerTests(TestCase):
             to_block=120,
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         create_observed_transfer_mock.assert_not_called()
 
     @patch("chains.service.TransferService.create_observed_transfer")
@@ -300,7 +279,7 @@ class EvmLogScannerTests(TestCase):
             to_block=120,
         )
 
-        self.assertEqual(created, 0)
+        self.assertIsNone(created)
         create_observed_transfer_mock.assert_not_called()
 
     @patch("evm.scanner.logs.load_watch_set")

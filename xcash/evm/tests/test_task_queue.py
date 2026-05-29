@@ -6,9 +6,9 @@ from django.test import TestCase
 from django.utils import timezone
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from chains.models import TxTask
 from chains.models import TxTaskStatus
@@ -17,6 +17,7 @@ from chains.models import Wallet
 from currencies.models import Crypto
 from evm.choices import TxKind
 from evm.models import EvmTxTask
+from evm.tests._fixtures import make_evm_chain
 
 
 class EvmTaskQueueTests(TestCase):
@@ -30,14 +31,9 @@ class EvmTaskQueueTests(TestCase):
             symbol="ETHQ",
             coingecko_id="ethereum-queue",
         )
-        self.chain = Chain.objects.create(
-            code="ethq",
-            name="Ethereum Queue",
-            type=ChainType.EVM,
-            chain_id=1,
+        self.chain = make_evm_chain(
+            code=ChainCode.Ethereum,
             rpc="http://ethq.local",
-            native_coin=self.native,
-            active=True,
         )
         self.addr = Address.objects.create(
             wallet=self.wallet,
@@ -70,14 +66,14 @@ class EvmTaskQueueTests(TestCase):
         target_nonce = next_nonce if nonce is None else nonce
         base_task = TxTask.objects.create(
             chain=self.chain,
-            address=task_address,
+            sender=task_address,
             tx_type=TxTaskType.Withdrawal,
             tx_hash=tx_hash,
             status=status,
         )
         return EvmTxTask.objects.create(
             base_task=base_task,
-            address=task_address,
+            sender=task_address,
             chain=self.chain,
             nonce=target_nonce,
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f2"),
@@ -91,7 +87,7 @@ class EvmTaskQueueTests(TestCase):
         from django.db.models import Max
 
         max_nonce = EvmTxTask.objects.filter(
-            address=address, chain=self.chain
+            sender=address, chain=self.chain
         ).aggregate(m=Max("nonce"))["m"]
         return 0 if max_nonce is None else max_nonce + 1
 
@@ -100,13 +96,13 @@ class EvmTaskQueueTests(TestCase):
         for n in range(start, end):
             filler_base = TxTask.objects.create(
                 chain=self.chain,
-                address=address,
+                sender=address,
                 tx_type=TxTaskType.Withdrawal,
                 status=TxTaskStatus.CONFIRMED,
             )
             EvmTxTask.objects.create(
                 base_task=filler_base,
-                address=address,
+                sender=address,
                 chain=self.chain,
                 nonce=n,
                 to=Web3.to_checksum_address(

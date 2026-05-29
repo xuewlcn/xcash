@@ -1843,7 +1843,7 @@ def test_address_send_crypto_schedules_native_transfer_intent():
     assert result == tx_hash
     schedule_mock.assert_called_once()
     (intent,) = schedule_mock.call_args.args
-    assert intent.address == address
+    assert intent.sender == address
     assert intent.chain == chain
     assert intent.tx_kind == TxKind.NATIVE_TRANSFER
     assert intent.tx_type == TxTaskType.Withdrawal
@@ -1901,7 +1901,7 @@ def test_address_send_crypto_schedules_erc20_transfer_intent():
     assert result == tx_hash
     schedule_mock.assert_called_once()
     (intent,) = schedule_mock.call_args.args
-    assert intent.address == address
+    assert intent.sender == address
     assert intent.chain == chain
     assert intent.tx_kind == TxKind.CONTRACT_CALL
     assert intent.to == Web3.to_checksum_address(
