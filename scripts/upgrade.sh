@@ -73,7 +73,7 @@ cleanup() {
   fi
 
   if [[ "${LOCK_ACQUIRED}" == "true" ]]; then
-    "${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db migration-rehearsal-signer-db >/dev/null 2>&1 || true
+    "${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db >/dev/null 2>&1 || true
   fi
 
   exit "${exit_code}"
@@ -139,31 +139,6 @@ dump_main_database() {
     'pg_dump --format=custom --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"${output}"
 }
 
-# signer 库私钥不出该库：只 dump schema 用于结构演练，行数据不复制到演练库。
-# 这是有意识接受的 trade-off，并非"无损失"：真实数据仍可能让 schema migration 在
-# production 失败（ADD NOT NULL 撞 NULL 行、ADD UNIQUE 撞重复值、改列类型撞不兼容
-# 数据、ADD CHECK 撞违例、DROP 被 FK 引用的列等）。减灾依赖：
-#   1. pre-commit signer-no-runpython 强制 schema-only（无 data migration）；
-#   2. pre-commit signer-migration-linter 严格模式拦截大部分危险 DDL；
-#   3. 危险但 linter 拦不住的 DDL（ADD UNIQUE、改类型、ADD CHECK 等）由 PR 评审兜底，
-#      建议采用"先加 nullable 列 + 后台 backfill + 二段加约束"模式分多次上线。
-#
-# 此外必须把 django_migrations 表的行数据一起带过去：该表记录"哪些迁移已应用"，
-# 缺失会让演练库以为所有迁移都未跑，migrate --plan 输出从 0001 起的全量历史，
-# 与 production 必然 diff 失败。该表只含迁移文件名 + 时间戳，无敏感数据。
-dump_signer_schema() {
-  local output="$1"
-
-  log "dump signer-db (schema + django_migrations history)"
-  "${COMPOSE[@]}" exec -T signer-db sh -c '
-    set -e
-    pg_dump --schema-only --no-owner --no-privileges \
-      -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-    pg_dump --data-only --table=django_migrations --no-owner --no-privileges \
-      -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-  ' >"${output}"
-}
-
 restore_main_database() {
   local service="$1"
   local input="$2"
@@ -171,16 +146,6 @@ restore_main_database() {
   log "restore main dump into ${service}"
   "${REHEARSAL_COMPOSE[@]}" exec -T "${service}" sh -c \
     'pg_restore --exit-on-error --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <"${input}"
-}
-
-# schema-only dump 是 plain SQL，pg_restore 不接受；用 psql + ON_ERROR_STOP 重放。
-restore_signer_schema() {
-  local service="$1"
-  local input="$2"
-
-  log "restore signer schema into ${service}"
-  "${REHEARSAL_COMPOSE[@]}" exec -T "${service}" sh -c \
-    'psql --set ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <"${input}"
 }
 
 run_main_manage() {
@@ -197,24 +162,6 @@ run_main_manage() {
     -e POSTGRES_HOST="${postgres_host}" \
     -e POSTGRES_PORT=5432 \
     django python manage.py "$@"
-}
-
-run_signer_manage() {
-  local postgres_host="$1"
-  shift
-
-  # SIGNER_POSTGRES_PASSWORD 由 compose 的 env_file (.env) 注入，理由同 run_main_manage。
-  # one-off 容器在 compose 网络内访问 signer-db，必须使用容器端口 5432，
-  # 避免 .env 中宿主映射端口（如 5433）污染生产/演练 manage.py 连接。
-  # -T 同样用于消除 PTY 引入的不确定字节，参见 run_main_manage 注释。
-  # 禁止再用 `bash -lc` 包一层：signer 镜像把 venv 装在 /app/signer/.venv 并靠
-  # Dockerfile `ENV PATH=` 注入，login shell 会被 /etc/profile.d/*.sh 重置 PATH，
-  # 导致 `python` 落到系统 python 而非 venv，触发 `No module named 'django'`。
-  # manage.py 内部已自行 sys.path.insert(0, signer_root)，无需 cwd 是 /app/signer。
-  "${COMPOSE[@]}" run --rm --no-deps -T \
-    -e SIGNER_POSTGRES_HOST="${postgres_host}" \
-    -e SIGNER_POSTGRES_PORT=5432 \
-    signer python /app/signer/manage.py "$@"
 }
 
 stop_app_services() {
@@ -315,13 +262,20 @@ require_command flock
 [[ -f "${ENV_FILE}" ]] || die "env file not found: ${ENV_FILE}"
 [[ -f "${COMPOSE_FILE}" ]] || die "compose file not found: ${COMPOSE_FILE}"
 
+# signer 专属密钥文件 .env.signer 若缺失则由 init_env.sh 生成（复用 .env 中已有的
+# 共享项，绝不重随机 SIGNER_MNEMONIC_ENCRYPTION_KEY，故对已加密助记词安全）。
+if [[ ! -f .env.signer ]]; then
+  log "ensure .env.signer exists (generate via init_env.sh)"
+  "$(dirname "$0")/init_env.sh"
+fi
+[[ -f .env.signer ]] || die "缺少 .env.signer（请先运行 scripts/init_env.sh）"
+
 set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 set +a
 
 [[ -n "${POSTGRES_PASSWORD:-}" ]] || die "POSTGRES_PASSWORD is required"
-[[ -n "${SIGNER_POSTGRES_PASSWORD:-}" ]] || die "SIGNER_POSTGRES_PASSWORD is required"
 
 # 互斥锁：避免两人同时执行 upgrade.sh 造成 dump/restore/migrate 交叉污染。
 # 文件描述符 9 在脚本退出时自动释放，无需在 cleanup 中显式处理。
@@ -331,21 +285,18 @@ LOCK_ACQUIRED=true
 
 TMP_DIR="$(mktemp -d)"
 MAIN_DUMP="${TMP_DIR}/xcash-main.dump"
-SIGNER_SCHEMA_DUMP="${TMP_DIR}/xcash-signer-schema.sql"
 MAIN_REHEARSAL_PLAN="${TMP_DIR}/main-rehearsal.plan"
 MAIN_PRODUCTION_PLAN="${TMP_DIR}/main-production.plan"
-SIGNER_REHEARSAL_PLAN="${TMP_DIR}/signer-rehearsal.plan"
-SIGNER_PRODUCTION_PLAN="${TMP_DIR}/signer-production.plan"
 
 pull_code
 
 log "build production images"
 "${COMPOSE[@]}" build
 
+# signer 现为 Go + SQLite：无独立 DB 容器，开机自建表，无需迁移彩排。
 log "ensure database and cache dependencies are running"
-"${COMPOSE[@]}" up -d django-db signer-db redis
+"${COMPOSE[@]}" up -d django-db redis
 wait_for_postgres django-db
-wait_for_postgres signer-db
 
 resolve_stop_before_rehearsal
 
@@ -354,16 +305,13 @@ if [[ "${STOP_BEFORE_REHEARSAL}" == "true" ]]; then
 fi
 
 dump_main_database "${MAIN_DUMP}"
-dump_signer_schema "${SIGNER_SCHEMA_DUMP}"
 
-log "reset rehearsal databases"
-"${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db migration-rehearsal-signer-db >/dev/null 2>&1 || true
-"${REHEARSAL_COMPOSE[@]}" up -d migration-rehearsal-db migration-rehearsal-signer-db
+log "reset rehearsal database"
+"${REHEARSAL_COMPOSE[@]}" rm -sf migration-rehearsal-db >/dev/null 2>&1 || true
+"${REHEARSAL_COMPOSE[@]}" up -d migration-rehearsal-db
 wait_for_postgres migration-rehearsal-db
-wait_for_postgres migration-rehearsal-signer-db
 
 restore_main_database migration-rehearsal-db "${MAIN_DUMP}"
-restore_signer_schema migration-rehearsal-signer-db "${SIGNER_SCHEMA_DUMP}"
 
 log "run main database migration rehearsal"
 # plan 阶段输出短：tee 同时写 plan 文件（用于比对）+ log 文件（用于失败回放），stdout 静默。
@@ -375,12 +323,6 @@ run_main_manage migration-rehearsal-db migrate --noinput 2>&1 \
 run_main_manage migration-rehearsal-db check --deploy 2>&1 \
   | tee "${TMP_DIR}/main-rehearsal-check.log"
 
-log "run signer database migration rehearsal"
-run_signer_manage migration-rehearsal-signer-db migrate --plan 2>&1 \
-  | tee "${TMP_DIR}/signer-rehearsal-plan.log" >"${SIGNER_REHEARSAL_PLAN}"
-run_signer_manage migration-rehearsal-signer-db migrate --noinput 2>&1 \
-  | tee "${TMP_DIR}/signer-rehearsal-migrate.log"
-
 if [[ "${STOP_BEFORE_REHEARSAL}" != "true" ]]; then
   stop_app_services "before production migration"
 fi
@@ -390,19 +332,13 @@ run_main_manage django-db migrate --plan 2>&1 \
   | tee "${TMP_DIR}/main-production-plan.log" >"${MAIN_PRODUCTION_PLAN}"
 compare_plans "${MAIN_REHEARSAL_PLAN}" "${MAIN_PRODUCTION_PLAN}" "main database"
 
-run_signer_manage signer-db migrate --plan 2>&1 \
-  | tee "${TMP_DIR}/signer-production-plan.log" >"${SIGNER_PRODUCTION_PLAN}"
-compare_plans "${SIGNER_REHEARSAL_PLAN}" "${SIGNER_PRODUCTION_PLAN}" "signer database"
-
-# 跨过此线后 production 库可能进入（部分）迁移后状态；只有两库迁移都完成后
-# cleanup 才会按新 schema 尝试拉起服务。
+# 跨过此线后 production 主库可能进入（部分）迁移后状态；迁移完成后
+# cleanup 才会按新 schema 尝试拉起服务。signer 用 SQLite，开机自建表，不在此流程内。
 PRODUCTION_MIGRATE_STARTED=true
 
 log "apply production migrations"
 run_main_manage django-db migrate --noinput 2>&1 \
   | tee "${TMP_DIR}/main-production-migrate.log"
-run_signer_manage signer-db migrate --noinput 2>&1 \
-  | tee "${TMP_DIR}/signer-production-migrate.log"
 PRODUCTION_MIGRATE_COMPLETED=true
 
 log "run production post-migration setup"

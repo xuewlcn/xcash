@@ -163,7 +163,12 @@ cd xcash
 make init-env
 ```
 
-该命令会根据 `.env.example` 生成 `.env`，并填充所有必需密钥，包括 Django Secret、数据库密码、Signer 共享密钥和 Signer 加密密钥。请妥善保存并保密 `.env` 文件。
+该命令会生成两个环境文件并自动填充随机密钥：
+
+- `.env` —— 主应用（django/worker/beat）容器 + docker compose 插值 + 本地 dev 共用，含 Django Secret、主库口令、Signer 共享密钥等；**刻意不含** Signer 助记词解密密钥。
+- `.env.signer` —— 仅 signer 容器加载，含助记词加密密钥（`SIGNER_MNEMONIC_ENCRYPTION_KEY`）等最敏感凭据，已 `chmod 600`。
+
+> ⚠️ `.env.signer` **生成后请勿修改**，尤其 `SIGNER_MNEMONIC_ENCRYPTION_KEY`：更改将导致数据库中已加密的助记词永久无法解密、热钱包私钥丢失。请妥善离线备份这两个文件，切勿提交版本库。
 
 ### 3. 设置访问域名
 

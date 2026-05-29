@@ -145,7 +145,12 @@ cd xcash
 make init-env
 ```
 
-This creates `.env` from `.env.example` and fills required secrets such as the Django secret key, database passwords, signer shared secret, and signer encryption key. Keep this file private and backed up.
+This generates two env files with auto-filled random secrets:
+
+- `.env` — shared by the main app containers (django/worker/beat), docker compose interpolation, and local dev. Holds the Django secret key, main DB password, signer shared secret, etc. It deliberately does **not** contain the signer mnemonic decryption key.
+- `.env.signer` — loaded only by the signer container. Holds the most sensitive credentials including `SIGNER_MNEMONIC_ENCRYPTION_KEY`; created with `chmod 600`.
+
+> ⚠️ Do **not** modify `.env.signer` after it is generated, especially `SIGNER_MNEMONIC_ENCRYPTION_KEY`: changing it makes every encrypted mnemonic in the database permanently undecryptable and loses the hot-wallet private keys. Back up both files offline and never commit them.
 
 ### 3. Configure your domain
 

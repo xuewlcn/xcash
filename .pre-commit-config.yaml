@@ -49,13 +49,6 @@ repos:
         pass_filenames: false
         always_run: true
 
-      - id: signer-makemigrations-check
-        name: Signer makemigrations check
-        entry: ./scripts/dev-signer-manage.sh makemigrations --check --dry-run
-        language: system
-        pass_filenames: false
-        always_run: true
-
       - id: django-migration-linter
         name: Django migration linter
         entry: ./scripts/dev-lint-migrations.sh
@@ -63,16 +56,9 @@ repos:
         pass_filenames: false
         always_run: true
 
-      - id: signer-migration-linter
-        name: Signer migration linter
-        entry: ./scripts/dev-signer-lint-migrations.sh
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: signer-no-runpython
-        name: Signer migrations must be schema-only (no RunPython/RunSQL)
-        entry: ./scripts/check-signer-no-runpython.sh
+      - id: signer-go-check
+        name: Signer Go vet + tests (含派生/签名 parity)
+        entry: ./scripts/dev-signer-test.sh
         language: system
         pass_filenames: false
         always_run: true

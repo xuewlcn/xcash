@@ -12,6 +12,7 @@ import pytest
 from django.core.cache import cache
 from django.core.cache import cache as _cache
 from django.core.management import call_command
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
@@ -250,86 +251,98 @@ class LocalChainBootstrapCommandTests(TestCase):
         )
 
 
-class InitEnvScriptTests(TestCase):
-    def test_init_env_creates_env_from_example_and_replaces_placeholders(self):
-        repo_root = Path(__file__).resolve().parents[2]
-        script_path = repo_root / "scripts" / "init_env.sh"
+class InitEnvScriptTests(SimpleTestCase):
+    # signer 助记词解密密钥必须只存在于 .env.signer，绝不能进入主应用容器加载的 .env
+    # —— 这是隔离热钱包种子的核心安全约束。
+    SIGNER_ONLY_KEYS = ("SIGNER_MNEMONIC_ENCRYPTION_KEY",)
 
+    def run_init_env(self, tmp_path):
+        """把 init_env.sh 复制进临时 scripts/ 并以 tmp_path 为项目根执行。"""
+        repo_root = Path(__file__).resolve().parents[2]
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir(exist_ok=True)
+        copied_script_path = scripts_dir / "init_env.sh"
+        shutil.copy2(repo_root / "scripts" / "init_env.sh", copied_script_path)
+        copied_script_path.chmod(0o755)
+        return subprocess.run(  # noqa: S603
+            [str(copied_script_path)],
+            cwd=tmp_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    @staticmethod
+    def parse_env(path: Path) -> dict:
+        return dict(
+            line.split("=", maxsplit=1)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#") and "=" in line
+        )
+
+    def test_generates_env_and_signer_with_isolated_secrets(self):
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            example_path = tmp_path / ".env.example"
-            scripts_dir = tmp_path / "scripts"
-            scripts_dir.mkdir()
-            copied_script_path = scripts_dir / "init_env.sh"
-            example_path.write_text(
-                "DJANGO_SECRET_KEY=change-me-with-a-64-char-random-string\n"
-                "POSTGRES_PASSWORD=change-me-main-db-password\n"
-                "STATIC_VALUE=keep-me\n",
-                encoding="utf-8",
-            )
-            shutil.copy2(script_path, copied_script_path)
-            copied_script_path.chmod(0o755)
+            result = self.run_init_env(tmp_path)
 
-            result = subprocess.run(  # noqa: S603
-                [str(copied_script_path)],
-                cwd=tmp_path,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-
-            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
             env_path = tmp_path / ".env"
+            signer_path = tmp_path / ".env.signer"
             self.assertTrue(env_path.exists())
-            env_content = env_path.read_text(encoding="utf-8")
-            self.assertIn("STATIC_VALUE=keep-me", env_content)
-            self.assertNotIn("change-me-with-a-64-char-random-string", env_content)
-            self.assertNotIn("change-me-main-db-password", env_content)
+            self.assertTrue(signer_path.exists())
 
-            env_values = dict(
-                line.split("=", maxsplit=1)
-                for line in env_content.splitlines()
-                if line and not line.startswith("#") and "=" in line
+            env = self.parse_env(env_path)
+            signer = self.parse_env(signer_path)
+
+            # 主文件：随机密钥按约定长度生成
+            self.assertEqual(len(env["DJANGO_SECRET_KEY"]), 64)
+            self.assertEqual(len(env["POSTGRES_PASSWORD"]), 32)
+            self.assertRegex(env["DJANGO_SECRET_KEY"], r"^[A-Za-z0-9]+$")
+
+            # 安全核心：解密密钥绝不出现在主应用加载的 .env
+            for key in self.SIGNER_ONLY_KEYS:
+                self.assertNotIn(key, env)
+                self.assertIn(key, signer)
+            self.assertEqual(len(signer["SIGNER_MNEMONIC_ENCRYPTION_KEY"]), 64)
+
+            # 跨文件共享的 HMAC 密钥必须严格一致，否则鉴权失败
+            self.assertEqual(
+                env["SIGNER_SHARED_SECRET"], signer["SIGNER_SHARED_SECRET"]
             )
-            self.assertEqual(len(env_values["DJANGO_SECRET_KEY"]), 64)
-            self.assertEqual(len(env_values["POSTGRES_PASSWORD"]), 32)
-            self.assertRegex(env_values["DJANGO_SECRET_KEY"], r"^[A-Za-z0-9]+$")
-            self.assertRegex(env_values["POSTGRES_PASSWORD"], r"^[A-Za-z0-9]+$")
 
-    def test_init_env_does_not_overwrite_existing_env(self):
-        repo_root = Path(__file__).resolve().parents[2]
-        script_path = repo_root / "scripts" / "init_env.sh"
-
+    def test_does_not_overwrite_existing_env_and_reuses_shared_secret(self):
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            (tmp_path / ".env.example").write_text(
-                "DJANGO_SECRET_KEY=change-me-with-a-64-char-random-string\n",
-                encoding="utf-8",
-            )
-            scripts_dir = tmp_path / "scripts"
-            scripts_dir.mkdir()
-            copied_script_path = scripts_dir / "init_env.sh"
-            shutil.copy2(script_path, copied_script_path)
-            copied_script_path.chmod(0o755)
-
             env_path = tmp_path / ".env"
-            env_path.write_text("DJANGO_SECRET_KEY=existing-secret\n", encoding="utf-8")
-
-            result = subprocess.run(  # noqa: S603
-                [str(copied_script_path)],
-                cwd=tmp_path,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
+            original = (
+                "DJANGO_SECRET_KEY=existing-secret\n"
+                "SIGNER_SHARED_SECRET=existing-hmac\n"
             )
+            env_path.write_text(original, encoding="utf-8")
 
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(
-                env_path.read_text(encoding="utf-8"),
-                "DJANGO_SECRET_KEY=existing-secret\n",
-            )
+            result = self.run_init_env(tmp_path)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            # 已有 .env 原样保留，不被覆盖
+            self.assertEqual(env_path.read_text(encoding="utf-8"), original)
+
+            # 派生的 .env.signer 复用 .env 中的共享 HMAC，而非另行随机
+            signer = self.parse_env(tmp_path / ".env.signer")
+            self.assertEqual(signer["SIGNER_SHARED_SECRET"], "existing-hmac")
+
+    def test_does_not_overwrite_existing_signer_env(self):
+        # .env.signer 生成后视为不可变：再次运行不得覆盖（避免改掉解密密钥）。
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            signer_path = tmp_path / ".env.signer"
+            original = "SIGNER_MNEMONIC_ENCRYPTION_KEY=do-not-touch\n"
+            signer_path.write_text(original, encoding="utf-8")
+
+            result = self.run_init_env(tmp_path)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(signer_path.read_text(encoding="utf-8"), original)
 
 
 class LocalChainIntegrationMixin:

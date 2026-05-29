@@ -3,7 +3,7 @@ name: xcash
 volumes:
   redis_data: {}
   django_db_data: {}
-  signer_db_data: {}
+  signer_data: {}
   django_staticfiles: {}
 
 # 同机 SaaS 等可信服务通过加入 xcash_public 按 DNS 别名互通（如 http://xcash-caddy）。
@@ -43,17 +43,6 @@ services:
     volumes:
       - django_db_data:/var/lib/postgresql
 
-  signer-db:
-    image: postgres:18.3-trixie
-    container_name: xcash_signer_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: xcash_signer
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${SIGNER_POSTGRES_PASSWORD}
-    volumes:
-      - signer_db_data:/var/lib/postgresql
-
   migration-rehearsal-db:
     image: postgres:18.3-trixie
     container_name: xcash_migration_rehearsal_db
@@ -63,27 +52,19 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
-  migration-rehearsal-signer-db:
-    image: postgres:18.3-trixie
-    container_name: xcash_migration_rehearsal_signer_db
-    profiles: ["migration-rehearsal"]
-    environment:
-      POSTGRES_DB: xcash_signer
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${SIGNER_POSTGRES_PASSWORD}
-
   signer:
     build:
-      context: .
-      dockerfile: ./signer/compose/production/Dockerfile
+      context: ./signer
+      dockerfile: Dockerfile
     container_name: xcash_signer
     restart: unless-stopped
-    depends_on:
-      - signer-db
-      - redis
+    # signer 专属密钥文件（含助记词解密密钥），主应用容器不加载。
     env_file:
-      - ${ENV_FILE:-.env}
-    command: /start
+      - ${SIGNER_ENV_FILE:-.env.signer}
+    # Go + SQLite 单实例托管者：无 PG、无 Redis 依赖，状态全在挂载卷里的 sqlite 文件。
+    networks: [default]
+    volumes:
+      - signer_data:/data
 
   django: &django
     build:
@@ -95,6 +76,8 @@ services:
       - django-db
       - redis
       - signer
+    # 主环境文件：刻意【不含】signer 助记词解密密钥（仅在 .env.signer）。
+    # 含 SIGNER_SHARED_SECRET（调 signer 的 HMAC）。worker/beat 经 anchor 继承。
     env_file:
       - ${ENV_FILE:-.env}
     # django/worker/beat 都需要按 DNS 别名解析 saas 侧 Caddy：

@@ -95,6 +95,7 @@ celerybeat-schedule*
 .venv
 .env
 .env.local
+.env.signer
 **/.env.production
 venv/
 ENV/
