@@ -94,6 +94,10 @@ class Project(models.Model):
         _("免审核门槛(USD)"),
         max_digits=16,
         decimal_places=2,
+        # 与 single/daily 限额字段一致，允许留空；should_require_review 已按 `is not None` 处理。
+        # 留空（None）与 0 同义：表示全部提币都需要审核。
+        null=True,
+        blank=True,
         default=Decimal("0"),
         help_text=_(
             "仅在开启提币审核时生效；低于该金额的提币可直接进入链上发送队列，留空表示全部需要审核"
@@ -215,3 +219,33 @@ class DifferRecipientAddress(models.Model):
             raise ValidationError(
                 {"chain_type": _("当前版本差额账单收款地址仅支持 EVM / Tron。")}
             )
+
+
+class Customer(models.Model):
+    """商户的终端客户：以 (project, uid) 在项目内唯一标识，与后台登录账号 User 无关。"""
+
+    project = models.ForeignKey(
+        "projects.Project",
+        on_delete=models.CASCADE,
+        verbose_name=_("项目"),
+    )
+    uid = models.CharField(
+        db_index=True,
+        verbose_name=_("客户UID"),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="加入时间")
+
+    class Meta:
+        # 统一采用具名 UniqueConstraint，便于数据库约束报错定位和后续约束扩展。
+        constraints = [
+            models.UniqueConstraint(
+                fields=("uid", "project"),
+                name="uniq_customer_uid_project",
+            ),
+        ]
+        verbose_name = _("客户")
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return self.uid

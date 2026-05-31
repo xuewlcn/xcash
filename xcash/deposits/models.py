@@ -8,7 +8,7 @@ from common.fields import SysNoField
 class Deposit(models.Model):
     sys_no = SysNoField(prefix="DXC")
     customer = models.ForeignKey(
-        "users.Customer",
+        "projects.Customer",
         on_delete=models.PROTECT,
         verbose_name=_("客户"),
     )

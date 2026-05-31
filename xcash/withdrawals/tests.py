@@ -47,7 +47,7 @@ from withdrawals.viewsets import WithdrawalViewSet
 
 
 class WithdrawalTxTaskTests(TestCase):
-    def test_build_webhook_payload_omits_uid_when_customer_missing(self):
+    def test_build_webhook_payload_has_no_uid(self):
         project = Project.objects.create(
             name="DemoPayload",
             wallet=Wallet.objects.create(),
@@ -213,7 +213,6 @@ class WithdrawalTxTaskTests(TestCase):
             crypto=crypto,
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000012",
-            hash=transfer.hash,
             transfer=transfer,
             tx_task=tx_task,
         )
@@ -264,7 +263,6 @@ class WithdrawalTxTaskTests(TestCase):
             crypto=crypto,
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000022",
-            hash=transfer.hash,
             transfer=transfer,
         )
 
@@ -493,7 +491,6 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
                 {
                     "out_no": "tron-order",
                     "to": "TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-                    "uid": None,
                     "crypto": usdt.symbol,
                     "chain": chain.code,
                     "amount": Decimal("1"),
@@ -571,7 +568,6 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
                 {
                     "out_no": "precision-order",
                     "to": "0x0000000000000000000000000000000000000005",
-                    "uid": None,
                     "crypto": usdt.symbol,
                     "chain": chain.code,
                     "amount": Decimal("0.01480216"),
@@ -711,7 +707,6 @@ class WithdrawalViewSetTests(TestCase):
             validated_data={
                 "out_no": "dup-withdraw-order",
                 "to": "0x0000000000000000000000000000000000000011",
-                "uid": None,
                 "crypto": crypto.symbol,
                 "chain": chain.code,
                 "amount": Decimal("1"),
@@ -774,7 +769,6 @@ class WithdrawalViewSetTests(TestCase):
             validated_data={
                 "out_no": "review-order",
                 "to": "0x0000000000000000000000000000000000000011",
-                "uid": None,
                 "crypto": crypto.symbol,
                 "chain": chain.code,
                 "amount": Decimal("1"),
@@ -848,7 +842,6 @@ class WithdrawalViewSetTests(TestCase):
             validated_data={
                 "out_no": "exempt-review-order",
                 "to": "0x0000000000000000000000000000000000000011",
-                "uid": None,
                 "crypto": crypto.symbol,
                 "chain": chain.code,
                 "amount": Decimal("1"),
@@ -922,7 +915,6 @@ class WithdrawalViewSetTests(TestCase):
             validated_data={
                 "out_no": "equal-review-order",
                 "to": "0x0000000000000000000000000000000000000011",
-                "uid": None,
                 "crypto": crypto.symbol,
                 "chain": chain.code,
                 "amount": Decimal("1"),
@@ -1089,8 +1081,7 @@ class WithdrawalReviewTests(TestCase):
 
         def mark_pending(*, withdrawal):
             withdrawal.review_status = WithdrawalReviewStatus.APPROVED
-            withdrawal.hash = "0x" + "b" * 64
-            withdrawal.save(update_fields=["review_status", "hash", "updated_at"])
+            withdrawal.save(update_fields=["review_status", "updated_at"])
             return withdrawal
 
         submit_mock.side_effect = mark_pending
@@ -1174,8 +1165,7 @@ class WithdrawalReviewTests(TestCase):
 
             def mark_pending(*, withdrawal):
                 withdrawal.review_status = WithdrawalReviewStatus.APPROVED
-                withdrawal.hash = "0x" + "d" * 64
-                withdrawal.save(update_fields=["review_status", "hash", "updated_at"])
+                withdrawal.save(update_fields=["review_status", "updated_at"])
                 return withdrawal
 
             submit_mock.side_effect = mark_pending
@@ -1223,8 +1213,7 @@ class WithdrawalReviewTests(TestCase):
 
         def mark_pending(*, withdrawal):
             withdrawal.review_status = WithdrawalReviewStatus.APPROVED
-            withdrawal.hash = "0x" + "c" * 64
-            withdrawal.save(update_fields=["review_status", "hash", "updated_at"])
+            withdrawal.save(update_fields=["review_status", "updated_at"])
             return withdrawal
 
         submit_mock.side_effect = mark_pending
@@ -1381,7 +1370,8 @@ class WithdrawalRemoteSignerFlowTests(TestCase):
 
         submitted.refresh_from_db()
         self.assertEqual(submitted.review_status, WithdrawalReviewStatus.APPROVED)
-        self.assertIsNone(submitted.hash)
+        # EVM 提币首次仅创建 tx_task，尚未广播出 tx_hash，派生 hash 应为空串。
+        self.assertEqual(submitted.hash, "")
         self.assertIsNotNone(submitted.tx_task_id)
         signer_backend.derive_address.assert_called_once()
         signer_backend.sign_evm_transaction.assert_not_called()
@@ -1993,7 +1983,6 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             tx_task=tx_task,
-            hash=tx_hash,
         )
         transfer = self._make_transfer(tx_hash=tx_hash)
 
@@ -2023,7 +2012,6 @@ class WithdrawalTryMatchTests(TestCase):
             amount=Decimal("1"),
             to="0x0000000000000000000000000000000000000002",
             tx_task=tx_task,
-            hash=old_hash,
         )
         transfer = self._make_transfer(tx_hash=old_hash)
 
@@ -2373,7 +2361,6 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
             validated_data={
                 "out_no": "perm-order",
                 "to": "0x0000000000000000000000000000000000000099",
-                "uid": None,
                 "crypto": self.crypto.symbol,
                 "chain": self.chain.code,
                 "amount": Decimal("1"),

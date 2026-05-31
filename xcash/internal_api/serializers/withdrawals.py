@@ -14,7 +14,6 @@ class InternalWithdrawalCreateSerializer(serializers.Serializer):
 
     out_no = serializers.CharField(max_length=64)
     to = serializers.CharField(max_length=256)
-    uid = serializers.CharField(max_length=128, required=False, default="")
     crypto = serializers.CharField(max_length=32)
     chain = serializers.CharField(max_length=64)
     amount = serializers.DecimalField(max_digits=36, decimal_places=18)
@@ -25,7 +24,8 @@ class InternalWithdrawalDetailSerializer(serializers.ModelSerializer):
     tx_status = serializers.CharField(read_only=True)
     crypto = serializers.SlugRelatedField(slug_field="symbol", read_only=True)
     chain = serializers.SlugRelatedField(slug_field="code", read_only=True)
-    uid = serializers.CharField(source="customer.uid", read_only=True, default="")
+    # hash 现为 Withdrawal 的派生属性（取自 tx_task），ModelSerializer 不会自动识别，需显式声明。
+    hash = serializers.CharField(read_only=True)
     reviewed_by = serializers.StringRelatedField(read_only=True)
 
     class Meta:
@@ -33,7 +33,6 @@ class InternalWithdrawalDetailSerializer(serializers.ModelSerializer):
         fields = [
             "sys_no",
             "out_no",
-            "uid",
             "crypto",
             "chain",
             "to",

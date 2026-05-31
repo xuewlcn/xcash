@@ -483,7 +483,7 @@ class PollerIntegrationTest(TestCase):
             worth=Decimal("100"),
             out_no=f"out-{tx_hash[-6:]}",
             to=_RECEIVER_HEX,
-            tx_task=base_task,            hash=tx_hash,
+            tx_task=base_task,
         )
         return withdrawal, base_task, evm_task
 
@@ -532,7 +532,7 @@ class PollerIntegrationTest(TestCase):
             worth=Decimal("1.5"),
             out_no=f"out-native-{tx_hash[-6:]}",
             to=_RECEIVER_HEX,
-            tx_task=base_task,            hash=tx_hash,
+            tx_task=base_task,
         )
         return withdrawal, base_task, evm_task
 

@@ -34,7 +34,7 @@ from evm.constants import XCASH_VAULT_SLOT_FACTORY_ADDRESS
 from evm.contracts_codec import predict_xcash_vault_slot_address
 from evm.intents import build_vault_slot_collect_intent
 from evm.intents import build_vault_slot_deploy_intent
-from users.models import Customer
+from projects.models import Customer
 
 if TYPE_CHECKING:
     from evm.intents import EvmTxIntent

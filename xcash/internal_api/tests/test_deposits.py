@@ -1,4 +1,5 @@
 import pytest
+
 from chains.models import Wallet
 from projects.models import Project
 

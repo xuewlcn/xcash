@@ -16,8 +16,8 @@ from common.permission_check import check_saas_permission
 from common.throttles import VaultSlotThrottle
 from currencies.service import CryptoService
 from evm.models import VaultSlot
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 # uid 合法字符：字母、数字、下划线、中划线，长度 1~128
 _UID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")

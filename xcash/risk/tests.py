@@ -22,12 +22,12 @@ from risk.models import RiskSkipReason
 from risk.models import RiskSource
 from risk.service import RiskMarkingService
 
+from chains.constants import ChainCode
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import TransferType
 from chains.models import Transfer
+from chains.models import TransferType
 from chains.models import Wallet
-from chains.constants import ChainCode
 from core.models import SystemSettings
 from currencies.models import Crypto
 from currencies.models import Fiat
@@ -35,8 +35,8 @@ from deposits.models import Deposit
 from invoices.models import Invoice
 from invoices.models import InvoiceStatus
 from invoices.service import InvoiceService
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 
 class RiskTestMixin:

@@ -671,8 +671,9 @@ class TxTask(UndeletableModel):
         if locked_task.tx_type == TxTaskType.Withdrawal:
             from withdrawals.models import Withdrawal
 
+            # hash 由 tx_task 派生（见 Withdrawal.hash 属性），无需再回写；
+            # 仍刷新 updated_at 以重置后台巡检的阶段超时计时。
             Withdrawal.objects.filter(tx_task=locked_task).update(
-                hash=tx_hash,
                 updated_at=timezone.now(),
             )
         self.tx_hash = tx_hash
@@ -724,8 +725,9 @@ class TxTask(UndeletableModel):
         if updated and task.tx_type == TxTaskType.Withdrawal:
             from withdrawals.models import Withdrawal
 
+            # hash 由 tx_task 派生（见 Withdrawal.hash 属性），无需再回写；
+            # 仍刷新 updated_at 以重置后台巡检的阶段超时计时。
             Withdrawal.objects.filter(tx_task=task).update(
-                hash=tx_hash,
                 updated_at=timezone.now(),
             )
         return bool(updated)
@@ -774,8 +776,9 @@ class TxTask(UndeletableModel):
         if updated and task.tx_type == TxTaskType.Withdrawal:
             from withdrawals.models import Withdrawal
 
+            # hash 由 tx_task 派生（见 Withdrawal.hash 属性），无需再回写；
+            # 仍刷新 updated_at 以重置后台巡检的阶段超时计时。
             Withdrawal.objects.filter(tx_task=task).update(
-                hash=tx_hash,
                 updated_at=timezone.now(),
             )
         return bool(updated)
@@ -805,8 +808,9 @@ class TxTask(UndeletableModel):
         if updated and task.tx_type == TxTaskType.Withdrawal:
             from withdrawals.models import Withdrawal
 
+            # hash 由 tx_task 派生（见 Withdrawal.hash 属性），无需再回写；
+            # 仍刷新 updated_at 以重置后台巡检的阶段超时计时。
             Withdrawal.objects.filter(tx_task=task).update(
-                hash=tx_hash,
                 updated_at=timezone.now(),
             )
         return bool(updated)

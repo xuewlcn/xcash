@@ -33,34 +33,6 @@ class User(AbstractUser):
         return self.username or ""
 
 
-class Customer(models.Model):
-    project = models.ForeignKey(
-        "projects.Project",
-        on_delete=models.CASCADE,
-        verbose_name=_("项目"),
-    )
-    uid = models.CharField(
-        db_index=True,
-        verbose_name=_("客户UID"),
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="加入时间")
-
-    class Meta:
-        # 统一采用具名 UniqueConstraint，便于数据库约束报错定位和后续约束扩展。
-        constraints = [
-            models.UniqueConstraint(
-                fields=("uid", "project"),
-                name="uniq_customer_uid_project",
-            ),
-        ]
-        verbose_name = _("客户")
-        verbose_name_plural = verbose_name
-
-    def __str__(self):
-        return self.uid
-
-
 class AdminAccessLog(models.Model):
     class Action(models.TextChoices):
         PASSWORD_LOGIN = "password_login", _("密码登录")

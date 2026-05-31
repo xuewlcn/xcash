@@ -16,9 +16,9 @@ from evm.scanner.watchers import clear_evm_watch_set_cache
 from evm.scanner.watchers import load_matched_addresses_for_candidates
 from evm.scanner.watchers import load_watch_set
 from evm.tests._fixtures import make_evm_chain
+from projects.models import Customer
 from projects.models import DifferRecipientAddress
 from projects.models import Project
-from users.models import Customer
 
 WATCHER_TEST_CACHES = {
     "default": {

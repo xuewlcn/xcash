@@ -4,10 +4,10 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.utils import timezone
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
+from django.utils import timezone
 from web3 import Web3
 
 from chains.constants import ChainCode
@@ -35,8 +35,8 @@ from evm.scanner.watchers import EvmWatchSet
 from evm.scanner.watchers import load_matched_addresses_for_candidates
 from evm.tasks import _scan_evm_chain
 from evm.tasks import scan_active_evm_chains
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 
 class EvmErc20ScanWindowTests(SimpleTestCase):

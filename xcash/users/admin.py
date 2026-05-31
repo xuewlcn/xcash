@@ -27,7 +27,6 @@ from .forms import AdminUserOTPChangeForm
 from .forms import UserAdminChangeForm
 from .forms import UserAdminCreationForm
 from .models import AdminAccessLog
-from .models import Customer
 from .models import User
 from .otp import activate_pending_totp_device
 from .otp import build_totp_qr_data_url
@@ -316,11 +315,6 @@ class UserAdmin(BaseUserAdmin, ModelAdmin):
             device=device,
             is_self_service=is_self_service,
         )
-
-
-@admin.register(Customer)
-class CustomerAdmin(ReadOnlyModelAdmin):
-    list_display = ("uid", "created_at")
 
 
 class ProjectListFilter(admin.SimpleListFilter):

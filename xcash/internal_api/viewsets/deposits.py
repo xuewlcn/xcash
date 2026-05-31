@@ -15,8 +15,8 @@ from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from deposits.models import Deposit
 from evm.models import VaultSlot
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 UID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 

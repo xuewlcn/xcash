@@ -28,7 +28,7 @@ from core.monitoring import OperationalRiskService
 from core.tasks import scan_operational_risks
 from currencies.models import Crypto
 from deposits.models import Deposit
-from users.models import Customer
+from projects.models import Customer
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 from webhooks.models import WebhookEvent

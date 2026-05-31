@@ -120,7 +120,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
             worth=Decimal("12.34"),
             out_no=f"out-{tx_hash[-6:]}",
             to=recipient,
-            tx_task=base_task,            hash=tx_hash,
+            tx_task=base_task,
         )
         return withdrawal, base_task, evm_task
 

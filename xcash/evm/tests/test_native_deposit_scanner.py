@@ -19,8 +19,8 @@ from evm.tests._fixtures import make_crypto
 from evm.tests._fixtures import make_evm_chain
 from evm.tests._fixtures import make_evm_system_address
 from evm.tests._fixtures import make_wallet
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 
 class EvmNativeDepositScanWindowTests(SimpleTestCase):

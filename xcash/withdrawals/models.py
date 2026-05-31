@@ -2,7 +2,6 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from common.fields import AddressField
-from common.fields import HashField
 from common.fields import SysNoField
 
 
@@ -17,13 +16,6 @@ class WithdrawalReviewStatus(models.TextChoices):
 
 class Withdrawal(models.Model):
     sys_no = SysNoField(prefix="WDR-")
-    customer = models.ForeignKey(
-        "users.Customer",
-        on_delete=models.PROTECT,
-        verbose_name=_("客户"),
-        blank=True,
-        null=True,
-    )
     crypto = models.ForeignKey(
         "currencies.Crypto",
         on_delete=models.PROTECT,
@@ -49,9 +41,7 @@ class Withdrawal(models.Model):
     )
     out_no = models.CharField(_("商户单号"), max_length=128)
     to = AddressField(verbose_name=_("收币地址"))
-    # 审核态提币尚未签名，因此 hash 允许为空；真正上链后再回填真实交易哈希。
-    hash = HashField(verbose_name=_("哈希"), unique=False, blank=True, null=True)
-    # 提币统一锚定跨链 TxTask；hash 仅保留对外展示，不再承担主关联职责。
+    # 提币统一锚定跨链 TxTask；交易哈希由 tx_task 派生（见 hash 属性），不再单独落库以免漂移。
     tx_task = models.OneToOneField(
         "chains.TxTask",
         on_delete=models.PROTECT,
@@ -98,6 +88,14 @@ class Withdrawal(models.Model):
 
     def __str__(self):
         return self.out_no
+
+    @property
+    def hash(self) -> str:
+        # 交易哈希唯一真值在 tx_task.tx_hash（gas 重签后会更新），提币侧不再冗余落库，
+        # 直接派生避免出现过期 hash。审核态尚无 tx_task 时返回空串。
+        if not self.tx_task_id:
+            return ""
+        return self.tx_task.tx_hash or ""
 
     @property
     def tx_status(self) -> str:

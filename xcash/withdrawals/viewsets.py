@@ -16,7 +16,6 @@ from common.permissions import RejectAll
 from common.throttles import WithdrawalCreateThrottle
 from currencies.service import CryptoService
 from projects.models import Project
-from users.models import Customer
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalReviewStatus
 from withdrawals.serializers import CreateWithdrawalSerializer
@@ -83,19 +82,11 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
             worth=worth,
         )
 
-        if validated_data["uid"] is not None:
-            customer, _ = Customer.objects.get_or_create(
-                project=project, uid=validated_data["uid"]
-            )
-        else:
-            customer = None
-
         try:
             withdrawal = Withdrawal.objects.create(
                 project=project,
                 out_no=validated_data["out_no"],
                 to=validated_data["to"],
-                customer=customer,
                 chain=chain,
                 crypto=crypto,
                 amount=amount,
@@ -124,7 +115,7 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 "sys_no": withdrawal.sys_no,
-                "hash": withdrawal.hash or "",
+                "hash": withdrawal.hash,
                 "review_status": withdrawal.review_status,
                 "tx_status": withdrawal.tx_status,
             },

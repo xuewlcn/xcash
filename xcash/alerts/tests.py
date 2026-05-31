@@ -21,7 +21,7 @@ from chains.test_signer import build_test_remote_signer_backend
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from core.models import SystemSettings
 from currencies.models import Crypto
-from users.models import Customer
+from projects.models import Customer
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 from webhooks.models import WebhookEvent

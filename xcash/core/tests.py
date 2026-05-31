@@ -460,7 +460,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             crypto=crypto,
             amount=Decimal("0.01"),
             to=recipient,
-            hash=tx_task.tx_hash,
             tx_task=tx_task,
             transfer=transfer,
         )

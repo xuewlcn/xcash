@@ -92,7 +92,6 @@ class WithdrawalAdmin(ModelAdmin):
     list_display = (
         "project",
         "out_no",
-        "customer",
         "to",
         "crypto",
         "chain",
@@ -110,7 +109,6 @@ class WithdrawalAdmin(ModelAdmin):
         "project",
         "sys_no",
         "out_no",
-        "customer",
         "chain",
         "crypto",
         "amount",
@@ -133,7 +131,6 @@ class WithdrawalAdmin(ModelAdmin):
                     "project",
                     "sys_no",
                     "out_no",
-                    "customer",
                     "chain",
                     "crypto",
                     "amount",
@@ -174,7 +171,7 @@ class WithdrawalAdmin(ModelAdmin):
     )
     search_fields = (
         "out_no",
-        "hash",
+        "tx_task__tx_hash",
         "to",
         "project__name",
     )
@@ -202,20 +199,6 @@ class WithdrawalAdmin(ModelAdmin):
         queryset = super().get_queryset(request)
         # 提币列表需要同时展示审核日志数量，直接注入聚合避免列表页逐行 count()。
         return queryset.annotate(review_log_total=Count("review_logs"))
-
-    def get_search_results(self, request, queryset, search_term):
-        queryset, use_distinct = super().get_search_results(
-            request, queryset, search_term
-        )
-        if not search_term:
-            return queryset, use_distinct
-
-        # customer__uid 关系查询对 Django admin 是合法的，但部分 IDE 会误报“无法解析 admin 字段”。
-        # 这里改为显式补充搜索结果，既保留按客户 UID 检索能力，也消除静态检查噪音。
-        customer_uid_queryset = self.get_queryset(request).filter(
-            customer__uid__icontains=search_term
-        )
-        return queryset | customer_uid_queryset, use_distinct
 
     def changelist_view(self, request, extra_context=None):
         selected_action = request.POST.get("action")

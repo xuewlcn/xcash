@@ -38,8 +38,8 @@ from evm.tests._fixtures import make_evm_chain
 from invoices.models import Invoice
 from invoices.models import InvoiceBillingMode
 from invoices.models import InvoiceStatus
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 
 def _fake_address():

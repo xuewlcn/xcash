@@ -23,7 +23,9 @@ from chains.models import Address
 from chains.models import AddressUsage
 from chains.models import Chain
 from common.admin import ModelAdmin
+from common.admin import ReadOnlyModelAdmin
 from invoices.models import EpayMerchant
+from projects.models import Customer
 from projects.models import DifferRecipientAddress
 from projects.models import Project
 from users.forms import OTPVerifyForm
@@ -786,3 +788,10 @@ class ProjectAdmin(ModelAdmin):
             _("项目未就绪，请处理以下问题"),
             items,
         )
+
+
+@admin.register(Customer)
+class CustomerAdmin(ReadOnlyModelAdmin):
+    list_display = ("uid", "project", "created_at")
+    list_filter = ("project",)
+    search_fields = ("uid",)

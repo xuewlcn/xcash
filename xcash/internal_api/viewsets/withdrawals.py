@@ -17,7 +17,6 @@ from common.permissions import RejectAll
 from currencies.models import Crypto
 from currencies.service import FiatService
 from projects.models import Project
-from users.models import Customer
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalReviewStatus
 from withdrawals.service import WithdrawalService
@@ -33,7 +32,7 @@ class InternalWithdrawalViewSet(ModelViewSet):
             Withdrawal.objects.filter(
                 project__appid=self.kwargs["project_appid"]
             )
-            .select_related("crypto", "chain", "transfer", "customer", "reviewed_by")
+            .select_related("crypto", "chain", "transfer", "reviewed_by")
             .order_by("-created_at", "-pk")
         )
 
@@ -98,17 +97,10 @@ class InternalWithdrawalViewSet(ModelViewSet):
             project=project, worth=worth
         )
 
-        customer = None
-        if data.get("uid"):
-            customer, _ = Customer.objects.get_or_create(
-                project=project, uid=data["uid"]
-            )
-
         withdrawal = Withdrawal.objects.create(
             project=project,
             out_no=data["out_no"],
             to=data["to"],
-            customer=customer,
             crypto=crypto,
             chain=chain,
             amount=data["amount"],

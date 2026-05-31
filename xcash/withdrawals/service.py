@@ -52,9 +52,7 @@ class WithdrawalService:
             "sys_no": withdrawal.sys_no,
             "out_no": withdrawal.out_no,
             "chain": withdrawal.chain.code,
-            "hash": (
-                withdrawal.tx_task.tx_hash if withdrawal.tx_task_id else withdrawal.hash
-            ),
+            "hash": withdrawal.hash,
             "amount": format_decimal_stripped(withdrawal.amount),
             "crypto": withdrawal.crypto.symbol,
             "confirmed": (
@@ -62,8 +60,6 @@ class WithdrawalService:
                 and withdrawal.tx_task.status == TxTaskStatus.CONFIRMED
             ),
         }
-        if withdrawal.customer_id:
-            data["uid"] = withdrawal.customer.uid
         return {
             "type": "withdrawal",
             "data": data,
@@ -375,12 +371,10 @@ class WithdrawalService:
         )
 
         # 提币请求只有在链上任务创建成功后才切到 APPROVED，避免"已批准但无任务"。
+        # hash 由 tx_task 派生（见 Withdrawal.hash 属性），此处不再单独落库。
         withdrawal.tx_task = tx_task
-        withdrawal.hash = tx_task.tx_hash
         withdrawal.review_status = WithdrawalReviewStatus.APPROVED
-        withdrawal.save(
-            update_fields=["tx_task", "hash", "review_status", "updated_at"]
-        )
+        withdrawal.save(update_fields=["tx_task", "review_status", "updated_at"])
         return withdrawal
 
     @staticmethod

@@ -23,8 +23,8 @@ from deposits.service import DepositService
 from evm.models import EvmTxTask
 from evm.models import VaultSlot
 from evm.models import VaultSlotUsage
+from projects.models import Customer
 from projects.models import Project
-from users.models import Customer
 
 
 class DepositServiceCoreTests(TestCase):

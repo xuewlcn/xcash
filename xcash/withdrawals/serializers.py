@@ -25,7 +25,6 @@ from withdrawals.service import WithdrawalService
 class CreateWithdrawalSerializer(Serializer):
     out_no = serializers.CharField(required=True, max_length=128)
     to = serializers.CharField(required=True)
-    uid = serializers.CharField(required=False, max_length=32, default=None)
     crypto = serializers.CharField(required=True)
     chain = serializers.CharField(required=True)
     amount = serializers.DecimalField(
