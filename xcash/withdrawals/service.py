@@ -2,6 +2,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import structlog
+from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -318,6 +319,9 @@ class WithdrawalService:
     @classmethod
     def submit_withdrawal(cls, *, withdrawal: Withdrawal) -> Withdrawal:
         """把审核通过的提币请求真正送入链上发送队列。"""
+        if not settings.WITHDRAWAL_ENABLED:
+            raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="withdrawal")
+
         # 提币含可空外键（如 chain/tx_task），这里避免 select_related + FOR UPDATE 触发 PostgreSQL 限制。
         withdrawal = Withdrawal.objects.select_for_update().get(pk=withdrawal.pk)
         if withdrawal.review_status not in (

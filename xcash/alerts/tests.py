@@ -3,13 +3,17 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import httpx
+from django.contrib import admin
 from django.core.cache import cache
+from django.test import RequestFactory
 from django.test import TestCase
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
+from alerts.admin import ProjectTelegramAlertConfigAdmin
+from alerts.admin import ProjectTelegramAlertConfigInline
 from alerts.models import ProjectAlertEventType
 from alerts.models import ProjectAlertState
 from alerts.models import ProjectAlertStatus
@@ -22,6 +26,7 @@ from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from core.models import SystemSettings
 from currencies.models import Crypto
 from projects.models import Customer
+from projects.models import Project
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 from webhooks.models import WebhookEvent
@@ -120,6 +125,30 @@ class TelegramAlertServiceTests(TestCase):
         )
         event.refresh_from_db()
         return event
+
+    @override_settings(WITHDRAWAL_ENABLED=False)
+    def test_alert_admin_hides_withdrawal_subscription_when_feature_disabled(self):
+        request = RequestFactory().get("/admin/alerts/projecttelegramalertconfig")
+        request.user = User.objects.create_superuser(
+            username="alert-admin-hidden", password="secret"
+        )
+        config_admin = ProjectTelegramAlertConfigAdmin(
+            ProjectTelegramAlertConfig, admin.site
+        )
+        inline_admin = ProjectTelegramAlertConfigInline(Project, admin.site)
+
+        field_names = [
+            field
+            for _title, options in config_admin.get_fieldsets(request, self.config)
+            for field in options["fields"]
+        ]
+
+        self.assertNotIn("notify_on_withdrawal_stalled", field_names)
+        self.assertNotIn(
+            "notify_on_withdrawal_stalled",
+            inline_admin.get_fields(request, self.project),
+        )
+        self.assertNotIn("提币", config_admin.display_subscription_summary(self.config))
 
     @patch("alerts.tasks.send_project_telegram_alert.delay")
     def test_sync_operational_alerts_creates_state_and_dispatches_message(

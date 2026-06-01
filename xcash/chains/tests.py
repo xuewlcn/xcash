@@ -17,6 +17,7 @@ from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
+from chains.capabilities import ChainProductCapabilityService
 from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Address
@@ -50,6 +51,20 @@ from evm.choices import TxKind
 from evm.constants import DEFAULT_BASE_TRANSFER_GAS
 from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
 from withdrawals.models import WithdrawalReviewStatus
+
+
+class ChainProductCapabilityFeatureFlagTests(SimpleTestCase):
+    @override_settings(WITHDRAWAL_ENABLED=False)
+    def test_supports_withdrawal_returns_false_when_deployment_disabled(self):
+        crypto = Mock()
+
+        supported = ChainProductCapabilityService.supports_withdrawal(
+            chain=Mock(type=ChainType.EVM),
+            crypto=crypto,
+        )
+
+        self.assertFalse(supported)
+        crypto.support_this_chain.assert_not_called()
 
 
 class TransferMatchingTests(TestCase):

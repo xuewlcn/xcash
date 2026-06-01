@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import admin
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
@@ -199,6 +200,14 @@ class WithdrawalAdmin(ModelAdmin):
         queryset = super().get_queryset(request)
         # 提币列表需要同时展示审核日志数量，直接注入聚合避免列表页逐行 count()。
         return queryset.annotate(review_log_total=Count("review_logs"))
+
+    def has_module_permission(self, request):
+        return settings.WITHDRAWAL_ENABLED and super().has_module_permission(request)
+
+    def has_view_permission(self, request, obj=None):
+        return settings.WITHDRAWAL_ENABLED and super().has_view_permission(
+            request, obj=obj
+        )
 
     def changelist_view(self, request, extra_context=None):
         selected_action = request.POST.get("action")
@@ -491,3 +500,11 @@ class WithdrawalReviewLogAdmin(ReadOnlyModelAdmin):
         "actor__username",
     )
     list_filter = ("action", "from_review_status", "to_review_status")
+
+    def has_module_permission(self, request):
+        return settings.WITHDRAWAL_ENABLED and super().has_module_permission(request)
+
+    def has_view_permission(self, request, obj=None):
+        return settings.WITHDRAWAL_ENABLED and super().has_view_permission(
+            request, obj=obj
+        )

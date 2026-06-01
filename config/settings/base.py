@@ -88,6 +88,11 @@ WEBHOOK_ALLOW_INTERNAL_TARGETS = env.bool(
     "WEBHOOK_ALLOW_INTERNAL_TARGETS", default=False
 )
 
+# Withdrawal
+# ------------------------------------------------------------------------------
+# 开源默认关闭主动出金能力，避免部署方在未明确承担热钱包出金风险前暴露提币入口。
+WITHDRAWAL_ENABLED = env.bool("WITHDRAWAL_ENABLED", default=False)
+
 # Rate Limit
 RATELIMIT_BACKEND = "redis"
 RATELIMIT_REDIS = {
@@ -469,3 +474,10 @@ REST_FRAMEWORK = {
 # Your stuff...
 # ------------------------------------------------------------------------------
 from config.settings.unfold import UNFOLD  # noqa
+
+if not WITHDRAWAL_ENABLED:
+    UNFOLD["SIDEBAR"]["navigation"] = [
+        section
+        for section in UNFOLD["SIDEBAR"]["navigation"]
+        if section.get("feature") != "withdrawal"
+    ]

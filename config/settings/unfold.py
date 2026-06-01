@@ -151,6 +151,7 @@ SIDEBAR_UNFOLD = {
             },
             {
                 "title": _("提币"),
+                "feature": "withdrawal",
                 "collapsible": False,
                 "items": [
                     {

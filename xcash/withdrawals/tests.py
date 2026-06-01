@@ -4,8 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.contrib import admin
 from django.core.cache import cache
 from django.db import IntegrityError
+from django.test import RequestFactory
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
@@ -38,6 +40,8 @@ from projects.models import Project
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 from users.otp import build_admin_approval_context
+from withdrawals.admin import WithdrawalAdmin
+from withdrawals.admin import WithdrawalReviewLogAdmin
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalReviewLog
 from withdrawals.models import WithdrawalReviewStatus
@@ -47,6 +51,15 @@ from withdrawals.viewsets import WithdrawalViewSet
 
 
 class WithdrawalTxTaskTests(TestCase):
+    @override_settings(WITHDRAWAL_ENABLED=False)
+    def test_submit_withdrawal_rejects_when_feature_disabled(self):
+        withdrawal = Withdrawal()
+
+        with self.assertRaises(APIError) as ctx:
+            WithdrawalService.submit_withdrawal(withdrawal=withdrawal)
+
+        self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
+
     def test_build_webhook_payload_has_no_uid(self):
         project = Project.objects.create(
             name="DemoPayload",
@@ -2396,6 +2409,17 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
         self.assertEqual(mock_check.call_count, 2)
 
     @patch("withdrawals.viewsets.check_saas_permission")
+    @override_settings(WITHDRAWAL_ENABLED=False)
+    def test_create_rejects_before_saas_check_when_deployment_disabled(
+        self, mock_check
+    ):
+        response = WithdrawalViewSet.as_view({"post": "create"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.FEATURE_NOT_ENABLED.code)
+        mock_check.assert_not_called()
+
+    @patch("withdrawals.viewsets.check_saas_permission")
     def test_create_blocked_when_feature_not_enabled(self, mock_check):
         """check_saas_permission 抛出 APIError 时，提币创建应返回 403。"""
         from common.error_codes import ErrorCode
@@ -2422,3 +2446,21 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["code"], ErrorCode.ACCOUNT_FROZEN.code)
+
+
+class WithdrawalAdminFeatureFlagTests(TestCase):
+    def setUp(self):
+        self.request = RequestFactory().get("/admin/withdrawals/withdrawal")
+        self.request.user = User.objects.create_superuser(
+            username="withdrawal-admin", password="secret"
+        )
+
+    @override_settings(WITHDRAWAL_ENABLED=False)
+    def test_withdrawal_admin_is_hidden_when_feature_disabled(self):
+        withdrawal_admin = WithdrawalAdmin(Withdrawal, admin.site)
+        review_log_admin = WithdrawalReviewLogAdmin(WithdrawalReviewLog, admin.site)
+
+        self.assertFalse(withdrawal_admin.has_module_permission(self.request))
+        self.assertFalse(withdrawal_admin.has_view_permission(self.request))
+        self.assertFalse(review_log_admin.has_module_permission(self.request))
+        self.assertFalse(review_log_admin.has_view_permission(self.request))

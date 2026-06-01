@@ -1,4 +1,5 @@
 from django import forms
+from django.conf import settings
 from django.contrib import admin
 from django.contrib.admin import helpers
 from django.contrib.admin.utils import flatten_fieldsets
@@ -360,7 +361,15 @@ class ProjectAdmin(ModelAdmin):
         if form is None:
             return False
         changed_fields = set(getattr(form, "changed_data", ()) or ())
-        return bool(changed_fields & self.SENSITIVE_PROJECT_FIELDS)
+        sensitive_fields = self.SENSITIVE_PROJECT_FIELDS
+        if not settings.WITHDRAWAL_ENABLED:
+            sensitive_fields = sensitive_fields - {
+                "withdrawal_review_required",
+                "withdrawal_review_exempt_limit",
+                "withdrawal_single_limit",
+                "withdrawal_daily_limit",
+            }
+        return bool(changed_fields & sensitive_fields)
 
     def _project_post_changes_sensitive_fields(self, request, obj: Project) -> bool:
         # changeform_view 需要在进入保存前预判风险级别，这里复用 admin form 的变更比较逻辑。
@@ -602,7 +611,29 @@ class ProjectAdmin(ModelAdmin):
     def get_fieldsets(self, request, obj=None):
         if obj is None:
             return self.add_fieldsets
-        return self.edit_fieldsets
+        if settings.WITHDRAWAL_ENABLED:
+            return self.edit_fieldsets
+        return tuple(
+            fieldset
+            for fieldset in self.edit_fieldsets
+            if str(fieldset[0]) != "提币风控"
+        )
+
+    def get_list_display(self, request):
+        list_display = super().get_list_display(request)
+        if settings.WITHDRAWAL_ENABLED:
+            return list_display
+        return tuple(
+            field for field in list_display if field != "display_withdrawal_policy"
+        )
+
+    def get_list_filter(self, request):
+        list_filter = super().get_list_filter(request)
+        if settings.WITHDRAWAL_ENABLED:
+            return list_filter
+        return tuple(
+            field for field in list_filter if field != "withdrawal_review_required"
+        )
 
     add_fieldsets = (
         (

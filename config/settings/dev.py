@@ -7,6 +7,7 @@ from .base import INSTALLED_APPS
 from .base import MIDDLEWARE
 from .base import REST_FRAMEWORK as BASE_REST_FRAMEWORK
 from .base import UNFOLD
+from .base import WITHDRAWAL_ENABLED
 from .base import env
 
 # GENERAL
@@ -112,32 +113,38 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["vault_slot"] = "10000/minute"
 from django.urls import reverse_lazy  # noqa: E402
 from django.utils.translation import gettext_lazy as _  # noqa: E402
 
+STRESS_SIDEBAR_ITEMS = [
+    {
+        "title": _("测试轮次"),
+        "icon": "speed",
+        "link": reverse_lazy("admin:stress_stressrun_changelist"),
+    },
+    {
+        "title": _("账单测试"),
+        "icon": "checklist",
+        "link": reverse_lazy("admin:stress_invoicestresscase_changelist"),
+    },
+    {
+        "title": _("充币测试"),
+        "icon": "download",
+        "link": reverse_lazy("admin:stress_depositstresscase_changelist"),
+    },
+]
+if WITHDRAWAL_ENABLED:
+    STRESS_SIDEBAR_ITEMS.insert(
+        2,
+        {
+            "title": _("提币测试"),
+            "icon": "upload",
+            "link": reverse_lazy("admin:stress_withdrawalstresscase_changelist"),
+        },
+    )
+
 UNFOLD["SIDEBAR"]["navigation"].insert(
     -1,
     {
         "title": _("压测"),
         "collapsible": True,
-        "items": [
-            {
-                "title": _("测试轮次"),
-                "icon": "speed",
-                "link": reverse_lazy("admin:stress_stressrun_changelist"),
-            },
-            {
-                "title": _("账单测试"),
-                "icon": "checklist",
-                "link": reverse_lazy("admin:stress_invoicestresscase_changelist"),
-            },
-            {
-                "title": _("提币测试"),
-                "icon": "upload",
-                "link": reverse_lazy("admin:stress_withdrawalstresscase_changelist"),
-            },
-            {
-                "title": _("充币测试"),
-                "icon": "download",
-                "link": reverse_lazy("admin:stress_depositstresscase_changelist"),
-            },
-        ],
+        "items": STRESS_SIDEBAR_ITEMS,
     },
 )

@@ -22,6 +22,7 @@ os.environ.setdefault("REDIS_PORT", "6379")
 os.environ.setdefault("REDIS_DB", "0")
 os.environ.setdefault("TRUSTED_PROXY_IPS", "127.0.0.1,::1")
 os.environ.setdefault("SIGNER_SHARED_SECRET", "test-signer-secret")
+os.environ.setdefault("WITHDRAWAL_ENABLED", "true")
 
 # web3 7.14.1 仍会在导入阶段触发 websockets.legacy 的上游弃用告警；
 # 测试环境先静默该第三方噪音，避免掩盖项目自身 warning。

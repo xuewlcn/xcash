@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from django.conf import settings
+
 from chains.models import ChainType
 
 
@@ -39,6 +41,8 @@ class ChainProductCapabilityService:
 
     @classmethod
     def supports_withdrawal(cls, *, chain, crypto) -> bool:
+        if not settings.WITHDRAWAL_ENABLED:
+            return False
         return chain.type in cls.WITHDRAWAL_CHAIN_TYPES and crypto.support_this_chain(
             chain
         )

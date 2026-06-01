@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction as db_transaction
 from internal_api.authentication import InternalTokenAuthentication
@@ -47,9 +48,16 @@ class InternalWithdrawalViewSet(ModelViewSet):
             return [IsAuthenticated()]
         return [RejectAll()]
 
+    @staticmethod
+    def _assert_withdrawal_enabled():
+        if not settings.WITHDRAWAL_ENABLED:
+            raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="withdrawal")
+
     @db_transaction.atomic
     def create(self, request, *args, **kwargs):
         """创建提币，复用现有 WithdrawalService 的策略校验和提交逻辑。"""
+        self._assert_withdrawal_enabled()
+
         project = Project.retrieve(self.kwargs["project_appid"])
         if project is None:
             raise APIError(ErrorCode.PROJECT_NOT_FOUND)
@@ -124,6 +132,8 @@ class InternalWithdrawalViewSet(ModelViewSet):
     @action(detail=True, methods=["post"])
     def approve(self, request, project_appid=None, sys_no=None):
         """放行审核中的提币，复用 WithdrawalService.approve_withdrawal。"""
+        self._assert_withdrawal_enabled()
+
         withdrawal = self.get_object()
         if withdrawal.review_status != WithdrawalReviewStatus.REVIEWING:
             raise APIError(ErrorCode.WITHDRAWAL_NOT_REVIEWABLE)
@@ -139,6 +149,8 @@ class InternalWithdrawalViewSet(ModelViewSet):
     @action(detail=True, methods=["post"])
     def reject(self, request, project_appid=None, sys_no=None):
         """拒绝审核中的提币，复用 WithdrawalService.reject_withdrawal。"""
+        self._assert_withdrawal_enabled()
+
         withdrawal = self.get_object()
         if withdrawal.review_status != WithdrawalReviewStatus.REVIEWING:
             raise APIError(ErrorCode.WITHDRAWAL_NOT_REVIEWABLE)

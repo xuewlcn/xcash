@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import IntegrityError
 from django.db import transaction as db_transaction
 from rest_framework import status
@@ -39,6 +40,9 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
 
     @db_transaction.atomic
     def create(self, request, *args, **kwargs):
+        if not settings.WITHDRAWAL_ENABLED:
+            raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="withdrawal")
+
         # SaaS 模式：校验该 project 是否有权限发起提币
         check_saas_permission(
             appid=request.headers.get(APPID_HEADER),

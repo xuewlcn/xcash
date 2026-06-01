@@ -165,6 +165,32 @@ class ProjectAdminTests(TestCase):
         otp_mock.assert_not_called()
         save_model_mock.assert_called_once()
 
+    @override_settings(WITHDRAWAL_ENABLED=False)
+    def test_project_admin_hides_withdrawal_policy_when_feature_disabled(self):
+        admin_instance = ProjectAdmin(Project, admin.site)
+        request = self.factory.get("/admin/projects/project")
+        request.user = User.objects.create_superuser(
+            username="project-admin-hidden", password="secret"
+        )
+
+        self.assertNotIn(
+            "display_withdrawal_policy",
+            admin_instance.get_list_display(request),
+        )
+        self.assertNotIn(
+            "withdrawal_review_required",
+            admin_instance.get_list_filter(request),
+        )
+        self.assertNotIn(
+            "提币风控",
+            [
+                str(title)
+                for title, _options in admin_instance.get_fieldsets(
+                    request, self.project
+                )
+            ],
+        )
+
     def test_payment_address_inline_form_validates(self):
         request = self.factory.get("/admin/projects/project/add/")
         request.user = self.user
