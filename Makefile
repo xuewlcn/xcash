@@ -1,7 +1,7 @@
 ENV_FILE ?= .env
 DC = docker compose --env-file $(ENV_FILE) -f docker-compose.dev.yml
 
-.PHONY: help init-env up down upgrade dev-sync dev-up dev-up-pro dev-up-deps dev-up-chain dev-up-signer dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test dev-local-init dev-signer-check dev-bootstrap
+.PHONY: help init-env up down upgrade dev-sync dev-up dev-up-pro dev-up-deps dev-up-chain dev-up-signer dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test pytest dev-local-init dev-signer-check dev-bootstrap
 
 help:
 	@echo "可用命令："
@@ -30,6 +30,7 @@ help:
 	@echo "  make dev-clear-migrations 删除所有 app 的迁移文件（保留 __init__.py）"
 	@echo "  make dev-shell        宿主机进入 Django shell_plus"
 	@echo "  make dev-test         启动依赖后使用 Postgres/Redis 运行 Django 测试"
+	@echo "  make pytest           使用 pytest 重建测试库并跳过迁移运行测试"
 	@echo "  make dev-local-init   初始化本地联调链配置（anvil）"
 	@echo "  make dev-up-signer    本地运行 Go signer（go run，监听 :8010，SQLite）"
 	@echo "  make dev-signer-check 检查主应用到 signer 的连通（需先 dev-up-signer）"
@@ -111,6 +112,9 @@ dev-test:
 	$(DC) up -d django-db redis
 	# 复用已有测试库，避免非交互环境在 test_xcash 已存在时卡住确认提示。
 	PYTHONPATH=xcash ./.venv/bin/python manage.py test --settings=config.settings.test --keepdb
+
+pytest:
+	uv run pytest --create-db --nomigrations -q
 
 dev-local-init:
 	$(DC) up -d django-db redis anvil
