@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from functools import cached_property
 from typing import TYPE_CHECKING
 
@@ -26,7 +25,6 @@ from common.models import UndeletableModel
 
 if TYPE_CHECKING:
     from chains.keys import EvmSignedPayload
-    from currencies.models import Crypto
     from deposits.models import Deposit
     from invoices.models import Invoice
 
@@ -477,49 +475,6 @@ class Address(UndeletableModel):
             address_index=self.address_index,
         )
         return sign_evm_transaction(private_key=private_key, tx_dict=tx_dict)
-
-    def send_crypto(
-        self,
-        crypto: Crypto,
-        chain: Chain,
-        to: str,
-        amount: Decimal,
-        tx_type: TxTaskType,
-    ) -> str:
-        """使用本账户私钥签名并发送转账，返回 tx hash / signature。
-
-        EVM：仅创建内部任务，首次广播时才生成首个 tx_hash。
-        """
-        if chain.type == ChainType.EVM:
-            # EvmTxTask 内部管理锁，不在此处获取，避免双重加锁。
-            from evm.intents import build_erc20_transfer_intent  # noqa: PLC0415
-            from evm.intents import build_native_transfer_intent  # noqa: PLC0415
-            from evm.models import EvmTxTask  # noqa: PLC0415
-
-            decimals = crypto.get_decimals(chain)
-            value_raw = int(amount * Decimal(10**decimals))
-            if crypto == chain.native_coin:
-                intent = build_native_transfer_intent(
-                    sender=self,
-                    chain=chain,
-                    to=to,
-                    value=value_raw,
-                    tx_type=tx_type,
-                )
-            else:
-                intent = build_erc20_transfer_intent(
-                    sender=self,
-                    chain=chain,
-                    crypto=crypto,
-                    to=to,
-                    value_raw=value_raw,
-                    tx_type=tx_type,
-                )
-            task = EvmTxTask.schedule(intent)
-            return task.base_task.tx_hash
-
-        msg = f"Unsupported chain type for send_crypto: {chain.type}"
-        raise NotImplementedError(msg)
 
 
 class TxTaskType(models.TextChoices):

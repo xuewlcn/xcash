@@ -1,9 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
-from unittest.mock import Mock
 from unittest.mock import patch
 
-import pytest
 from django.core import checks
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -34,9 +32,6 @@ from chains.transfer_matching import raw_amount
 from chains.transfer_matching import transfer_matches
 from currencies.models import ChainToken
 from currencies.models import Crypto
-from evm.choices import TxKind
-from evm.constants import DEFAULT_BASE_TRANSFER_GAS
-from evm.constants import DEFAULT_ERC20_TRANSFER_GAS
 
 
 class TransferMatchingTests(TestCase):
@@ -1096,105 +1091,6 @@ class BlockNumberUpdatedCompensationTests(TestCase):
 
         self.assertEqual(confirm_delay_mock.call_count, 3)
         reschedule_mock.assert_not_called()
-
-
-@pytest.mark.django_db
-def test_address_send_crypto_schedules_native_transfer_intent():
-    chain = Chain.objects.create(
-        code=ChainCode.Ethereum,
-    )
-    native = chain.native_coin
-    address = Address.objects.create(
-        wallet=Wallet.objects.create(),
-        chain_type=ChainType.EVM,
-        usage=AddressUsage.HotWallet,
-        bip44_account=Wallet.get_bip44_account(AddressUsage.HotWallet),
-        address_index=0,
-        address=Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000121201"
-        ),
-    )
-    tx_hash = "0x" + "12" * 32
-
-    with patch("evm.models.EvmTxTask.schedule") as schedule_mock:
-        schedule_mock.return_value = Mock(base_task=Mock(tx_hash=tx_hash))
-
-        result = address.send_crypto(
-            crypto=native,
-            chain=chain,
-            to="0x0000000000000000000000000000000000121202",
-            amount=Decimal("1.5"),
-            tx_type=TxTaskType.VaultSlotCollect,
-        )
-
-    assert result == tx_hash
-    schedule_mock.assert_called_once()
-    (intent,) = schedule_mock.call_args.args
-    assert intent.sender == address
-    assert intent.chain == chain
-    assert intent.tx_kind == TxKind.NATIVE_TRANSFER
-    assert intent.tx_type == TxTaskType.VaultSlotCollect
-    assert intent.value == 1_500_000_000_000_000_000
-    assert intent.gas == DEFAULT_BASE_TRANSFER_GAS
-
-
-@pytest.mark.django_db
-def test_address_send_crypto_schedules_erc20_transfer_intent():
-    token = Crypto.objects.create(
-        name="Task12 BSC Wrapped",
-        symbol="BSC",
-        coingecko_id="task12-bsc-wrapped",
-    )
-    chain = Chain.objects.create(
-        code=ChainCode.Ethereum,
-    )
-    ChainToken.objects.create(
-        chain=chain,
-        crypto=token,
-        address=Web3.to_checksum_address(
-            "0x00000000000000000000000000000000001212c0"
-        ),
-        decimals=6,
-    )
-    # 该币以 ERC20 形式部署（有合约地址），且不是该链原生币，应走 CONTRACT_CALL 路径。
-    assert token != chain.native_coin
-    address = Address.objects.create(
-        wallet=Wallet.objects.create(),
-        chain_type=ChainType.EVM,
-        usage=AddressUsage.HotWallet,
-        bip44_account=Wallet.get_bip44_account(AddressUsage.HotWallet),
-        address_index=0,
-        address=Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000121203"
-        ),
-    )
-    recipient = Web3.to_checksum_address(
-        "0x0000000000000000000000000000000000121204"
-    )
-    tx_hash = "0x" + "13" * 32
-
-    with patch("evm.models.EvmTxTask.schedule") as schedule_mock:
-        schedule_mock.return_value = Mock(base_task=Mock(tx_hash=tx_hash))
-
-        result = address.send_crypto(
-            crypto=token,
-            chain=chain,
-            to=recipient,
-            amount=Decimal("2.25"),
-            tx_type=TxTaskType.VaultSlotCollect,
-        )
-
-    assert result == tx_hash
-    schedule_mock.assert_called_once()
-    (intent,) = schedule_mock.call_args.args
-    assert intent.sender == address
-    assert intent.chain == chain
-    assert intent.tx_kind == TxKind.CONTRACT_CALL
-    assert intent.to == Web3.to_checksum_address(
-        "0x00000000000000000000000000000000001212c0"
-    )
-    assert intent.tx_type == TxTaskType.VaultSlotCollect
-    assert intent.gas == DEFAULT_ERC20_TRANSFER_GAS
 
 
 class ProcessTransferAutoretryTests(SimpleTestCase):
