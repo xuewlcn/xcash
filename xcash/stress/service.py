@@ -375,12 +375,12 @@ def _seed_stress_saas_permission_cache(project: Project) -> None:
 
 
 def _setup_wallet_for_vault(project: Project) -> None:
-    """为 Stress Project 把合约账单 vault 设为系统热钱包的 EVM 地址。
+    """为 Stress Project 分配系统钱包派生的独立 EVM vault 地址。
 
     合约账单（CONTRACT）依赖 project.vault：它既是 CREATE2 派生 VaultSlot 的不可变归集地址，
-    也是 VaultSlot 归集（sweep）的最终终点。归集交易统一由系统热钱包发起并支付 gas，
-    故把 vault 设为系统热钱包的 EVM 地址，使「派生 VaultSlot 收款 → 归集回系统热钱包」形成闭环，
-    且与 _fund_evm_vault 注资的系统热钱包地址同址，热钱包天然有 gas 支撑归集交易。
+    也是 VaultSlot 归集（sweep）的最终终点。Project.vault 有唯一约束，不能让多轮 StressRun
+    复用 address_index=0 的系统热钱包地址；压测专用 vault 使用系统钱包按 project.pk 派生的地址，
+    仍由主系统托管私钥。address_index=0 继续作为系统热钱包支付 VaultSlot 部署与归集 gas。
     Project.vault 一旦写入不可修改（见 Project.save 校验），故只在本次首次准备时赋值。
     """
     from chains.models import AddressUsage
@@ -388,12 +388,15 @@ def _setup_wallet_for_vault(project: Project) -> None:
     from core.models import SystemWallet
 
     system_wallet = SystemWallet.get_current()
-    # 预派生 EVM 热钱包地址：派生参数与 _fund_evm_vault 完全一致，确保 vault 与注资地址同址。
-    evm_hot_address = system_wallet.wallet.get_address(
+    if project.pk is None:
+        raise RuntimeError("Stress Project 必须先落库，才能按项目 ID 派生 vault 地址")
+
+    evm_vault_address = system_wallet.wallet.get_address(
         chain_type=ChainType.EVM,
         usage=AddressUsage.HotWallet,
+        address_index=project.pk,
     ).address
-    project.vault = evm_hot_address
+    project.vault = evm_vault_address
     project.save(update_fields=["vault"])
 
 

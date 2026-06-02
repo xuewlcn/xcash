@@ -1482,7 +1482,7 @@ class StressContractProvisioningTests(TestCase):
     """压测合约账单 provisioning 的真实路径验证（不 mock available_methods / select_method）。
 
     覆盖 vault 修复与链命名收敛后、stress 合约单的建单前置与收款分配：
-    - _setup_wallet_for_vault 把项目 EVM 热钱包地址写入 project.vault；
+    - _setup_wallet_for_vault 把系统钱包派生的项目专用 EVM 地址写入 project.vault；
     - _require_stress_methods_ready 按 CONTRACT 校验：缺 vault 时即便配了差额收款地址也要报错；
     - 合约 Invoice.select_method 在 vault 就绪时真实分配 VaultSlot 收款地址，缺 vault 时分配失败。
 
@@ -1532,23 +1532,36 @@ class StressContractProvisioningTests(TestCase):
             billing_mode=InvoiceBillingMode.CONTRACT,
         )
 
-    def test_setup_wallet_for_vault_assigns_system_evm_hot_address_as_vault(self):
-        # 归集统一由系统热钱包发起并付 gas，故 vault 必须写成系统热钱包的 EVM 地址，
-        # 且与 _fund_evm_vault 注资的派生地址同址（二者用完全相同的 get_address 参数）。
+    def test_setup_wallet_for_vault_assigns_unique_system_derived_vault(self):
+        # Project.vault 有唯一约束；压测连续创建多轮 Project 时，vault 必须按项目维度派生，
+        # 不能复用 address_index=0 的系统热钱包地址。
         from core.models import SystemWallet
 
         project = self.make_project(name="stress-vault-wiring")
+        next_project = self.make_project(name="stress-vault-wiring-next")
         self.assertIsNone(project.vault)
+        self.assertIsNone(next_project.vault)
 
         _setup_wallet_for_vault(project)
-        system_hot_address = (
-            SystemWallet.get_current()
-            .wallet.get_address(chain_type=ChainType.EVM, usage=AddressUsage.HotWallet)
-            .address
-        )
+        _setup_wallet_for_vault(next_project)
+
+        system_wallet = SystemWallet.get_current()
+        project_vault_address = system_wallet.wallet.get_address(
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.HotWallet,
+            address_index=project.pk,
+        ).address
+        next_project_vault_address = system_wallet.wallet.get_address(
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.HotWallet,
+            address_index=next_project.pk,
+        ).address
 
         project.refresh_from_db()
-        self.assertEqual(project.vault, system_hot_address)
+        next_project.refresh_from_db()
+        self.assertEqual(project.vault, project_vault_address)
+        self.assertEqual(next_project.vault, next_project_vault_address)
+        self.assertNotEqual(project.vault, next_project.vault)
 
     def test_require_stress_methods_ready_passes_with_vault(self):
         project = self.make_project(
