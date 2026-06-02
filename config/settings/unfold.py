@@ -16,13 +16,13 @@ BASE_UNFOLD = {
         {
             "rel": "icon",
             "sizes": "32x32",
-            "type": "image/svg+xml",
-            "href": lambda request: static("logo.svg"),
+            "type": "image/png",
+            "href": lambda request: static("logo.png"),
         },
     ],
     "SITE_ICON": {
-        "light": lambda request: static("logo.svg"),  # light mode
-        "dark": lambda request: static("logo.svg"),  # dark mode
+        "light": lambda request: static("logo.png"),  # light mode
+        "dark": lambda request: static("logo.png"),  # dark mode
     },
     "SHOW_LANGUAGES": True,
     "LANGUAGES": {
