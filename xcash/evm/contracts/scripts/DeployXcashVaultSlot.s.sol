@@ -12,15 +12,15 @@ import {XcashVaultSlotFactory} from "../src/XcashVaultSlotFactory.sol";
 ///         否则脚本 revert，避免地址漂移破坏「跨链同地址」假设。
 contract DeployXcashVaultSlot is Script {
     /// @dev 全网统一 salt。语义化字符串便于未来 v2 迁移；一旦上线不可改。
-    bytes32 internal constant DEPLOY_SALT = keccak256("xcash:vault-slot:v1");
+    bytes32 internal constant DEPLOY_SALT = keccak256("xcash:evm-vault-slot:v1");
 
     /// @dev 全网期望地址。新链部署必须落到这两个地址，否则脚本 revert。
     ///      改动会同时打破 Python 侧 evm.constants 里的对应常量，必须同步评审。
     ///      地址依赖 foundry.toml 中 solc_version / optimizer_runs / via_ir /
     ///      evm_version / bytecode_hash / cbor_metadata 等编译参数，
     ///      以及合约源码本身——任何一项变动都会让 init_code 变、地址漂移。
-    address internal constant EXPECTED_TEMPLATE = 0x1e5e29F79e1DC67e22a676d90e7f73560448de4b;
-    address internal constant EXPECTED_FACTORY = 0xe6AF22f000cC7f447d74400158688A6e35D004aB;
+    address internal constant EXPECTED_TEMPLATE = 0xBe5242D10E80b289E26B24687229e0553BD14007;
+    address internal constant EXPECTED_FACTORY = 0x58406B151BaF3c2c880a8CF89AF4cA37Afb9f5ae;
 
     function run() external {
         bytes32 templateInitHash = keccak256(type(XcashVaultSlotTemplate).creationCode);

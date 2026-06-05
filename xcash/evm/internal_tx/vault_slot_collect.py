@@ -14,12 +14,12 @@ from chains.models import Chain
 from chains.models import Transfer
 from chains.models import TransferType
 from chains.models import TxTask
+from chains.models import VaultSlot
 from currencies.models import ChainCryptoDeployment
 from currencies.models import Crypto
 from evm.internal_tx.facts import MatchedTransferFact
 from evm.internal_tx.log_utils import matches_transfer_log
 from evm.internal_tx.log_utils import normalize_log_index
-from evm.models import VaultSlot
 from evm.saas_gas_billing import notify_vault_slot_collect_gas_fee
 
 _COLLECT_SELECTOR = "0x06ec16f8"

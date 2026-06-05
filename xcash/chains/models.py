@@ -11,6 +11,7 @@ from django.db import models
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from eth_utils import keccak  # noqa
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
@@ -78,10 +79,7 @@ class Chain(models.Model):
                 condition=(
                     models.Q(active=False)
                     | (models.Q(type=ChainType.EVM) & ~models.Q(rpc=""))
-                    | (
-                        models.Q(type=ChainType.TRON)
-                        & ~models.Q(tron_api_key="")
-                    )
+                    | (models.Q(type=ChainType.TRON) & ~models.Q(tron_api_key=""))
                 ),
             ),
         ]
@@ -656,15 +654,6 @@ class TxTask(UndeletableModel):
         """面向运营的人类可读状态，直接取单枚举的展示文案。"""
         return self.get_status_display()
 
-    @property
-    def is_terminal(self) -> bool:
-        """是否已得出确定的链上终局结果（已确认或失败）。"""
-        return self.status in TERMINAL_TX_TASK_STATUSES
-
-    @property
-    def is_confirmed(self) -> bool:
-        return self.status == TxTaskStatus.CONFIRMED
-
     @db_transaction.atomic
     def append_tx_hash(self, tx_hash: str) -> TxHash:
         locked_task = TxTask.objects.select_for_update().get(pk=self.pk)
@@ -804,6 +793,368 @@ class TxTask(UndeletableModel):
             )
         )
         return bool(updated)
+
+
+class VaultSlotUsage(models.TextChoices):
+    DEPOSIT = "deposit", _("用户充币")
+    INVOICE = "invoice", _("账单收款")
+
+
+class VaultSlot(models.Model):
+    """项目在指定链上的 XcashVaultSlot 收款槽位。
+
+    本模型只表达跨链一致的业务身份和生命周期锚点。地址预测、部署交易构造、
+    归集合约调用等链专属执行细节由 chains.vault_slots 分发到 evm/tron 模块。
+    """
+
+    chain = models.ForeignKey("Chain", on_delete=models.CASCADE, verbose_name=_("链"))
+    usage = models.CharField(
+        _("用途"),
+        choices=VaultSlotUsage,
+        max_length=16,
+        db_index=True,
+    )
+    project = models.ForeignKey(
+        "projects.Project",
+        on_delete=models.CASCADE,
+        verbose_name=_("项目"),
+    )
+    customer = models.ForeignKey(
+        "projects.Customer",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        verbose_name=_("客户"),
+    )
+    invoice_index = models.PositiveIntegerField(
+        _("账单槽位序号"),
+        null=True,
+        blank=True,
+    )
+    address = AddressField(_("收款地址"))
+    salt = models.BinaryField(_("CREATE2 Salt"), max_length=32)
+    deploy_tx_task = models.OneToOneField(
+        "chains.TxTask",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deployed_vault_slot",
+        verbose_name=_("部署交易任务"),
+    )
+    created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("customer", "chain"),
+                name="uniq_vault_slot_customer_chain",
+            ),
+            models.UniqueConstraint(
+                fields=("project", "usage", "chain", "invoice_index"),
+                name="uniq_vault_slot_project_usage_chain_invoice_index",
+            ),
+            models.UniqueConstraint(
+                fields=("chain", "address"),
+                name="uniq_vault_slot_chain_address",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        usage=VaultSlotUsage.DEPOSIT,
+                        customer__isnull=False,
+                        invoice_index__isnull=True,
+                    )
+                    | models.Q(
+                        usage=VaultSlotUsage.INVOICE,
+                        customer__isnull=True,
+                        invoice_index__isnull=False,
+                    )
+                ),
+                name="ck_vault_slot_usage_customer",
+            ),
+        ]
+        verbose_name = _("收款地址")
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return self.address
+
+    def save(self, *args, **kwargs):
+        if self.chain_id and self.chain.type not in {ChainType.EVM, ChainType.TRON}:
+            raise ValueError("VaultSlot 仅支持 EVM / Tron 链")
+        if self.usage == VaultSlotUsage.DEPOSIT:
+            if self.customer_id is None:
+                raise ValueError("VaultSlot customer is required for deposit usage")
+            if self.project_id is None:
+                self.project_id = self.customer.project_id
+            if self.invoice_index is not None:
+                raise ValueError(
+                    "VaultSlot invoice_index must be empty for deposit usage"
+                )
+        elif self.usage == VaultSlotUsage.INVOICE:
+            if self.customer_id is not None:
+                raise ValueError("VaultSlot customer must be empty for invoice usage")
+            if self.invoice_index is None:
+                raise ValueError(
+                    "VaultSlot invoice_index is required for invoice usage"
+                )
+        return super().save(*args, **kwargs)
+
+    @property
+    def is_deployed(self) -> bool:
+        if self.deploy_tx_task_id is None:
+            return False
+        return self.deploy_tx_task.status == TxTaskStatus.CONFIRMED
+
+    @staticmethod
+    def build_salt(
+        *,
+        usage: VaultSlotUsage,
+        chain_type: ChainType | str = ChainType.EVM,
+        customer=None,
+        project_id: int | None = None,
+        invoice_index: int | None = None,
+    ) -> bytes:
+        if chain_type == ChainType.TRON:
+            namespace = b"xcash:tron-vault-slot"
+        elif chain_type == ChainType.EVM:
+            namespace = b"xcash:evm-vault-slot"
+        else:
+            raise ValueError(f"unsupported VaultSlot chain_type: {chain_type}")
+
+        if usage == VaultSlotUsage.DEPOSIT:
+            if customer is None:
+                raise ValueError("customer is required for deposit salt")
+            # 不掺 chain.code：同一链类型内的 factory/template/vault 地址一致时，
+            # 同一业务身份在该链类型所有网络上得到一致 VaultSlot 地址。
+            return keccak(
+                namespace
+                + b":deposit:"
+                + str(customer.project_id).encode()
+                + b":"
+                + customer.uid.encode()
+            )
+
+        if usage == VaultSlotUsage.INVOICE:
+            if project_id is None or invoice_index is None:
+                raise ValueError(
+                    "project_id and invoice_index are required for invoice salt"
+                )
+            return keccak(
+                namespace
+                + b":invoice:"
+                + str(project_id).encode()
+                + b":"
+                + str(invoice_index).encode()
+            )
+
+        raise ValueError(f"unsupported VaultSlot usage: {usage}")
+
+    @staticmethod
+    def ensure_deposit_address(chain: Chain, customer) -> str:
+        from chains.vault_slots import ensure_deposit_address
+
+        return ensure_deposit_address(chain=chain, customer=customer)
+
+    @staticmethod
+    def ensure_invoice_address(*, project, chain: Chain, invoice_index: int) -> str:
+        from chains.vault_slots import ensure_invoice_address
+
+        return ensure_invoice_address(
+            project=project,
+            chain=chain,
+            invoice_index=invoice_index,
+        )
+
+    @staticmethod
+    def schedule_deploy(slot_pk: int) -> TxTask | None:
+        from chains.vault_slots import schedule_deploy
+
+        return schedule_deploy(slot_pk)
+
+    @staticmethod
+    def schedule_collect_for_deposit(
+        deposit_pk: int,
+    ) -> VaultSlotCollectSchedule | None:
+        from chains.vault_slots import schedule_collect_for_deposit
+
+        return schedule_collect_for_deposit(deposit_pk)
+
+    @staticmethod
+    def schedule_collect_for_invoice(
+        invoice_pk: int,
+    ) -> VaultSlotCollectSchedule | None:
+        from chains.vault_slots import schedule_collect_for_invoice
+
+        return schedule_collect_for_invoice(invoice_pk)
+
+    @staticmethod
+    def schedule_collect_for_slot(
+        *, chain: Chain, crypto, slot
+    ) -> VaultSlotCollectSchedule:
+        from chains.vault_slots import schedule_collect_for_slot
+
+        return schedule_collect_for_slot(chain=chain, crypto=crypto, slot=slot)
+
+    @staticmethod
+    def create_collect_tx_task_for_slot(*, chain: Chain, crypto, slot) -> TxTask:
+        from chains.vault_slots import create_collect_tx_task_for_slot
+
+        return create_collect_tx_task_for_slot(chain=chain, crypto=crypto, slot=slot)
+
+    @staticmethod
+    def matched_addresses_for_candidates(
+        *, chain: Chain, candidates: set[str]
+    ) -> set[str]:
+        if not candidates:
+            return set()
+        return set(
+            VaultSlot.objects.filter(
+                chain=chain,
+                address__in=candidates,
+            ).values_list("address", flat=True)
+        )
+
+
+class VaultSlotCollectSchedule(models.Model):
+    """VaultSlot 归集窗口计划。
+
+    计划只负责把同一链、同一 VaultSlot、同一币种的多次到账聚合到 due_at；
+    到期后创建的 TxTask 继续承载广播、确认和失败状态。
+    """
+
+    vault_slot = models.ForeignKey(
+        VaultSlot,
+        on_delete=models.CASCADE,
+        related_name="collect_schedules",
+        verbose_name=_("收款地址"),
+    )
+    chain = models.ForeignKey("Chain", on_delete=models.CASCADE, verbose_name=_("链"))
+    crypto = models.ForeignKey(
+        "currencies.Crypto",
+        on_delete=models.PROTECT,
+        verbose_name=_("币种"),
+    )
+    due_at = models.DateTimeField(_("计划执行时间"), db_index=True)
+    tx_task = models.OneToOneField(
+        "chains.TxTask",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vault_slot_collect_schedule",
+        verbose_name=_("链上任务"),
+    )
+    created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("chain", "vault_slot", "crypto"),
+                condition=models.Q(tx_task__isnull=True),
+                name="uniq_pending_vault_slot_collect",
+            ),
+        ]
+        ordering = ("due_at", "pk")
+        verbose_name = _("收款地址归集计划")
+        verbose_name_plural = verbose_name
+
+    def __str__(self) -> str:
+        return f"{self.chain_id}:{self.vault_slot_id}:{self.crypto_id}"
+
+    @classmethod
+    def ensure_pending(
+        cls,
+        *,
+        chain: Chain,
+        vault_slot: VaultSlot,
+        crypto,
+    ) -> VaultSlotCollectSchedule:
+        existing = cls.objects.filter(
+            chain=chain,
+            vault_slot=vault_slot,
+            crypto=crypto,
+            tx_task__isnull=True,
+        ).first()
+        if existing is not None:
+            return existing
+
+        from core.runtime_settings import get_vault_slot_collect_delay
+
+        due_at = timezone.now() + get_vault_slot_collect_delay()
+        try:
+            return cls.objects.create(
+                chain=chain,
+                vault_slot=vault_slot,
+                crypto=crypto,
+                due_at=due_at,
+            )
+        except IntegrityError:
+            return cls.objects.get(
+                chain=chain,
+                vault_slot=vault_slot,
+                crypto=crypto,
+                tx_task__isnull=True,
+            )
+
+    def create_tx_task(self) -> TxTask:
+        return VaultSlot.create_collect_tx_task_for_slot(
+            chain=self.chain,
+            crypto=self.crypto,
+            slot=self.vault_slot,
+        )
+
+    @classmethod
+    def execute_due(cls, *, limit: int = 32) -> int:
+        from chains.vault_slots import can_create_collect_tx_task
+
+        now = timezone.now()
+        created_count = 0
+        with db_transaction.atomic():
+            schedules = list(
+                cls.objects.select_for_update(skip_locked=True)
+                .select_related(
+                    "chain",
+                    "crypto",
+                    "vault_slot",
+                )
+                .filter(tx_task__isnull=True, due_at__lte=now)
+                .order_by("due_at", "pk")[:limit]
+            )
+            for schedule in schedules:
+                if not can_create_collect_tx_task(
+                    chain=schedule.chain,
+                    slot=schedule.vault_slot,
+                ):
+                    continue
+                # 单条用 savepoint 隔离:个别计划建/绑任务失败不回滚整批归集调度。
+                try:
+                    with db_transaction.atomic():
+                        tx_task = schedule.create_tx_task()
+                        schedule.tx_task = tx_task
+                        schedule.save(update_fields=["tx_task", "updated_at"])
+                except IntegrityError:
+                    logger.warning(
+                        "VaultSlot 归集计划绑定任务失败,跳过",
+                        schedule_id=schedule.pk,
+                    )
+                    continue
+                created_count += 1
+        return created_count
+
+
+class DepositVaultSlot(VaultSlot):
+    class Meta:
+        proxy = True
+        verbose_name = _("充币收款地址")
+        verbose_name_plural = verbose_name
+
+
+class InvoiceVaultSlot(VaultSlot):
+    class Meta:
+        proxy = True
+        verbose_name = _("账单收款地址")
+        verbose_name_plural = verbose_name
 
 
 class TransferStatus(models.TextChoices):

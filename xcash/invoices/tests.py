@@ -25,13 +25,13 @@ from chains.constants import ChainType
 from chains.models import Chain
 from chains.models import Transfer
 from chains.models import TransferType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from currencies.models import ChainCryptoDeployment
 from currencies.models import Crypto
 from currencies.models import Fiat
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from invoices.exceptions import InvoiceStatusError
 from invoices.models import Invoice
 from invoices.models import InvoiceProtocol
@@ -43,6 +43,22 @@ from invoices.tasks import fallback_invoice_expired
 from invoices.viewsets import InvoiceViewSet
 from projects.models import Project
 from users.models import User
+
+
+def create_active_evm_test_chain(*, code=ChainCode.Ethereum) -> Chain:
+    chain = Chain.objects.create(code=code, rpc="", active=False)
+    Chain.objects.filter(pk=chain.pk).update(
+        rpc="http://evm-chain.invalid",
+        active=True,
+    )
+    chain.refresh_from_db()
+    return chain
+
+
+def disable_vault_slot_deploy_schedule(test_case) -> None:
+    patcher = patch("chains.models.VaultSlot.schedule_deploy", return_value=None)
+    patcher.start()
+    test_case.addCleanup(patcher.stop)
 
 
 class InvoiceTestMixin:
@@ -66,11 +82,7 @@ class InvoiceTestMixin:
             prices={"USD": "1"},
             coingecko_id=f"{crypto_symbol.lower()}-test",
         )
-        self.chain = Chain.objects.create(
-            code=chain_name,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=chain_name)
         Fiat.objects.get_or_create(code="USD")
 
     def create_test_invoice(self, *, out_no: str = "test-order", **kwargs) -> Invoice:
@@ -98,33 +110,26 @@ class InvoiceInitializationTests(TestCase):
             symbol="ETH",
             coingecko_id="ethereum",
         )
-        self.chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
+
 
 class InvoicePaymentSelectionTests(TestCase):
     def setUp(self):
+        disable_vault_slot_deploy_schedule(self)
         self.user = User.objects.create(username="merchant-payments")
         self.project = Project.objects.create(
             name="SlotProject",
+            vault=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000A1"
+            ),
         )
         self.crypto = Crypto.objects.create(
             name="Tether USD",
             symbol="USDT",
             coingecko_id="tether-invoice-slots",
         )
-        self.chain_a = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
-        self.chain_b = Chain.objects.create(
-            code=ChainCode.BSC,
-            rpc="",
-            active=True,
-        )
+        self.chain_a = create_active_evm_test_chain(code=ChainCode.Ethereum)
+        self.chain_b = create_active_evm_test_chain(code=ChainCode.BSC)
         Fiat.objects.get_or_create(code="USD")
 
     def create_invoice(self, *, out_no: str = "payment-order") -> Invoice:
@@ -441,6 +446,7 @@ class InvoiceFinalizeMethodsOrderingTests(TestCase):
 
 class InvoicePaymentSelectionConcurrencyTests(TransactionTestCase):
     def setUp(self):
+        disable_vault_slot_deploy_schedule(self)
         self.user = User.objects.create(username="merchant-concurrency")
         self.project = Project.objects.create(
             name="ConcurrencyProject",
@@ -451,11 +457,7 @@ class InvoicePaymentSelectionConcurrencyTests(TransactionTestCase):
             prices={"USD": "1"},
             coingecko_id="tether-invoice-concurrency",
         )
-        self.chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         Fiat.objects.get_or_create(code="USD")
         self.project.vault = "0x00000000000000000000000000000000000000A1"
         self.project.save(update_fields=["vault"])
@@ -576,11 +578,7 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             symbol="USDTEVMCO",
             coingecko_id="tether-evm-contract-only",
         )
-        eth_chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        eth_chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         ChainCryptoDeployment.objects.create(
             crypto=usdt,
             chain=eth_chain,
@@ -597,16 +595,8 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
         project = Project.objects.create(
             name="Invoice SaaS Allowed Methods Project",
         )
-        eth_chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
-        bsc_chain = Chain.objects.create(
-            code=ChainCode.BSC,
-            rpc="",
-            active=True,
-        )
+        eth_chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
+        bsc_chain = create_active_evm_test_chain(code=ChainCode.BSC)
         usdt = Crypto.objects.create(
             name="USDT SaaS Allowed",
             symbol="USDTSAASAM",
@@ -658,16 +648,8 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
         project = Project.objects.create(
             name="Invoice SaaS Empty Whitelist Project",
         )
-        eth_chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
-        bsc_chain = Chain.objects.create(
-            code=ChainCode.BSC,
-            rpc="",
-            active=True,
-        )
+        eth_chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
+        bsc_chain = create_active_evm_test_chain(code=ChainCode.BSC)
         usdt = Crypto.objects.create(
             name="USDT SaaS Empty",
             symbol="USDTSAASEM",
@@ -708,11 +690,7 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
         project = Project.objects.create(
             name="Invoice SaaS Case Insensitive Project",
         )
-        eth_chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        eth_chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         usdt = Crypto.objects.create(
             name="USDT SaaS Case",
             symbol="USDTSAASCI",
@@ -758,16 +736,7 @@ class InvoiceContractBillingValidationTests(TestCase):
             coingecko_id="usdt-mixed-billing",
         )
         Fiat.objects.get_or_create(code="USD")
-        self.eth_chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=False,
-        )
-        Chain.objects.filter(pk=self.eth_chain.pk).update(
-            rpc="http://evm.invalid",
-            active=True,
-        )
-        self.eth_chain.refresh_from_db()
+        self.eth_chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         self.tron_chain = Chain.objects.create(
             code=ChainCode.Tron,
             rpc="http://tron.invalid",
@@ -846,7 +815,7 @@ class InvoiceContractBillingValidationTests(TestCase):
         TRON_VAULT_SLOT_DEPLOY_FEE_LIMIT=300_000_000,
     )
     def test_select_method_allocates_tron_vault_slot(self):
-        from tron.models import TronVaultSlot
+        from chains.models import VaultSlot
 
         invoice = Invoice.objects.create(
             project=self.project,
@@ -865,7 +834,7 @@ class InvoiceContractBillingValidationTests(TestCase):
         self.assertEqual(invoice.chain, self.tron_chain)
         self.assertTrue(invoice.pay_address.startswith("T"))
         self.assertTrue(
-            TronVaultSlot.objects.filter(
+            VaultSlot.objects.filter(
                 chain=self.tron_chain,
                 project=self.project,
                 address=invoice.pay_address,
@@ -986,6 +955,7 @@ class InvoiceExpiredMatchTests(TestCase):
     """过期 Invoice 的当前支付指引仍可按链上发生时间命中。"""
 
     def setUp(self):
+        disable_vault_slot_deploy_schedule(self)
         self.user = User.objects.create(username="merchant-expired-match")
         self.project = Project.objects.create(
             name="ExpiredMatchProject",
@@ -996,11 +966,7 @@ class InvoiceExpiredMatchTests(TestCase):
             prices={"USD": "1"},
             coingecko_id="tether-expired-match",
         )
-        self.chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         Fiat.objects.get_or_create(code="USD")
         self.recipient_address = Web3.to_checksum_address(
             "0x00000000000000000000000000000000000000E1"
@@ -1063,6 +1029,7 @@ class FallbackInvoiceExpiredTests(TestCase):
     """fallback_invoice_expired 批量过期的逻辑测试。"""
 
     def setUp(self):
+        disable_vault_slot_deploy_schedule(self)
         self.user = User.objects.create(username="merchant-fallback")
         self.project = Project.objects.create(
             name="FallbackProject",
@@ -1073,11 +1040,7 @@ class FallbackInvoiceExpiredTests(TestCase):
             prices={"USD": "1"},
             coingecko_id="tether-fallback",
         )
-        self.chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         Fiat.objects.get_or_create(code="USD")
         self.project.vault = Web3.to_checksum_address(
             "0x00000000000000000000000000000000000000F1"
@@ -1127,6 +1090,7 @@ class CheckExpiredAtomicityTests(TransactionTestCase):
     """验证 check_expired 在并发场景下的原子性。"""
 
     def setUp(self):
+        disable_vault_slot_deploy_schedule(self)
         self.user = User.objects.create(username="merchant-atomic")
         self.project = Project.objects.create(
             name="AtomicProject",
@@ -1137,11 +1101,7 @@ class CheckExpiredAtomicityTests(TransactionTestCase):
             prices={"USD": "1"},
             coingecko_id="tether-atomic",
         )
-        self.chain = Chain.objects.create(
-            code=ChainCode.Ethereum,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
         Fiat.objects.get_or_create(code="USD")
         self.project.vault = Web3.to_checksum_address(
             "0x00000000000000000000000000000000000000A7"
@@ -1536,12 +1496,10 @@ class InvoiceVaultSlotPaymentTest(TestCase, InvoiceTestMixin):
         )
 
         with self.captureOnCommitCallbacks(execute=False):
-            pay_address, pay_amount = (
-                invoice._allocate_contract_slot(
-                    self.crypto,
-                    self.chain,
-                    Decimal("10"),
-                )
+            pay_address, pay_amount = invoice._allocate_contract_slot(
+                self.crypto,
+                self.chain,
+                Decimal("10"),
             )
 
         slot = VaultSlot.objects.get(
@@ -1565,7 +1523,7 @@ class InvoiceVaultSlotPaymentTest(TestCase, InvoiceTestMixin):
         )
 
         with self.captureOnCommitCallbacks(execute=False):
-            slot = invoice._get_contract_vault_slot(
+            slot = invoice.get_vault_slot(
                 crypto=self.crypto,
                 chain=self.chain,
                 crypto_amount=Decimal("10"),
@@ -1857,7 +1815,7 @@ class InvoiceVaultSlotPaymentTest(TestCase, InvoiceTestMixin):
         with (
             patch.object(
                 invoice,
-                "_get_contract_vault_slot",
+                "get_vault_slot",
                 side_effect=[slot0, slot1],
             ) as slot_selector,
             patch.object(
@@ -1964,7 +1922,7 @@ class TryMatchContractInvoiceTest(TestCase, InvoiceTestMixin):
         self.assertEqual(self.invoice.transfer_id, transfer.pk)
         self.assertEqual(newer_invoice.status, InvoiceStatus.WAITING)
 
-    @patch("evm.models.VaultSlot.schedule_collect_for_invoice")
+    @patch("chains.models.VaultSlot.schedule_collect_for_invoice")
     @patch("invoices.service.send_internal_callback")
     @patch("invoices.service.WebhookService.create_event")
     def test_confirm_contract_invoice_schedules_erc20_slot_collection(

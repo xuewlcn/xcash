@@ -41,11 +41,11 @@ from chains.constants import ChainCode
 from chains.models import AddressUsage
 from chains.models import Chain
 from chains.models import ChainType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from currencies.models import ChainCryptoDeployment
 from currencies.models import Crypto
 from currencies.models import Fiat
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from invoices.models import Invoice
 from projects.models import Project
 

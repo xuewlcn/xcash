@@ -9,10 +9,10 @@ from django.test import override_settings
 from web3 import Web3
 
 from chains.models import Transfer
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from evm.models import EvmScanCursor
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.watchers import EvmWatchSet
 from evm.tests._fixtures import make_crypto

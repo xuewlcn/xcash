@@ -145,7 +145,7 @@ SIDEBAR_UNFOLD = {
                     {
                         "title": _("账单合约"),
                         "icon": "add_card",
-                        "link": reverse_lazy("admin:evm_invoicevaultslot_changelist"),
+                        "link": reverse_lazy("admin:chains_invoicevaultslot_changelist"),
                     },
                 ],
             },
@@ -161,7 +161,7 @@ SIDEBAR_UNFOLD = {
                     {
                         "title": _("充币合约"),
                         "icon": "add_card",
-                        "link": reverse_lazy("admin:evm_depositvaultslot_changelist"),
+                        "link": reverse_lazy("admin:chains_depositvaultslot_changelist"),
                     },
                 ],
             },

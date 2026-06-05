@@ -12,8 +12,8 @@ EVM_PENDING_RECEIPT_POLL_DELAY = 32
 EVM_PENDING_REBROADCAST_TIMEOUT = 120
 
 # XcashVaultSlotTemplate / XcashVaultSlotFactory 全网统一地址。
-# 通过 Foundry 默认 Arachnid CREATE2 Deployer + salt=keccak256("xcash:vault-slot:v1")
+# 通过 Foundry 默认 Arachnid CREATE2 Deployer + salt=keccak256("xcash:evm-vault-slot:v1")
 # 部署，所有 EVM 链必须落到同一地址；新链部署走 contracts/scripts/DeployXcashVaultSlot.s.sol，
 # 脚本内 EXPECTED_* 常量与下面两个值必须保持同步，任何偏差都会让 require revert。
-XCASH_VAULT_SLOT_TEMPLATE_ADDRESS = "0x1e5e29F79e1DC67e22a676d90e7f73560448de4b"
-XCASH_VAULT_SLOT_FACTORY_ADDRESS = "0xe6AF22f000cC7f447d74400158688A6e35D004aB"
+XCASH_VAULT_SLOT_TEMPLATE_ADDRESS = "0xBe5242D10E80b289E26B24687229e0553BD14007"
+XCASH_VAULT_SLOT_FACTORY_ADDRESS = "0x58406B151BaF3c2c880a8CF89AF4cA37Afb9f5ae"

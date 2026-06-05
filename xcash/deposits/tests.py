@@ -5,8 +5,6 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.utils import timezone
-from tron.models import TronVaultSlot
-from tron.models import TronVaultSlotUsage
 from web3 import Web3
 
 from chains.constants import ChainCode
@@ -17,6 +15,8 @@ from chains.models import Chain
 from chains.models import Transfer
 from chains.models import TransferStatus
 from chains.models import TransferType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from common.internal_callback import CallbackEvent
 from common.internal_callback import InternalCallback
@@ -27,8 +27,6 @@ from deposits.models import Deposit
 from deposits.service import DepositService
 from deposits.viewsets import wait_deposit_address_deployed
 from evm.models import EvmTxTask
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from projects.models import Customer
 from projects.models import Project
 
@@ -229,7 +227,7 @@ class DepositNotificationTests(TestCase):
 
     @patch("deposits.service.send_internal_callback")
     @patch("deposits.service.WebhookService.create_event")
-    @patch.object(TronVaultSlot, "schedule_collect_for_deposit")
+    @patch.object(VaultSlot, "schedule_collect_for_deposit")
     def test_confirm_deposit_dispatches_tron_collect_scheduler(
         self,
         schedule_collect,
@@ -428,10 +426,10 @@ def create_tron_deposit_context():
         decimals=6,
     )
     slot_address = "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
-    TronVaultSlot.objects.create(
+    VaultSlot.objects.create(
         customer=customer,
         chain=chain,
-        usage=TronVaultSlotUsage.DEPOSIT,
+        usage=VaultSlotUsage.DEPOSIT,
         address=slot_address,
         salt=b"\x22" * 32,
     )

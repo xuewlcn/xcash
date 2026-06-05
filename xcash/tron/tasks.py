@@ -6,7 +6,6 @@ from django.db import transaction as db_transaction
 from django.db.models import Q
 from tron.client import TronClientError
 from tron.models import TronTxTask
-from tron.models import TronVaultSlotCollectSchedule
 from tron.saas_gas_billing import notify_vault_slot_collect_gas_fee
 from tron.saas_gas_billing import notify_vault_slot_deploy_gas_fee
 from tron.scanner import TronUsdtPaymentScanner
@@ -136,14 +135,6 @@ def confirm_tron_receipt_tx_tasks() -> None:
                 task_id=task.pk,
                 expected_status=task.status,
             )
-
-
-@shared_task(ignore_result=True)
-@singleton_task(timeout=55)
-def execute_due_tron_vault_slot_collect_schedules() -> None:
-    created_count = TronVaultSlotCollectSchedule.execute_due()
-    if created_count:
-        logger.info("Tron VaultSlot 到期归集计划已创建链上任务", count=created_count)
 
 
 @shared_task(ignore_result=True)

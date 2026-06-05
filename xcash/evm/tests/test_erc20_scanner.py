@@ -19,14 +19,14 @@ from chains.models import Transfer
 from chains.models import TxTask
 from chains.models import TxTaskStatus
 from chains.models import TxTaskType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from currencies.models import ChainCryptoDeployment
 from currencies.models import Crypto
 from evm.models import EvmScanCursor
 from evm.models import EvmTxTask
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from evm.scanner.logs import EvmLogScanner
 from evm.scanner.rpc import EvmScannerRpcError
 from evm.scanner.watchers import EvmWatchSet
@@ -35,6 +35,16 @@ from evm.tasks import _scan_evm_chain
 from evm.tasks import scan_active_evm_chains
 from projects.models import Customer
 from projects.models import Project
+
+
+def create_active_evm_test_chain(*, code=ChainCode.BSC) -> Chain:
+    chain = Chain.objects.create(code=code, rpc="", active=False)
+    Chain.objects.filter(pk=chain.pk).update(
+        rpc="http://scanner-chain.invalid",
+        active=True,
+    )
+    chain.refresh_from_db()
+    return chain
 
 
 class EvmErc20ScanWindowTests(SimpleTestCase):
@@ -112,11 +122,7 @@ class EvmErc20ScannerTests(TestCase):
             symbol="BNB-SCANNER",
             coingecko_id="binancecoin-scanner",
         )
-        self.chain = Chain.objects.create(
-            code=ChainCode.BSC,
-            rpc="",
-            active=True,
-        )
+        self.chain = create_active_evm_test_chain(code=ChainCode.BSC)
         self.token = Crypto.objects.create(
             name="Scanner Tether USD",
             symbol="USDT-SCANNER",
@@ -231,6 +237,7 @@ class EvmErc20ScannerTests(TestCase):
         )
         Chain.objects.create(
             code=ChainCode.Tron,
+            tron_api_key="tron-key",
             active=True,
         )
 

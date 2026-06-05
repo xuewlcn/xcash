@@ -12,11 +12,11 @@ from django.utils import timezone
 from tron.client import TronClientError
 from tron.client import TronHttpClient
 from tron.codec import TronAddressCodec
-from tron.models import TronVaultSlot
 from tron.models import TronWatchCursor
 
 from chains.models import Chain
 from chains.models import ChainType
+from chains.models import VaultSlot
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from currencies.models import ChainCryptoDeployment
@@ -261,7 +261,7 @@ class TronUsdtPaymentScanner:
         if not candidates:
             return []
         candidate_addresses = {event.observed.to_address for event in candidates}
-        matched_addresses = TronVaultSlot.matched_addresses_for_candidates(
+        matched_addresses = VaultSlot.matched_addresses_for_candidates(
             chain=chain,
             candidates=candidate_addresses,
         )

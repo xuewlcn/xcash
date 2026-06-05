@@ -1,3 +1,4 @@
+import structlog
 from celery import shared_task
 from django.db import OperationalError
 
@@ -8,8 +9,11 @@ from chains.models import Chain
 from chains.models import ConfirmMode
 from chains.models import Transfer
 from chains.models import TransferStatus
+from chains.models import VaultSlotCollectSchedule
 from common.decorators import singleton_task
 from common.time import ago
+
+logger = structlog.get_logger()
 
 
 # 高并发下 try_match_invoice / confirm_invoice 等行锁链路会触发 PostgreSQL 死锁，
@@ -36,6 +40,17 @@ def fallback_process_transfer():
         created_at__lte=ago(seconds=30),
     ):
         process_transfer.delay(transfer.pk)
+
+
+@shared_task(ignore_result=True)
+@singleton_task(timeout=55)
+def execute_due_vault_slot_collect_schedules() -> None:
+    created_count = VaultSlotCollectSchedule.execute_due()
+    if created_count:
+        logger.info(
+            "VaultSlot 到期归集计划已创建链上任务",
+            count=created_count,
+        )
 
 
 @shared_task(

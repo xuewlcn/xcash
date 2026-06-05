@@ -12,10 +12,10 @@ from chains.constants import ChainCode
 from chains.models import Chain
 from chains.models import Transfer
 from chains.models import TxTask
+from chains.models import VaultSlot
 from common.internal_callback import CallbackEvent
 from common.internal_callback import InternalCallback
 from common.internal_callback import send_internal_callback
-from evm.models import VaultSlot
 
 logger = structlog.get_logger()
 
@@ -99,7 +99,7 @@ def notify_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
     try:
         slot = (
             VaultSlot.objects.select_related("project", "chain")
-            .get(deploy_tx_task__base_task=tx_task)
+            .get(deploy_tx_task=tx_task)
         )
         tx_detail = _build_tx_detail(chain=slot.chain, tx_hash=tx_task.tx_hash)
     except Exception as exc:  # noqa: BLE001

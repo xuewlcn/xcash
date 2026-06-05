@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from django.core.cache import cache
 
 from chains.models import Chain
+from chains.models import VaultSlot
 from currencies.models import ChainCryptoDeployment
-from evm.models import VaultSlot
 
 
 @dataclass(frozen=True)

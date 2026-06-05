@@ -19,9 +19,6 @@ from tron.admin import TronWatchCursorAdmin
 from tron.client import TronClientError
 from tron.client import TronHttpClient
 from tron.models import TronTxTask
-from tron.models import TronVaultSlot
-from tron.models import TronVaultSlotCollectSchedule
-from tron.models import TronVaultSlotUsage
 from tron.models import TronWatchCursor
 from tron.tasks import confirm_tron_receipt_tx_tasks
 
@@ -36,6 +33,9 @@ from chains.models import Transfer
 from chains.models import TxTask
 from chains.models import TxTaskStatus
 from chains.models import TxTaskType
+from chains.models import VaultSlot
+from chains.models import VaultSlotCollectSchedule
+from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from currencies.models import ChainCryptoDeployment
 from currencies.models import Crypto
@@ -44,7 +44,7 @@ from projects.models import Customer
 from projects.models import Project
 
 
-class TronVaultSlotCodecTests(SimpleTestCase):
+class VaultSlotCodecTests(SimpleTestCase):
     def test_predict_uses_tron_create2_prefix_0x41(self):
         from eth_utils import keccak
         from tron.codec import TronAddressCodec
@@ -804,10 +804,10 @@ class TronUsdtPaymentScannerTests(TestCase):
     ):
         from tron.scanner import TronUsdtPaymentScanner
 
-        TronVaultSlot.objects.create(
+        VaultSlot.objects.create(
             chain=self.chain,
             project=self.project,
-            usage=TronVaultSlotUsage.INVOICE,
+            usage=VaultSlotUsage.INVOICE,
             invoice_index=0,
             address=self.watch_address,
             salt=b"a" * 32,
@@ -983,9 +983,9 @@ class TronReceiptConfirmTaskTests(TestCase):
             address_index=0,
             address="TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
         )
-        self.slot = TronVaultSlot.objects.create(
+        self.slot = VaultSlot.objects.create(
             chain=self.chain,
-            usage=TronVaultSlotUsage.DEPOSIT,
+            usage=VaultSlotUsage.DEPOSIT,
             customer=self.customer,
             project=self.project,
             address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
@@ -1000,7 +1000,7 @@ class TronReceiptConfirmTaskTests(TestCase):
             status=TxTaskStatus.PENDING_CHAIN,
         )
         base_task.append_tx_hash(tx_hash)
-        tron_task = TronTxTask.objects.create(
+        TronTxTask.objects.create(
             base_task=base_task,
             sender=self.sender,
             chain=self.chain,
@@ -1009,12 +1009,12 @@ class TronReceiptConfirmTaskTests(TestCase):
             parameter="00" * 32,
             fee_limit=150_000_000,
         )
-        TronVaultSlotCollectSchedule.objects.create(
+        VaultSlotCollectSchedule.objects.create(
             chain=self.chain,
             vault_slot=self.slot,
             crypto=self.usdt,
             due_at=timezone.now(),
-            tx_task=tron_task,
+            tx_task=base_task,
         )
         return base_task
 
@@ -1105,59 +1105,59 @@ class TronCollectScheduleExecuteTests(TestCase):
             address_index=0,
             address="TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
         )
-        self.slot = TronVaultSlot.objects.create(
+        self.slot = VaultSlot.objects.create(
             chain=self.chain,
-            usage=TronVaultSlotUsage.DEPOSIT,
+            usage=VaultSlotUsage.DEPOSIT,
             customer=self.customer,
             project=self.project,
             address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
             salt=b"\x02" * 32,
         )
 
-    def make_pending_schedule(self) -> TronVaultSlotCollectSchedule:
-        return TronVaultSlotCollectSchedule.objects.create(
+    def make_pending_schedule(self) -> VaultSlotCollectSchedule:
+        return VaultSlotCollectSchedule.objects.create(
             chain=self.chain,
             vault_slot=self.slot,
             crypto=self.usdt,
             due_at=timezone.now() - timedelta(seconds=1),
         )
 
-    @patch("tron.models.TronAdapter.is_contract", return_value=False)
+    @patch("tron.vault_slots.TronAdapter.is_contract", return_value=False)
     def test_execute_due_skips_until_slot_deployed(self, is_contract):
         schedule = self.make_pending_schedule()
 
-        created = TronVaultSlotCollectSchedule.execute_due()
+        created = VaultSlotCollectSchedule.execute_due()
 
         self.assertEqual(created, 0)
         schedule.refresh_from_db()
         self.assertIsNone(schedule.tx_task_id)
 
-    @patch("tron.models.TronAdapter.is_contract", return_value=True)
+    @patch("tron.vault_slots.TronAdapter.is_contract", return_value=True)
     def test_execute_due_creates_task_when_slot_deployed(self, is_contract):
         schedule = self.make_pending_schedule()
 
-        with patch("tron.models.SystemWallet.get_current") as get_current:
+        with patch("tron.vault_slots.SystemWallet.get_current") as get_current:
             get_current.return_value.wallet.get_address.return_value = self.sender
-            created = TronVaultSlotCollectSchedule.execute_due()
+            created = VaultSlotCollectSchedule.execute_due()
 
         self.assertEqual(created, 1)
         schedule.refresh_from_db()
         self.assertIsNotNone(schedule.tx_task_id)
 
-    @patch("tron.models.TronAdapter.is_contract", return_value=True)
+    @patch("tron.vault_slots.TronAdapter.is_contract", return_value=True)
     def test_two_schedules_same_slot_get_independent_tasks(self, is_contract):
         # 回归:移除「复用在途任务」去重后,同 slot+token 的两个计划各建独立任务,
-        # 不再撞 TronVaultSlotCollectSchedule.tx_task 的 OneToOne 唯一约束、毒化整批调度。
+        # 不再撞 VaultSlotCollectSchedule.tx_task 的 OneToOne 唯一约束、毒化整批调度。
         first = self.make_pending_schedule()
-        with patch("tron.models.SystemWallet.get_current") as get_current:
+        with patch("tron.vault_slots.SystemWallet.get_current") as get_current:
             get_current.return_value.wallet.get_address.return_value = self.sender
-            TronVaultSlotCollectSchedule.execute_due()
+            VaultSlotCollectSchedule.execute_due()
             first.refresh_from_db()
             self.assertIsNotNone(first.tx_task_id)
 
             # 第一个计划绑定任务后 uniq_pending 约束释放,可再建第二个 pending 计划。
             second = self.make_pending_schedule()
-            created = TronVaultSlotCollectSchedule.execute_due()
+            created = VaultSlotCollectSchedule.execute_due()
 
         self.assertEqual(created, 1)
         second.refresh_from_db()

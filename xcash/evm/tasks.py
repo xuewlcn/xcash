@@ -17,7 +17,6 @@ from common.time import ago
 from evm.internal_tx.routing import NON_TRANSFER_TX_TASK_TYPES
 from evm.internal_tx.routing import get_handler
 from evm.models import EvmTxTask
-from evm.models import VaultSlotCollectSchedule
 from evm.poller import EvmTaskPoller
 from evm.saas_gas_billing import notify_vault_slot_deploy_gas_fee
 from evm.scanner.rpc import EvmScannerRpcError
@@ -173,14 +172,6 @@ def confirm_non_transfer_tx_tasks() -> None:
             )
             if updated:
                 get_handler(TxTaskType(task.tx_type)).finalize_failed(task)
-
-
-@shared_task(ignore_result=True)
-@singleton_task(timeout=55)
-def execute_due_vault_slot_collect_schedules() -> None:
-    created_count = VaultSlotCollectSchedule.execute_due()
-    if created_count:
-        logger.info("VaultSlot 到期归集计划已创建链上任务", count=created_count)
 
 
 @shared_task(ignore_result=True)

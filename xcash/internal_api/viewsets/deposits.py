@@ -8,16 +8,15 @@ from rest_framework.mixins import RetrieveModelMixin
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
-from tron.models import TronVaultSlot
 
 from chains.capabilities import ChainProductCapabilityService
 from chains.constants import ChainType
 from chains.models import Chain
+from chains.models import VaultSlot
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from currencies.models import Crypto
 from deposits.models import Deposit
-from evm.models import VaultSlot
 from projects.models import Customer
 from projects.models import Project
 
@@ -80,13 +79,8 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
                 crypto=usdt,
             ):
                 raise APIError(ErrorCode.INVALID_CHAIN)
-            deposit_address = TronVaultSlot.ensure_deposit_address(
-                chain=chain,
-                customer=customer,
-            )
-        else:
-            deposit_address = VaultSlot.ensure_deposit_address(
-                chain=chain,
-                customer=customer,
-            )
+        deposit_address = VaultSlot.ensure_deposit_address(
+            chain=chain,
+            customer=customer,
+        )
         return Response({"deposit_address": deposit_address})

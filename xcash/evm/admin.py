@@ -2,84 +2,9 @@ from django.contrib import admin
 from unfold.decorators import display
 
 from common.admin import ReadOnlyModelAdmin
-from common.admin import TabularInline
 from common.admin_scan_cursor import SyncScanCursorToLatestActionMixin
-from evm.models import DepositVaultSlot
 from evm.models import EvmScanCursor
 from evm.models import EvmTxTask
-from evm.models import InvoiceVaultSlot
-from evm.models import VaultSlotCollectSchedule
-from evm.models import VaultSlotUsage
-
-
-class VaultSlotCollectScheduleInline(TabularInline):
-    model = VaultSlotCollectSchedule
-    extra = 0
-    can_delete = False
-    fields = ("crypto", "due_at", "tx_task", "created_at", "updated_at")
-    readonly_fields = fields
-    ordering = ("-due_at",)
-
-    def has_add_permission(self, request, obj=None):
-        return False
-
-    def get_queryset(self, request):
-        return super().get_queryset(request).select_related("crypto", "tx_task")
-
-
-class VaultSlotAdminBase(ReadOnlyModelAdmin):
-    inlines = (VaultSlotCollectScheduleInline,)
-    list_filter = ("chain",)
-    readonly_fields = (
-        "project",
-        "customer",
-        "invoice_index",
-        "chain",
-        "address",
-        "salt",
-        "created_at",
-    )
-    usage = None
-
-    def get_queryset(self, request):
-        qs = (
-            super()
-            .get_queryset(request)
-            .select_related("chain", "customer", "project")
-        )
-        return qs.filter(usage=self.usage)
-
-
-@admin.register(DepositVaultSlot)
-class DepositVaultSlotAdmin(VaultSlotAdminBase):
-    list_display = ("customer", "project", "chain", "address", "created_at")
-    search_fields = ("customer__uid", "project__name", "address")
-    usage = VaultSlotUsage.DEPOSIT
-
-
-@admin.register(InvoiceVaultSlot)
-class InvoiceVaultSlotAdmin(VaultSlotAdminBase):
-    list_display = ("project", "invoice_index", "chain", "address", "created_at")
-    search_fields = ("project__name", "address")
-    usage = VaultSlotUsage.INVOICE
-
-
-@admin.register(VaultSlotCollectSchedule)
-class VaultSlotCollectScheduleAdmin(ReadOnlyModelAdmin):
-    ordering = ("due_at",)
-    list_display = ("vault_slot", "chain", "crypto", "due_at", "tx_task", "created_at")
-    list_filter = ("chain", "crypto")
-    search_fields = ("vault_slot__address", "tx_task__base_task__tx_hash")
-    list_select_related = ("vault_slot", "chain", "crypto", "tx_task")
-    readonly_fields = (
-        "chain",
-        "vault_slot",
-        "crypto",
-        "due_at",
-        "tx_task",
-        "created_at",
-        "updated_at",
-    )
 
 
 @admin.register(EvmTxTask)

@@ -7,11 +7,11 @@ from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
 from chains.models import ChainType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from currencies.models import ChainCryptoDeployment
 from currencies.models import Crypto
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from evm.scanner.watchers import clear_evm_watch_set_cache
 from evm.scanner.watchers import load_matched_addresses_for_candidates
 from evm.scanner.watchers import load_watch_set

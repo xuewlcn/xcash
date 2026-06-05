@@ -23,6 +23,9 @@ from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import TxTaskStatus
 from chains.models import TxTaskType
+from chains.models import VaultSlot
+from chains.models import VaultSlotCollectSchedule
+from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from core.models import SystemSettings
 from core.models import SystemWallet
@@ -35,9 +38,6 @@ from evm.intents import DEFAULT_VAULT_SLOT_DEPLOY_GAS
 from evm.intents import build_vault_slot_collect_intent
 from evm.intents import build_vault_slot_deploy_intent
 from evm.models import EvmTxTask
-from evm.models import VaultSlot
-from evm.models import VaultSlotCollectSchedule
-from evm.models import VaultSlotUsage
 from evm.tests._fixtures import make_evm_chain
 from invoices.models import Invoice
 from invoices.models import InvoiceStatus
@@ -180,8 +180,10 @@ def test_concurrent_schedule_deploy_reuses_single_task_for_same_slot():
             connections.close_all()
 
     with (
-        patch.object(VaultSlot, "_is_deployed_on_chain", side_effect=slow_not_deployed),
-        patch.object(Wallet, "get_address", autospec=True, side_effect=fake_get_address),
+        patch("evm.vault_slots.is_deployed_on_chain", side_effect=slow_not_deployed),
+        patch.object(
+            Wallet, "get_address", autospec=True, side_effect=fake_get_address
+        ),
     ):
         threads = [threading.Thread(target=schedule) for _ in range(thread_count)]
         for thread in threads:
@@ -256,10 +258,8 @@ class VaultSlotAddressSchedulingTests(TestCase):
             address=self.token_address,
             decimals=6,
         )
-        deployed_patch = patch.object(
-            VaultSlot,
-            "_is_deployed_on_chain",
-            return_value=False,
+        deployed_patch = patch(
+            "evm.vault_slots.is_deployed_on_chain", return_value=False
         )
         deployed_patch.start()
         self.addCleanup(deployed_patch.stop)
@@ -335,7 +335,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(
             deposit_salt,
             keccak(
-                b"xcash:vault-slot:deposit:"
+                b"xcash:evm-vault-slot:deposit:"
                 + str(self.project.pk).encode()
                 + b":"
                 + self.customer.uid.encode()
@@ -344,7 +344,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(
             invoice_salt,
             keccak(
-                b"xcash:vault-slot:invoice:"
+                b"xcash:evm-vault-slot:invoice:"
                 + str(self.project.pk).encode()
                 + b":"
                 + b"3"
@@ -376,7 +376,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         with (
             address_patch,
-            patch.object(VaultSlot, "_is_deployed_on_chain", return_value=True),
+            patch("evm.vault_slots.is_deployed_on_chain", return_value=True),
             patch.object(EvmTxTask, "schedule") as schedule,
         ):
             task = VaultSlot.schedule_deploy(slot.pk)
@@ -405,8 +405,8 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         with address_patch:
             existing_task = VaultSlot.schedule_deploy(slot.pk)
-        existing_task.base_task.status = TxTaskStatus.CONFIRMED
-        existing_task.base_task.save(update_fields=["status", "updated_at"])
+        existing_task.status = TxTaskStatus.CONFIRMED
+        existing_task.save(update_fields=["status", "updated_at"])
 
         with address_patch, patch.object(EvmTxTask, "schedule") as schedule:
             task = VaultSlot.schedule_deploy(slot.pk)
@@ -420,8 +420,8 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         with address_patch:
             failed_task = VaultSlot.schedule_deploy(slot.pk)
-        failed_task.base_task.status = TxTaskStatus.FAILED
-        failed_task.base_task.save(update_fields=["status", "updated_at"])
+        failed_task.status = TxTaskStatus.FAILED
+        failed_task.save(update_fields=["status", "updated_at"])
 
         with address_patch:
             new_task = VaultSlot.schedule_deploy(slot.pk)
@@ -436,12 +436,12 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         with address_patch:
             failed_task = VaultSlot.schedule_deploy(slot.pk)
-        failed_task.base_task.status = TxTaskStatus.FAILED
-        failed_task.base_task.save(update_fields=["status", "updated_at"])
+        failed_task.status = TxTaskStatus.FAILED
+        failed_task.save(update_fields=["status", "updated_at"])
 
         with (
             address_patch,
-            patch.object(VaultSlot, "_is_deployed_on_chain", return_value=True),
+            patch("evm.vault_slots.is_deployed_on_chain", return_value=True),
             patch.object(EvmTxTask, "schedule") as schedule,
         ):
             task = VaultSlot.schedule_deploy(slot.pk)
@@ -480,12 +480,12 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         with address_patch:
             task = VaultSlot.schedule_deploy(slot.pk)
-        task.base_task.tx_hash = tx_hash
-        task.base_task.save(update_fields=["tx_hash", "updated_at"])
+        task.tx_hash = tx_hash
+        task.save(update_fields=["tx_hash", "updated_at"])
 
         with patch.object(type(self.chain), "w3", new_callable=PropertyMock) as w3_mock:
             w3_mock.return_value = w3
-            notify_vault_slot_deploy_gas_fee(tx_task=task.base_task)
+            notify_vault_slot_deploy_gas_fee(tx_task=task)
 
         send_callback_mock.assert_called_once()
         callback = send_callback_mock.call_args.args[0]
@@ -592,7 +592,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         self.assertEqual(address, slot.address)
         self.assertEqual(
-            EvmTxTask.objects.filter(pk=existing_task.pk).count(),
+            EvmTxTask.objects.filter(base_task=existing_task).count(),
             1,
         )
         schedule.assert_not_called()
@@ -799,14 +799,14 @@ class VaultSlotAddressSchedulingTests(TestCase):
         # 归集与部署一样统一用系统热钱包作为 sender（仅付 gas，资金去向由合约写死的 vault 决定）。
         self.assertEqual(schedule.tx_task.sender, self.system_sender)
         self.assertEqual(schedule.tx_task.chain, self.chain)
-        self.assertEqual(schedule.tx_task.to, slot.address)
-        self.assertEqual(
-            schedule.tx_task.base_task.tx_type, TxTaskType.VaultSlotCollect
-        )
+        self.assertEqual(schedule.tx_task.evm_task.to, slot.address)
+        self.assertEqual(schedule.tx_task.tx_type, TxTaskType.VaultSlotCollect)
         self.assertTrue(
-            schedule.tx_task.data.startswith(f"0x{_selector('collect(address)')}")
+            schedule.tx_task.evm_task.data.startswith(
+                f"0x{_selector('collect(address)')}"
+            )
         )
-        self.assertIn(self.token_address[2:].lower(), schedule.tx_task.data)
+        self.assertIn(self.token_address[2:].lower(), schedule.tx_task.evm_task.data)
 
     def test_schedule_collect_for_deposit_creates_new_schedule_after_task_bound(self):
         slot = self._create_vault_slot()
@@ -849,7 +849,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
             VaultSlotCollectSchedule.execute_due()
             first.refresh_from_db()
             self.assertIsNotNone(first.tx_task_id)
-            self.assertEqual(first.tx_task.base_task.status, TxTaskStatus.QUEUED)
+            self.assertEqual(first.tx_task.status, TxTaskStatus.QUEUED)
 
             second = VaultSlot.schedule_collect_for_deposit(second_deposit.pk)
         second.due_at = timezone.now() - timedelta(seconds=1)
@@ -909,10 +909,9 @@ class VaultSlotAddressSchedulingTests(TestCase):
                 chain=self.chain,
                 crypto=self.token,
                 slot=slot,
-                missing_token_message="missing token",
             )
-        task.base_task.tx_hash = tx_hash
-        task.base_task.save(update_fields=["tx_hash", "updated_at"])
+        task.tx_hash = tx_hash
+        task.save(update_fields=["tx_hash", "updated_at"])
         w3 = SimpleNamespace(
             eth=SimpleNamespace(
                 get_transaction_receipt=Mock(

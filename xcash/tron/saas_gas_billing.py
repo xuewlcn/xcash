@@ -6,12 +6,12 @@ from decimal import Decimal
 
 import structlog
 from tron.client import TronHttpClient
-from tron.models import TronVaultSlot
-from tron.models import TronVaultSlotCollectSchedule
 
 from chains.constants import ChainCode
 from chains.models import Chain
 from chains.models import TxTask
+from chains.models import VaultSlot
+from chains.models import VaultSlotCollectSchedule
 from common.internal_callback import CallbackEvent
 from common.internal_callback import InternalCallback
 from common.internal_callback import send_internal_callback
@@ -69,8 +69,8 @@ def notify_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
         return
     try:
         slot = (
-            TronVaultSlot.objects.select_related("project", "chain")
-            .get(deploy_tx_task__base_task=tx_task)
+            VaultSlot.objects.select_related("project", "chain")
+            .get(deploy_tx_task=tx_task)
         )
         tx_detail = build_tx_detail(chain=slot.chain, tx_hash=tx_task.tx_hash)
     except Exception as exc:  # noqa: BLE001
@@ -98,17 +98,17 @@ def notify_vault_slot_collect_gas_fee(*, tx_task: TxTask) -> None:
     """归集任务确认终局后回调 SaaS 计费。
 
     归集交易的资金接收方是系统外的商户 vault,不会被扫描器当作入账观测;
-    因此 slot/project 经归集计划(TronVaultSlotCollectSchedule.tx_task)反查,
+    因此 slot/project 经归集计划(VaultSlotCollectSchedule.tx_task)反查,
     而非依赖一笔 Collect 类型的 Transfer。sys_no 以 tx_task.pk 收敛,保证一次
     归集任务恰好计费一次。
     """
     if not tx_task.tx_hash:
         return
     try:
-        schedule = TronVaultSlotCollectSchedule.objects.select_related(
+        schedule = VaultSlotCollectSchedule.objects.select_related(
             "vault_slot__project",
             "chain",
-        ).get(tx_task__base_task=tx_task)
+        ).get(tx_task=tx_task)
         slot = schedule.vault_slot
         tx_detail = build_tx_detail(chain=schedule.chain, tx_hash=tx_task.tx_hash)
     except Exception as exc:  # noqa: BLE001

@@ -42,8 +42,8 @@ EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS = get_int_default(
     "CELERY_EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS",
     60,
 )
-EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS = get_int_default(
-    "CELERY_EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS",
+VAULT_SLOT_COLLECT_SCHEDULE_SECONDS = get_int_default(
+    "CELERY_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS",
     60,
 )
 INVOICE_EXPIRED_SCHEDULE_SECONDS = get_int_default(
@@ -78,6 +78,10 @@ chains_tasks = {
         "task": "chains.tasks.fallback_process_transfer",
         "schedule": FALLBACK_PROCESS_TRANSFER_SCHEDULE_SECONDS,
     },
+    "execute_due_vault_slot_collect_schedules": {
+        "task": "chains.tasks.execute_due_vault_slot_collect_schedules",
+        "schedule": VAULT_SLOT_COLLECT_SCHEDULE_SECONDS,
+    },
 }
 
 # ---------------------------
@@ -95,10 +99,6 @@ evm_tasks = {
     "confirm_non_transfer_tx_tasks": {
         "task": "evm.tasks.confirm_non_transfer_tx_tasks",
         "schedule": EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS,
-    },
-    "execute_due_vault_slot_collect_schedules": {
-        "task": "evm.tasks.execute_due_vault_slot_collect_schedules",
-        "schedule": EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS,
     },
 }
 
@@ -127,10 +127,6 @@ tron_tasks = {
     "confirm_tron_receipt_tx_tasks": {
         "task": "tron.tasks.confirm_tron_receipt_tx_tasks",
         "schedule": EVM_NON_TRANSFER_CONFIRM_SCHEDULE_SECONDS,
-    },
-    "execute_due_tron_vault_slot_collect_schedules": {
-        "task": "tron.tasks.execute_due_tron_vault_slot_collect_schedules",
-        "schedule": EVM_VAULT_SLOT_COLLECT_SCHEDULE_SECONDS,
     },
 }
 

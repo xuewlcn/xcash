@@ -30,8 +30,8 @@ logger = structlog.get_logger()
 CREATE2_DEPLOYER_ADDRESS = "0x4e59b44847b379578588920cA78FbF26c0B4956C"
 
 # 全网统一 salt，必须与 contracts/scripts/DeployXcashVaultSlot.s.sol 的 DEPLOY_SALT 一致：
-# keccak256("xcash:vault-slot:v1")。改动会让工厂 / 模板地址漂移，破坏跨链同地址假设。
-XCASH_VAULT_SLOT_DEPLOY_SALT = keccak(b"xcash:vault-slot:v1")
+# keccak256("xcash:evm-vault-slot:v1")。改动会让工厂 / 模板地址漂移，破坏跨链同地址假设。
+XCASH_VAULT_SLOT_DEPLOY_SALT = keccak(b"xcash:evm-vault-slot:v1")
 
 # 本地一次性部署给足 gas，避免对 CREATE2 deployer 代理做 estimateGas 的边界问题。
 _LOCAL_DEPLOY_GAS = 3_000_000

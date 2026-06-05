@@ -12,11 +12,11 @@ from chains.models import TxHash
 from chains.models import TxTask
 from chains.models import TxTaskStatus
 from chains.models import TxTaskType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from currencies.models import ChainCryptoDeployment
 from evm.models import EvmScanCursor
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 from evm.scanner.constants import XCASH_NATIVE_RECEIVED_TOPIC0
 from evm.scanner.logs import EvmLogScanner

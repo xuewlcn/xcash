@@ -6,11 +6,16 @@ from unfold.decorators import display
 from chains.models import Address
 from chains.models import Chain
 from chains.models import ChainType
+from chains.models import DepositVaultSlot
+from chains.models import InvoiceVaultSlot
 from chains.models import Transfer
 from chains.models import TxTask
+from chains.models import VaultSlotCollectSchedule
+from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
+from common.admin import TabularInline
 
 # Register your models here.
 
@@ -222,3 +227,74 @@ class TxTaskAdmin(ReadOnlyModelAdmin):
         # TxTask.display_status 直接取单枚举 status 的展示文案，
         # 这里沿用同一来源避免后台与业务代码的展示口径漂移。
         return instance.display_status
+
+
+class VaultSlotCollectScheduleInline(TabularInline):
+    model = VaultSlotCollectSchedule
+    extra = 0
+    can_delete = False
+    fields = ("crypto", "due_at", "tx_task", "created_at", "updated_at")
+    readonly_fields = fields
+    ordering = ("-due_at",)
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("crypto", "tx_task")
+
+
+class VaultSlotAdminBase(ReadOnlyModelAdmin):
+    inlines = (VaultSlotCollectScheduleInline,)
+    list_filter = ("chain",)
+    readonly_fields = (
+        "project",
+        "customer",
+        "invoice_index",
+        "chain",
+        "address",
+        "salt",
+        "deploy_tx_task",
+        "created_at",
+    )
+    usage = None
+
+    def get_queryset(self, request):
+        qs = (
+            super()
+            .get_queryset(request)
+            .select_related("chain", "customer", "project", "deploy_tx_task")
+        )
+        return qs.filter(usage=self.usage)
+
+
+@admin.register(DepositVaultSlot)
+class DepositVaultSlotAdmin(VaultSlotAdminBase):
+    list_display = ("customer", "project", "chain", "address", "created_at")
+    search_fields = ("customer__uid", "project__name", "address")
+    usage = VaultSlotUsage.DEPOSIT
+
+
+@admin.register(InvoiceVaultSlot)
+class InvoiceVaultSlotAdmin(VaultSlotAdminBase):
+    list_display = ("project", "invoice_index", "chain", "address", "created_at")
+    search_fields = ("project__name", "address")
+    usage = VaultSlotUsage.INVOICE
+
+
+@admin.register(VaultSlotCollectSchedule)
+class VaultSlotCollectScheduleAdmin(ReadOnlyModelAdmin):
+    ordering = ("due_at",)
+    list_display = ("vault_slot", "chain", "crypto", "due_at", "tx_task", "created_at")
+    list_filter = ("chain", "crypto")
+    search_fields = ("vault_slot__address", "tx_task__tx_hash")
+    list_select_related = ("vault_slot", "chain", "crypto", "tx_task")
+    readonly_fields = (
+        "chain",
+        "vault_slot",
+        "crypto",
+        "due_at",
+        "tx_task",
+        "created_at",
+        "updated_at",
+    )

@@ -15,17 +15,14 @@ from django.utils.translation import gettext_lazy as _
 logger = structlog.get_logger()
 
 from aml.models import RiskLevel
-from tron.models import TronVaultSlot
-from tron.models import TronVaultSlotUsage
 
-from chains.models import ChainType
+from chains.models import VaultSlot
+from chains.models import VaultSlotUsage
 from common.fields import AddressField
 from common.fields import SysNoField
 from common.permission_check import filter_saas_allowed_methods
 from currencies.service import CryptoService
 from currencies.service import FiatService
-from evm.models import VaultSlot
-from evm.models import VaultSlotUsage
 from projects.models import Project
 
 from .exceptions import InvoiceAllocationError
@@ -223,7 +220,7 @@ class Invoice(models.Model):
             status=InvoiceStatus.WAITING,
         ).exists()
 
-    def _get_contract_vault_slot(
+    def get_vault_slot(
         self,
         *,
         crypto: "Crypto",
@@ -237,17 +234,10 @@ class Invoice(models.Model):
                 f"project={self.project_id} VaultSlot Vault 地址未配置"
             )
 
-        if chain.type == ChainType.TRON:
-            slot_model = TronVaultSlot
-            slot_usage = TronVaultSlotUsage.INVOICE
-        else:
-            slot_model = VaultSlot
-            slot_usage = VaultSlotUsage.INVOICE
-
-        reusable_slots = slot_model.objects.filter(
+        reusable_slots = VaultSlot.objects.filter(
             project=self.project,
             chain=chain,
-            usage=slot_usage,
+            usage=VaultSlotUsage.INVOICE,
         ).order_by("invoice_index", "pk")
         for slot in reusable_slots:
             if not self._has_contract_slot_payment_overlap(
@@ -257,9 +247,7 @@ class Invoice(models.Model):
                 crypto_amount=crypto_amount,
             ):
                 db_transaction.on_commit(
-                    lambda slot_pk=slot.pk, model=slot_model: model.schedule_deploy(
-                        slot_pk
-                    )
+                    lambda slot_pk=slot.pk: VaultSlot.schedule_deploy(slot_pk)
                 )
                 return slot
 
@@ -268,15 +256,15 @@ class Invoice(models.Model):
         ]
         invoice_index = 0 if latest_index is None else latest_index + 1
         try:
-            slot_model.ensure_invoice_address(
+            VaultSlot.ensure_invoice_address(
                 project=self.project, chain=chain, invoice_index=invoice_index
             )
         except RuntimeError as exc:
             raise self.InvoiceAllocationError(str(exc)) from exc
-        return slot_model.objects.get(
+        return VaultSlot.objects.get(
             project=self.project,
             chain=chain,
-            usage=slot_usage,
+            usage=VaultSlotUsage.INVOICE,
             invoice_index=invoice_index,
         )
 
@@ -287,7 +275,7 @@ class Invoice(models.Model):
         crypto_amount: Decimal,
     ) -> tuple[str, Decimal]:
         """合约账单：按 XcashVaultSlotFactory 获取本次账单使用的 VaultSlot。"""
-        slot = self._get_contract_vault_slot(
+        slot = self.get_vault_slot(
             crypto=crypto,
             chain=chain,
             crypto_amount=crypto_amount,

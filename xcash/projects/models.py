@@ -68,7 +68,7 @@ class Project(models.Model):
         null=True,
         blank=True,
         help_text=_(
-            "用于生成 EVM VaultSlot 合约的不可变 vault。留空时禁止生成 VaultSlot；"
+            "用于生成 VaultSlot 合约的不可变 vault。留空时禁止生成 VaultSlot；"
             "一旦设置不可修改。"
         ),
         unique=True,
