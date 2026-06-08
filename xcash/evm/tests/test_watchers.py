@@ -12,7 +12,7 @@ from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from currencies.models import Crypto
 from currencies.models import CryptoOnChain
-from evm.scanner.watchers import clear_evm_token_registry_cache
+from evm.scanner.watchers import clear_token_registry_cache
 from evm.scanner.watchers import load_owned_addresses_for_candidates
 from evm.scanner.watchers import load_token_registry
 from evm.tests._fixtures import make_evm_chain
@@ -81,7 +81,7 @@ class EvmTokenRegistryCacheTests(TestCase):
         )
 
     def tearDown(self):
-        clear_evm_token_registry_cache()
+        clear_token_registry_cache()
         cache.clear()
 
     def test_load_token_registry_returns_supported_tokens(self):

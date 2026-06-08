@@ -8,7 +8,7 @@ from django.dispatch import receiver
 from chains.constants import ChainType
 from currencies.models import Crypto
 from currencies.models import CryptoOnChain
-from evm.scanner.watchers import clear_evm_crypto_on_chains_cache
+from evm.scanner.watchers import clear_token_registry_cache
 from evm.scanner.watchers import load_token_registry
 
 
@@ -18,7 +18,7 @@ def _refresh_evm_crypto_on_chains_on_commit(
     chain = crypto_on_chain.chain
     if chain.type != ChainType.EVM:
         return
-    clear_evm_crypto_on_chains_cache(chain=chain)
+    clear_token_registry_cache(chain=chain)
     transaction.on_commit(lambda: load_token_registry(chain=chain, refresh=True))
 
 
@@ -33,7 +33,7 @@ def _refresh_crypto_on_chains_for_crypto_on_commit(*, crypto: Crypto) -> None:
         )
     ]
     for chain in chains:
-        clear_evm_crypto_on_chains_cache(chain=chain)
+        clear_token_registry_cache(chain=chain)
 
     def refresh_chain_token_registries() -> None:
         for chain in chains:
