@@ -12,7 +12,7 @@ from evm.scanner.watchers import clear_token_registry_cache
 from evm.scanner.watchers import load_token_registry
 
 
-def _refresh_evm_crypto_on_chains_on_commit(
+def _refresh_token_registry_for_crypto_on_chain(
     *, crypto_on_chain: CryptoOnChain
 ) -> None:
     chain = crypto_on_chain.chain
@@ -22,7 +22,7 @@ def _refresh_evm_crypto_on_chains_on_commit(
     transaction.on_commit(lambda: load_token_registry(chain=chain, refresh=True))
 
 
-def _refresh_crypto_on_chains_for_crypto_on_commit(*, crypto: Crypto) -> None:
+def _refresh_token_registries_for_crypto(*, crypto: Crypto) -> None:
     chains = [
         crypto_on_chain.chain
         for crypto_on_chain in (
@@ -49,9 +49,9 @@ def refresh_token_registry_when_crypto_on_chain_changes(
     instance: CryptoOnChain,
     **kwargs,
 ):
-    _refresh_evm_crypto_on_chains_on_commit(crypto_on_chain=instance)
+    _refresh_token_registry_for_crypto_on_chain(crypto_on_chain=instance)
 
 
 @receiver(post_save, sender=Crypto)
 def refresh_token_registry_when_crypto_changes(sender, instance: Crypto, **kwargs):
-    _refresh_crypto_on_chains_for_crypto_on_commit(crypto=instance)
+    _refresh_token_registries_for_crypto(crypto=instance)
