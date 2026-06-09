@@ -82,7 +82,6 @@ class TestPatchFieldWhitelist:
         original_name = project.name
         original_active = project.active
         original_appid = project.appid
-        original_evm_invoice_receiving_mode = project.evm_invoice_receiving_mode
 
         response = client.patch(
             _url(project),
@@ -90,7 +89,6 @@ class TestPatchFieldWhitelist:
                 "name": "malicious-rename",
                 "active": False,
                 "appid": "XC-HACKED0",
-                "evm_invoice_receiving_mode": InvoiceReceivingMode.Differ,
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=AUTH_HEADER,
@@ -101,7 +99,31 @@ class TestPatchFieldWhitelist:
         assert project.name == original_name
         assert project.active == original_active
         assert project.appid == original_appid
-        assert project.evm_invoice_receiving_mode == original_evm_invoice_receiving_mode
+
+    def test_receiving_mode_is_editable_per_chain(self, client, project):
+        """按链收款模式是商户可编辑的白名单字段，PATCH 写入并在读接口回显。"""
+        assert project.evm_invoice_receiving_mode == InvoiceReceivingMode.VaultSlot
+        assert project.tron_invoice_receiving_mode == InvoiceReceivingMode.Differ
+
+        response = client.patch(
+            _url(project),
+            data={
+                "evm_invoice_receiving_mode": InvoiceReceivingMode.Differ,
+                "tron_invoice_receiving_mode": InvoiceReceivingMode.VaultSlot,
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=AUTH_HEADER,
+        )
+        assert response.status_code == 200, response.content
+
+        project.refresh_from_db()
+        assert project.evm_invoice_receiving_mode == InvoiceReceivingMode.Differ
+        assert project.tron_invoice_receiving_mode == InvoiceReceivingMode.VaultSlot
+
+        # GET 详情应回显每条链的当前模式，供 UI 渲染
+        detail = client.get(_url(project), HTTP_AUTHORIZATION=AUTH_HEADER).json()
+        assert detail["evm_invoice_receiving_mode"] == InvoiceReceivingMode.Differ
+        assert detail["tron_invoice_receiving_mode"] == InvoiceReceivingMode.VaultSlot
 
     def test_happy_path_multiple_fields(self, client, project):
         """合法 PATCH：同时修改多个白名单字段，均正确入库。"""
@@ -263,3 +285,18 @@ class TestFastConfirmThresholdValidation:
             HTTP_AUTHORIZATION=AUTH_HEADER,
         )
         assert response.status_code == 200
+
+
+# ---------- 生效收款方式预览 ----------
+
+
+@pytest.mark.django_db
+class TestReceivableMethods:
+    def test_returns_mapping(self, client, project):
+        """生效收款方式接口返回 crypto→链 映射；无可收币种时为空 dict。"""
+        response = client.get(
+            f"{_url(project)}/receivable-methods",
+            HTTP_AUTHORIZATION=AUTH_HEADER,
+        )
+        assert response.status_code == 200
+        assert isinstance(response.json(), dict)

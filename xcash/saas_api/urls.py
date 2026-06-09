@@ -12,6 +12,7 @@ router.register("chains", SaasChainViewSet, basename="saas-chain")
 
 # 嵌套在 /projects/{appid}/ 下的业务端点
 from saas_api.viewsets.deposits import SaasDepositViewSet
+from saas_api.viewsets.differ_addresses import SaasDifferRecipientAddressViewSet
 from saas_api.viewsets.epay import EpayMerchantView
 from saas_api.viewsets.invoices import SaasInvoiceViewSet
 from saas_api.viewsets.stats import StatsViewSet
@@ -21,6 +22,11 @@ from saas_api.viewsets.webhooks import WebhookEventViewSet
 project_router = SimpleRouter(trailing_slash=False)
 project_router.register("invoices", SaasInvoiceViewSet, basename="saas-invoice")
 project_router.register("deposits", SaasDepositViewSet, basename="saas-deposit")
+project_router.register(
+    "differ-addresses",
+    SaasDifferRecipientAddressViewSet,
+    basename="saas-differ-address",
+)
 project_router.register(
     "webhook-events", WebhookEventViewSet, basename="saas-webhook-event"
 )
