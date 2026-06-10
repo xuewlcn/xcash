@@ -115,7 +115,7 @@ class TransferService:
         }
 
     @staticmethod
-    def _refresh_confirmed_quick_observation(
+    def _refresh_confirmed_observation(
         *,
         transfer: Transfer,
         observed: ObservedTransferPayload,
@@ -161,22 +161,23 @@ class TransferService:
                 .first()
             )
             if existing is not None:
-                if (
-                    existing.confirm_mode == ConfirmMode.QUICK
-                    and existing.status == TransferStatus.CONFIRMED
-                ):
-                    updated_fields = (
-                        TransferService._refresh_confirmed_quick_observation(
-                            transfer=existing,
-                            observed=observed,
-                        )
+                if existing.status == TransferStatus.CONFIRMED:
+                    chain_position_changed = (
+                        existing.block != observed.block
+                        or existing.block_hash != observed.block_hash
                     )
-                    logger.debug(
-                        "Observed QUICK confirmed transfer tx replay refreshed",
+                    updated_fields = TransferService._refresh_confirmed_observation(
+                        transfer=existing,
+                        observed=observed,
+                    )
+                    log = logger.warning if chain_position_changed else logger.debug
+                    log(
+                        "Observed confirmed transfer tx replay refreshed",
                         source=observed.source,
                         chain=chain.code,
                         tx_hash=observed.tx_hash,
                         transfer_id=existing.pk,
+                        confirm_mode=existing.confirm_mode,
                         updated_fields=updated_fields,
                     )
                     return ObservedTransferCreateResult(

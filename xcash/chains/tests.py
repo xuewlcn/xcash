@@ -33,6 +33,8 @@ from chains.tasks import process_transfer
 from chains.tests_fixtures import make_evm_chain
 from currencies.models import Crypto
 from currencies.models import CryptoOnChain
+from deposits.models import Deposit
+from projects.models import Customer
 from projects.models import Project
 
 
@@ -566,6 +568,67 @@ class TransferServiceCreateObservedTests(TestCase):
         self.assertEqual(replacement.block, 100)
         self.assertEqual(replacement.block_hash, "0x" + "22" * 32)
         enqueue_mock.assert_called_once()
+
+    @patch("chains.service.TransferService.enqueue_processing")
+    def test_reorg_refreshes_full_confirmed_transfer_without_dropping_deposit(
+        self,
+        enqueue_mock,
+    ):
+        from chains.service import ObservedTransferPayload
+        from chains.service import TransferService
+
+        old_hash = self.payload.tx_hash
+        old_transfer = Transfer.objects.create(
+            chain=self.chain,
+            block=90,
+            block_hash="0x" + "11" * 32,
+            hash=old_hash,
+            crypto=self.crypto,
+            from_address=self.payload.from_address,
+            to_address=self.payload.to_address,
+            value=self.payload.value,
+            amount=self.payload.amount,
+            timestamp=self.payload.timestamp,
+            datetime=self.payload.datetime,
+            confirm_mode=ConfirmMode.FULL,
+            status=TransferStatus.CONFIRMED,
+            processed_at=timezone.now(),
+        )
+        project = Project.objects.create(name="Confirmed Deposit Reorg")
+        customer = Customer.objects.create(project=project, uid="confirmed-reorg")
+        deposit = Deposit.objects.create(customer=customer, transfer=old_transfer)
+        current = ObservedTransferPayload(
+            chain=self.chain,
+            block=100,
+            block_hash="0x" + "22" * 32,
+            tx_hash=old_hash,
+            from_address=self.payload.from_address,
+            to_address=self.payload.to_address,
+            crypto=self.payload.crypto,
+            value=self.payload.value,
+            amount=self.payload.amount,
+            timestamp=self.payload.timestamp + 1,
+            datetime=self.payload.datetime + timedelta(seconds=1),
+            source="test-full-confirmed-reorg",
+        )
+
+        result = TransferService.create_observed_transfer(observed=current)
+
+        self.assertFalse(result.created)
+        self.assertFalse(result.conflict)
+        self.assertEqual(result.transfer.pk, old_transfer.pk)
+        self.assertTrue(Transfer.objects.filter(pk=old_transfer.pk).exists())
+        deposit.refresh_from_db()
+        self.assertEqual(deposit.transfer_id, old_transfer.pk)
+        old_transfer.refresh_from_db()
+        self.assertEqual(old_transfer.block, 100)
+        self.assertEqual(old_transfer.block_hash, "0x" + "22" * 32)
+        self.assertEqual(old_transfer.timestamp, self.payload.timestamp + 1)
+        self.assertEqual(
+            old_transfer.datetime,
+            self.payload.datetime + timedelta(seconds=1),
+        )
+        enqueue_mock.assert_not_called()
 
     @patch("chains.service.TransferService.enqueue_processing")
     def test_reorg_refreshes_quick_confirmed_transfer_metadata(

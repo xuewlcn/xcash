@@ -14,7 +14,7 @@ class Deposit(models.Model):
     )
     transfer = models.OneToOneField(
         "chains.Transfer",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         verbose_name=_("链上转账"),
     )
     worth = models.DecimalField(

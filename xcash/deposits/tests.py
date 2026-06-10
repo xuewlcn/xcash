@@ -2,6 +2,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.db.models.deletion import ProtectedError
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.utils import timezone
@@ -104,6 +105,18 @@ class DepositCreationTests(TestCase):
         self.assertFalse(Deposit.objects.filter(transfer=context.transfer).exists())
         context.transfer.refresh_from_db()
         self.assertEqual(context.transfer.type, TransferType.Deposit)
+
+    def test_deposit_protects_confirmed_transfer_from_physical_delete(self):
+        context = create_deposit_context()
+        Deposit.objects.create(
+            customer=context.customer,
+            transfer=context.transfer,
+        )
+
+        with self.assertRaises(ProtectedError):
+            context.transfer.delete()
+
+        self.assertTrue(Transfer.objects.filter(pk=context.transfer.pk).exists())
 
 
 class DepositAddressDebugWaitTests(SimpleTestCase):
