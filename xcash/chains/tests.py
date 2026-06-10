@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.core import checks
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.db import transaction
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
@@ -1024,6 +1025,78 @@ class VaultSlotReceivedFlagTests(TestCase):
                 crypto=self.crypto,
             ).exists()
         )
+
+
+class TransferProcessQuickConfirmDispatchTests(TestCase):
+    def setUp(self):
+        self.crypto = Crypto.objects.create(
+            name="Quick Confirm Coin",
+            symbol="QCC",
+            coingecko_id="quick-confirm-coin",
+        )
+        self.chain = make_evm_chain(code=ChainCode.Ethereum)
+
+    def create_quick_transfer(self) -> Transfer:
+        return Transfer.objects.create(
+            chain=self.chain,
+            block=100,
+            block_hash="0x" + "11" * 32,
+            hash="0x" + "12" * 32,
+            crypto=self.crypto,
+            from_address=Web3.to_checksum_address("0x" + "13" * 20),
+            to_address=Web3.to_checksum_address("0x" + "14" * 20),
+            value=Decimal("1000000"),
+            amount=Decimal("1"),
+            timestamp=1_700_000_010,
+            datetime=timezone.now(),
+            confirm_mode=ConfirmMode.QUICK,
+        )
+
+    @patch("deposits.service.DepositService.try_match_deposit_transfer")
+    @patch("invoices.service.InvoiceService.try_match_invoice")
+    @patch("chains.tasks.confirm_transfer.delay")
+    def test_quick_confirm_dispatches_after_commit(
+        self,
+        confirm_delay_mock,
+        match_invoice_mock,
+        match_deposit_mock,
+    ):
+        match_invoice_mock.return_value = False
+        match_deposit_mock.return_value = False
+        transfer = self.create_quick_transfer()
+
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            transfer.process()
+            confirm_delay_mock.assert_not_called()
+
+        self.assertEqual(len(callbacks), 1)
+        confirm_delay_mock.assert_not_called()
+        callbacks[0]()
+        confirm_delay_mock.assert_called_once_with(transfer.pk)
+
+    @patch("deposits.service.DepositService.try_match_deposit_transfer")
+    @patch("invoices.service.InvoiceService.try_match_invoice")
+    @patch("chains.tasks.confirm_transfer.delay")
+    def test_quick_confirm_does_not_dispatch_when_outer_transaction_rolls_back(
+        self,
+        confirm_delay_mock,
+        match_invoice_mock,
+        match_deposit_mock,
+    ):
+        match_invoice_mock.return_value = False
+        match_deposit_mock.return_value = False
+        transfer = self.create_quick_transfer()
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            try:
+                with transaction.atomic():
+                    transfer.process()
+                    raise RuntimeError("rollback")
+            except RuntimeError:
+                pass
+
+        self.assertEqual(callbacks, [])
+        confirm_delay_mock.assert_not_called()
 
 
 class BlockNumberUpdatedCompensationTests(TestCase):

@@ -1305,7 +1305,9 @@ class Transfer(models.Model):
         if self.confirm_mode == ConfirmMode.QUICK:
             from .tasks import confirm_transfer
 
-            confirm_transfer.delay(self.pk)
+            db_transaction.on_commit(
+                lambda transfer_id=self.pk: confirm_transfer.delay(transfer_id)
+            )
 
     def _mark_processed(self) -> None:
         self.processed_at = timezone.now()
