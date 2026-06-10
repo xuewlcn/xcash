@@ -41,6 +41,15 @@ def test_clean_skips_when_rpc_empty():
 
 
 @pytest.mark.django_db
+def test_clean_skips_rpc_check_when_evm_chain_inactive():
+    chain = Chain(code=ChainCode.Ethereum, rpc="http://fake.rpc", active=False)
+    with patch("chains.models.Web3") as mock_w3:
+        chain.full_clean()
+
+    mock_w3.assert_not_called()
+
+
+@pytest.mark.django_db
 def test_clean_skips_for_tron():
     chain = Chain(code=ChainCode.Tron, rpc="", tron_api_key="key")
     chain.full_clean()

@@ -195,7 +195,7 @@ class Chain(models.Model):
         if self.code not in CHAIN_SPECS:
             return
         # type 的权威来源是 CHAIN_SPECS，不能依赖 DB 字段（full_clean 时 type 可能尚未设置）。
-        if self.spec.type != ChainType.EVM or not self.rpc:
+        if self.spec.type != ChainType.EVM or not self.active or not self.rpc:
             return
         try:
             w3 = Web3(Web3.HTTPProvider(self.rpc, request_kwargs={"timeout": 8}))
