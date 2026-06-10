@@ -87,7 +87,14 @@ def confirm_transfer(self, pk):
         transfer.confirm()
     elif result == TxCheckStatus.MISSING:
         if self.request.retries >= self.max_retries:  # noqa
-            transfer.drop()
+            logger.warning(
+                "Transfer receipt missing after max retries, keeping observed transfer",
+                chain=transfer.chain.code,
+                transfer_id=transfer.pk,
+                tx_hash=transfer.hash,
+                block=transfer.block,
+                block_hash=transfer.block_hash,
+            )
             return
         countdown = 8 * (2**self.request.retries)  # noqa
         raise self.retry(  # noqa

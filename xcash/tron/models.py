@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import structlog
@@ -10,8 +11,10 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from tron.client import TronClientError
 from tron.client import TronHttpClient
+from tron.codec import TronAddressCodec
 from tron.resources import require_bandwidth_for_signed_transaction
 from tron.resources import require_energy_for_contract_call
+from web3 import Web3
 
 from chains.models import TxTask
 from chains.models import TxTaskStatus
@@ -155,8 +158,11 @@ class TronTxTask(UndeletableModel):
         transaction = unsigned.get("transaction")
         if not isinstance(transaction, dict):
             raise TronClientError(f"invalid trigger transaction from {self.chain.code}")
+        expected_tx_id = self.validate_unsigned_transaction(transaction)
 
         signed = self.sender.sign_tron_transaction(unsigned_transaction=transaction)
+        if str(signed.tx_hash).lower() != expected_tx_id:
+            raise TronClientError("tron signed tx hash mismatch unsigned txID")
         require_bandwidth_for_signed_transaction(
             client=client,
             owner_address=self.sender.address,
@@ -182,6 +188,62 @@ class TronTxTask(UndeletableModel):
     def validate_fee_limit(self) -> None:
         if self.fee_limit <= 0:
             raise ValueError("Tron fee_limit must be > 0")
+
+    def validate_unsigned_transaction(self, transaction: dict) -> str:
+        raw_data_hex = (
+            str(transaction.get("raw_data_hex") or "")
+            .removeprefix("0x")
+            .removeprefix("0X")
+        )
+        if not raw_data_hex:
+            raise TronClientError("tron unsigned transaction raw_data_hex missing")
+        try:
+            expected_tx_id = sha256(bytes.fromhex(raw_data_hex)).hexdigest()
+        except ValueError as exc:
+            raise TronClientError("tron unsigned transaction raw_data_hex invalid") from exc
+
+        tx_id = str(transaction.get("txID") or "").lower()
+        if not tx_id or tx_id != expected_tx_id:
+            raise TronClientError("tron unsigned transaction txID mismatch raw_data")
+
+        raw_data = transaction.get("raw_data")
+        if not isinstance(raw_data, dict):
+            raise TronClientError("tron unsigned transaction missing raw_data")
+        try:
+            fee_limit = int(raw_data.get("fee_limit") or 0)
+        except (TypeError, ValueError) as exc:
+            raise TronClientError("tron unsigned transaction fee_limit invalid") from exc
+        if fee_limit != int(self.fee_limit):
+            raise TronClientError("tron unsigned transaction fee_limit mismatch")
+
+        contracts = raw_data.get("contract") or []
+        if not isinstance(contracts, list) or len(contracts) != 1:
+            raise TronClientError("tron unsigned transaction contract count mismatch")
+        contract = contracts[0]
+        if not isinstance(contract, dict) or contract.get("type") != "TriggerSmartContract":
+            raise TronClientError("tron unsigned transaction type mismatch")
+
+        parameter = contract.get("parameter") or {}
+        value = parameter.get("value") if isinstance(parameter, dict) else None
+        if not isinstance(value, dict):
+            raise TronClientError("tron unsigned transaction parameter mismatch")
+
+        expected_owner = TronAddressCodec.base58_to_hex41(self.sender.address).lower()
+        expected_contract = TronAddressCodec.base58_to_hex41(self.to).lower()
+        if str(value.get("owner_address") or "").lower() != expected_owner:
+            raise TronClientError("tron unsigned transaction owner mismatch")
+        if str(value.get("contract_address") or "").lower() != expected_contract:
+            raise TronClientError("tron unsigned transaction contract mismatch")
+
+        selector = Web3.keccak(text=self.function_selector)[:4].hex()
+        expected_data = f"{selector}{self.parameter}".lower()
+        actual_data = (
+            str(value.get("data") or "").removeprefix("0x").removeprefix("0X").lower()
+        )
+        if actual_data != expected_data:
+            raise TronClientError("tron unsigned transaction call data mismatch")
+
+        return expected_tx_id
 
     def persist_signed_payload(self, *, signed_payload: dict, tx_id: str) -> None:
         raw_data = signed_payload.get("raw_data") or {}

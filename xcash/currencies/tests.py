@@ -149,6 +149,46 @@ class CryptoOnChainImmutabilityTests(TestCase):
         self.token.refresh_from_db()
         self.assertEqual(self.token.decimals, 8)
 
+    def test_evm_contract_address_is_normalized_to_checksum(self):
+        raw_address = "0x" + "22" * 20
+        mapping = CryptoOnChain.objects.create(
+            crypto=self.usdc,
+            chain=self.chain,
+            address=raw_address.lower(),
+            decimals=6,
+        )
+
+        self.assertEqual(mapping.address, Web3.to_checksum_address(raw_address))
+
+    def test_tron_hex41_contract_address_is_normalized_to_base58(self):
+        from tron.codec import TronAddressCodec
+
+        tron = Chain.objects.create(
+            code=ChainCode.Tron,
+            tron_api_key="",
+            active=False,
+        )
+        base58_address = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj"
+        mapping = CryptoOnChain.objects.create(
+            crypto=self.usdc,
+            chain=tron,
+            address=TronAddressCodec.base58_to_hex41(base58_address),
+            decimals=6,
+        )
+
+        self.assertEqual(mapping.address, base58_address)
+
+    def test_invalid_contract_address_is_rejected_on_save(self):
+        mapping = CryptoOnChain(
+            crypto=self.usdc,
+            chain=self.chain,
+            address="not-an-address",
+            decimals=6,
+        )
+
+        with self.assertRaises(ValidationError):
+            mapping.save()
+
     def test_merge_update_path_bypasses_guard(self):
         # QuerySet.update() 不触发 save()，故能绕过身份不可变守卫；本用例固定该旁路事实，
         # 以便后续若有受控的 crypto 改写入口可据此实现。

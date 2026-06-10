@@ -12,6 +12,7 @@ from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
+from chains.adapters import TxCheckStatus
 from chains.constants import ChainCode
 from chains.constants import ChainType
 from chains.models import Address
@@ -1191,6 +1192,53 @@ class TransferProcessQuickConfirmDispatchTests(TestCase):
 
         self.assertEqual(callbacks, [])
         confirm_delay_mock.assert_not_called()
+
+
+class ConfirmTransferMissingReceiptTests(TestCase):
+    def setUp(self):
+        self.crypto = Crypto.objects.create(
+            name="Confirm Missing Coin",
+            symbol="CMC",
+            coingecko_id="confirm-missing-coin",
+        )
+        self.chain = make_evm_chain(code=ChainCode.Ethereum)
+        self.transfer = Transfer.objects.create(
+            chain=self.chain,
+            block=100,
+            block_hash="0x" + "aa" * 32,
+            hash="0x" + "bb" * 32,
+            crypto=self.crypto,
+            from_address=Web3.to_checksum_address("0x" + "13" * 20),
+            to_address=Web3.to_checksum_address("0x" + "14" * 20),
+            value=Decimal("1000000"),
+            amount=Decimal("1"),
+            timestamp=1_700_000_004,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMING,
+            processed_at=timezone.now(),
+        )
+
+    def test_missing_receipt_after_max_retries_keeps_transfer(self):
+        from chains.tasks import confirm_transfer
+
+        class MissingAdapter:
+            @staticmethod
+            def tx_result(*, chain, tx_hash):
+                return TxCheckStatus.MISSING
+
+        with (
+            patch("chains.tasks.AdapterFactory.get_adapter", return_value=MissingAdapter()),
+            patch.object(
+                confirm_transfer.request,
+                "retries",
+                confirm_transfer.max_retries,
+                create=True,
+            ),
+        ):
+            confirm_transfer.run(self.transfer.pk)
+
+        self.transfer.refresh_from_db()
+        self.assertEqual(self.transfer.status, TransferStatus.CONFIRMING)
 
 
 class BlockNumberUpdatedCompensationTests(TestCase):

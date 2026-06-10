@@ -6,6 +6,8 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
+from celery import shared_task
+from django.db import transaction
 from web3.exceptions import TransactionNotFound
 
 from chains.constants import ChainCode
@@ -18,6 +20,8 @@ from common.saas_callback import SaasCallback
 from common.saas_callback import send_saas_callback
 
 logger = structlog.get_logger()
+
+GAS_FEE_CALLBACK_RETRY_BACKOFF_SECONDS = 60
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -97,11 +101,7 @@ def notify_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
     if not tx_task.tx_hash:
         return
     try:
-        slot = (
-            VaultSlot.objects.select_related("project", "chain")
-            .get(deploy_tx_task=tx_task)
-        )
-        tx_detail = _build_tx_detail(chain=slot.chain, tx_hash=tx_task.tx_hash)
+        send_vault_slot_deploy_gas_fee(tx_task=tx_task)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "saas_gas_fee_callback_build_failed",
@@ -110,8 +110,19 @@ def notify_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
             tx_hash=tx_task.tx_hash,
             error=str(exc),
         )
+        transaction.on_commit(
+            lambda tx_task_id=tx_task.pk: retry_vault_slot_deploy_gas_fee.delay(
+                tx_task_id
+            )
+        )
         return
 
+
+def send_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
+    slot = (
+        VaultSlot.objects.select_related("project", "chain").get(deploy_tx_task=tx_task)
+    )
+    tx_detail = _build_tx_detail(chain=slot.chain, tx_hash=tx_task.tx_hash)
     send_saas_callback(
         SaasCallback(
             event=CallbackEvent.GAS_FEE_VAULT_SLOT_DEPLOY,
@@ -128,12 +139,7 @@ def notify_vault_slot_collect_gas_fee(*, tx_task: TxTask) -> None:
     if not tx_task.tx_hash:
         return
     try:
-        schedule = VaultSlotCollectSchedule.objects.select_related(
-            "vault_slot__project",
-            "chain",
-        ).get(tx_task=tx_task)
-        slot = schedule.vault_slot
-        tx_detail = _build_tx_detail(chain=schedule.chain, tx_hash=tx_task.tx_hash)
+        send_vault_slot_collect_gas_fee(tx_task=tx_task)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "saas_gas_fee_callback_build_failed",
@@ -142,8 +148,21 @@ def notify_vault_slot_collect_gas_fee(*, tx_task: TxTask) -> None:
             tx_hash=tx_task.tx_hash,
             error=str(exc),
         )
+        transaction.on_commit(
+            lambda tx_task_id=tx_task.pk: retry_vault_slot_collect_gas_fee.delay(
+                tx_task_id
+            )
+        )
         return
 
+
+def send_vault_slot_collect_gas_fee(*, tx_task: TxTask) -> None:
+    schedule = VaultSlotCollectSchedule.objects.select_related(
+        "vault_slot__project",
+        "chain",
+    ).get(tx_task=tx_task)
+    slot = schedule.vault_slot
+    tx_detail = _build_tx_detail(chain=schedule.chain, tx_hash=tx_task.tx_hash)
     send_saas_callback(
         SaasCallback(
             event=CallbackEvent.GAS_FEE_VAULT_SLOT_COLLECT,
@@ -153,3 +172,43 @@ def notify_vault_slot_collect_gas_fee(*, tx_task: TxTask) -> None:
             tx_detail=asdict(tx_detail),
         )
     )
+
+
+@shared_task(bind=True, ignore_result=True, max_retries=20)
+def retry_vault_slot_deploy_gas_fee(self, tx_task_id: int) -> None:
+    tx_task = TxTask.objects.get(pk=tx_task_id)
+    try:
+        send_vault_slot_deploy_gas_fee(tx_task=tx_task)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "saas_gas_fee_callback_retry_failed",
+            operation="vault_slot_deploy",
+            tx_task_id=tx_task_id,
+            error=str(exc),
+            retry=self.request.retries,  # noqa
+        )
+        raise self.retry(
+            exc=exc,
+            countdown=GAS_FEE_CALLBACK_RETRY_BACKOFF_SECONDS
+            * (2**self.request.retries),  # noqa
+        ) from exc
+
+
+@shared_task(bind=True, ignore_result=True, max_retries=20)
+def retry_vault_slot_collect_gas_fee(self, tx_task_id: int) -> None:
+    tx_task = TxTask.objects.get(pk=tx_task_id)
+    try:
+        send_vault_slot_collect_gas_fee(tx_task=tx_task)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "saas_gas_fee_callback_retry_failed",
+            operation="vault_slot_collect",
+            tx_task_id=tx_task_id,
+            error=str(exc),
+            retry=self.request.retries,  # noqa
+        )
+        raise self.retry(
+            exc=exc,
+            countdown=GAS_FEE_CALLBACK_RETRY_BACKOFF_SECONDS
+            * (2**self.request.retries),  # noqa
+        ) from exc

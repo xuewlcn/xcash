@@ -185,6 +185,8 @@ class TronScanner:
             )
             .exclude(address="")
         )
+        for token in token_rows:
+            token.normalize_address_for_chain()
         return {token.address: token for token in token_rows}
 
     @staticmethod

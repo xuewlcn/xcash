@@ -22,6 +22,7 @@ from tron.models import TronTxTask
 from tron.models import TronWatchCursor
 from tron.tasks import broadcast_tron_task
 from tron.tasks import confirm_tron_receipt_tx_tasks
+from web3 import Web3
 
 from chains.adapters import TxCheckResult
 from chains.adapters import TxCheckStatus
@@ -44,6 +45,10 @@ from currencies.models import Fiat
 from invoices.models import DifferRecipientAddress
 from projects.models import Customer
 from projects.models import Project
+
+
+def _selector(signature: str) -> str:
+    return Web3.keccak(text=signature)[:4].hex()
 
 
 class VaultSlotCodecTests(SimpleTestCase):
@@ -453,15 +458,45 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
             fee_limit=150_000_000,
         )
 
+    def unsigned_transaction(self, *, contract_address: str | None = None) -> dict:
+        from tron.codec import TronAddressCodec
+
+        raw_data_hex = "0a02abcd"
+        raw_data = {
+            "contract": [
+                {
+                    "type": "TriggerSmartContract",
+                    "parameter": {
+                        "value": {
+                            "owner_address": TronAddressCodec.base58_to_hex41(
+                                self.sender.address
+                            ),
+                            "contract_address": TronAddressCodec.base58_to_hex41(
+                                contract_address or "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
+                            ),
+                            "data": _selector("collect(address)") + "00" * 32,
+                        }
+                    },
+                }
+            ],
+            "expiration": 123,
+            "fee_limit": 150_000_000,
+        }
+        return {
+            "raw_data_hex": raw_data_hex,
+            "raw_data": raw_data,
+            "txID": sha256(bytes.fromhex(raw_data_hex)).hexdigest(),
+        }
+
     @staticmethod
-    def signed_payload() -> SimpleNamespace:
+    def signed_payload(transaction: dict) -> SimpleNamespace:
+        raw_transaction = {
+            **transaction,
+            "signature": ["b" * 130],
+        }
         return SimpleNamespace(
-            tx_hash="a" * 64,
-            raw_transaction={
-                "raw_data_hex": "0a02abcd",
-                "raw_data": {"expiration": 123},
-                "signature": ["b" * 130],
-            },
+            tx_hash=transaction["txID"],
+            raw_transaction=raw_transaction,
         )
 
     @patch("tron.models.TronHttpClient")
@@ -510,13 +545,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
             {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 0},
             {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 0},
         ]
-        client.trigger_smart_contract.return_value = {
-            "transaction": {
-                "raw_data_hex": "0a02abcd",
-                "raw_data": {"expiration": 123},
-            }
-        }
-        sign_transaction.return_value = self.signed_payload()
+        transaction = self.unsigned_transaction()
+        client.trigger_smart_contract.return_value = {"transaction": transaction}
+        sign_transaction.return_value = self.signed_payload(transaction)
 
         with self.assertRaisesMessage(TronClientError, "tron bandwidth insufficient"):
             task.broadcast()
@@ -543,13 +574,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
             {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 10_000},
             {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 10_000},
         ]
-        client.trigger_smart_contract.return_value = {
-            "transaction": {
-                "raw_data_hex": "0a02abcd",
-                "raw_data": {"expiration": 123},
-            }
-        }
-        sign_transaction.return_value = self.signed_payload()
+        transaction = self.unsigned_transaction()
+        client.trigger_smart_contract.return_value = {"transaction": transaction}
+        sign_transaction.return_value = self.signed_payload(transaction)
         client.broadcast_transaction.return_value = {"result": True}
 
         task.broadcast()
@@ -557,7 +584,37 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         client.broadcast_transaction.assert_called_once()
         task.base_task.refresh_from_db()
         self.assertEqual(task.base_task.status, TxTaskStatus.SUBMITTED)
-        self.assertEqual(task.base_task.tx_hash, "a" * 64)
+        self.assertEqual(task.base_task.tx_hash, transaction["txID"])
+
+    @patch("tron.models.TronHttpClient")
+    @patch("chains.models.Address.sign_tron_transaction")
+    def test_broadcast_rejects_tampered_unsigned_contract_before_sign(
+        self,
+        sign_transaction,
+        client_class,
+    ):
+        task = self.make_task()
+        client = client_class.return_value
+        client.trigger_constant_contract.return_value = {
+            "result": {"result": True},
+            "energy_used": 1_000,
+        }
+        client.get_account_resource.return_value = {
+            "EnergyLimit": 2_000,
+            "EnergyUsed": 0,
+            "freeNetLimit": 10_000,
+        }
+        client.trigger_smart_contract.return_value = {
+            "transaction": self.unsigned_transaction(
+                contract_address=self.sender.address,
+            )
+        }
+
+        with self.assertRaisesMessage(TronClientError, "contract mismatch"):
+            task.broadcast()
+
+        sign_transaction.assert_not_called()
+        client.broadcast_transaction.assert_not_called()
 
     @patch("tron.models.TronHttpClient")
     def test_broadcast_skips_submitted_task(self, client_class):
@@ -1660,6 +1717,22 @@ class TronReceiptConfirmTaskTests(TestCase):
         )
         VaultSlot.objects.filter(pk=self.slot.pk).update(deploy_tx_task=base_task)
         return base_task
+
+    @patch("tron.saas_gas_billing.retry_vault_slot_collect_gas_fee.delay")
+    @patch("tron.saas_gas_billing.build_tx_detail", side_effect=RuntimeError("rpc down"))
+    def test_collect_gas_fee_build_failure_schedules_retry(
+        self,
+        _build_tx_detail_mock,
+        retry_delay,
+    ):
+        from tron.saas_gas_billing import notify_vault_slot_collect_gas_fee
+
+        base_task = self.create_collect_task()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            notify_vault_slot_collect_gas_fee(tx_task=base_task)
+
+        retry_delay.assert_called_once_with(base_task.pk)
 
     @patch("tron.tasks.notify_vault_slot_deploy_gas_fee")
     @patch("tron.tasks.notify_vault_slot_collect_gas_fee")

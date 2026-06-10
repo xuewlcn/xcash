@@ -89,4 +89,6 @@ def _load_token_registry_from_db(*, chain: Chain) -> dict[str, CryptoOnChain]:
         )
         .exclude(address="")
     )
+    for token in token_rows:
+        token.normalize_address_for_chain()
     return {token.address: token for token in token_rows}

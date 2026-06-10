@@ -762,6 +762,27 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(tx_detail["gas_price"], 1_000_000_000)
         self.assertEqual(tx_detail["native_price"], "2000")
 
+    @patch("evm.saas_gas_billing.retry_vault_slot_deploy_gas_fee.delay")
+    @patch("evm.saas_gas_billing._build_tx_detail", side_effect=RuntimeError("rpc down"))
+    def test_deploy_gas_fee_build_failure_schedules_retry(
+        self,
+        _build_tx_detail_mock,
+        retry_delay,
+    ):
+        from evm.saas_gas_billing import notify_vault_slot_deploy_gas_fee
+
+        slot = self._create_vault_slot()
+        address_patch = self.patch_address_derivation()
+        with address_patch:
+            task = VaultSlot.schedule_deploy(slot.pk)
+        task.tx_hash = "0x" + "ef" * 32
+        task.save(update_fields=["tx_hash", "updated_at"])
+
+        with self.captureOnCommitCallbacks(execute=True):
+            notify_vault_slot_deploy_gas_fee(tx_task=task)
+
+        retry_delay.assert_called_once_with(task.pk)
+
     def test_ensure_deposit_address_rejects_project_without_vault(self):
         Project.objects.filter(pk=self.project.pk).update(evm_vault=None)
         self.project.refresh_from_db()

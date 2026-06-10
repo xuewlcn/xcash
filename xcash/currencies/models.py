@@ -8,8 +8,10 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from web3 import Web3
 
 from chains.constants import NATIVE_COIN_SYMBOLS
+from chains.constants import ChainType
 from chains.models import Chain
 from common.utils.math import round_decimal
 
@@ -218,12 +220,44 @@ class CryptoOnChain(models.Model):
 
     def save(self, *args, **kwargs):
         # clean() 不会在 save() 时自动触发，这里直接兜底，挡住绕过表单的程序化改写。
+        old_address = self.address
+        self.normalize_address_for_chain()
+        if self.address != old_address and kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = {*kwargs["update_fields"], "address"}
         self.ensure_mapping_immutable()
         super().save(*args, **kwargs)
 
     def clean(self) -> None:
         super().clean()
+        self.normalize_address_for_chain()
         self.ensure_mapping_immutable()
+
+    def normalize_address_for_chain(self) -> None:
+        """按链类型把合约地址归一化；原生币空地址保持为空。"""
+        if not self.address:
+            self.address = ""
+            return
+
+        if self.chain.type == ChainType.EVM:
+            try:
+                self.address = Web3.to_checksum_address(self.address)
+            except ValueError as exc:
+                raise ValidationError({"address": _("EVM 合约地址格式无效。")}) from exc
+            return
+
+        if self.chain.type == ChainType.TRON:
+            from tron.codec import TronAddressCodec
+
+            try:
+                if TronAddressCodec.is_valid_base58(self.address):
+                    self.address = TronAddressCodec.normalize_base58(self.address)
+                else:
+                    self.address = TronAddressCodec.hex41_to_base58(self.address)
+            except ValueError as exc:
+                raise ValidationError({"address": _("Tron 合约地址格式无效。")}) from exc
+            return
+
+        raise ValidationError({"chain": _("不支持的链类型。")})
 
     def ensure_mapping_immutable(self) -> None:
         """禁止变更已存在链上币种的 crypto/chain。
