@@ -1106,12 +1106,13 @@ class VaultSlotCollectSchedule(models.Model):
 
         due_at = timezone.now() + get_vault_slot_collect_delay(chain.type)
         try:
-            return cls.objects.create(
-                chain=chain,
-                vault_slot=vault_slot,
-                crypto=crypto,
-                due_at=due_at,
-            )
+            with db_transaction.atomic():
+                return cls.objects.create(
+                    chain=chain,
+                    vault_slot=vault_slot,
+                    crypto=crypto,
+                    due_at=due_at,
+                )
         except IntegrityError:
             return cls.objects.get(
                 chain=chain,

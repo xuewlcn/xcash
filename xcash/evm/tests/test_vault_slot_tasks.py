@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from django.db import IntegrityError
 from django.db import connections
+from django.db import transaction as db_transaction
 from django.test import TestCase
 from django.utils import timezone
 from eth_utils import keccak
@@ -1007,6 +1008,36 @@ class VaultSlotAddressSchedulingTests(TestCase):
                 base_task__tx_type=TxTaskType.VaultSlotCollect
             ).exists()
         )
+
+    def test_ensure_pending_integrity_conflict_keeps_outer_transaction_usable(self):
+        slot = self._create_vault_slot()
+        existing = VaultSlotCollectSchedule.objects.create(
+            chain=self.chain,
+            vault_slot=slot,
+            crypto=self.token,
+            due_at=timezone.now(),
+        )
+
+        with db_transaction.atomic():
+            with patch.object(
+                VaultSlotCollectSchedule.objects,
+                "filter",
+                return_value=SimpleNamespace(first=lambda: None),
+            ):
+                schedule = VaultSlotCollectSchedule.ensure_pending(
+                    chain=self.chain,
+                    vault_slot=slot,
+                    crypto=self.token,
+                )
+
+            Crypto.objects.create(
+                name="Post Integrity Sentinel",
+                symbol="PIS",
+                coingecko_id="post-integrity-sentinel",
+            )
+
+        self.assertEqual(schedule.pk, existing.pk)
+        self.assertTrue(Crypto.objects.filter(symbol="PIS").exists())
 
     def test_schedule_collect_for_invoice_uses_contract_slot_and_token(self):
         slot = VaultSlot.objects.create(
