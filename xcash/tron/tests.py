@@ -147,6 +147,19 @@ class TronAdapterTests(SimpleTestCase):
 @override_settings(TRON_RPC_TIMEOUT=3.0)
 @patch("tron.client._TRON_HTTP_RETRY_BACKOFF_SECONDS", (0, 0))
 class TronHttpClientTests(SimpleTestCase):
+    @patch("tron.client._TRON_HTTP_RETRY_BACKOFF_SECONDS", (0, 0))
+    @patch("tron.client.httpx.get")
+    def test_retry_error_uses_chain_code_when_chain_field_is_absent(self, get_mock):
+        get_mock.side_effect = httpx.ConnectError("boom")
+        chain = SimpleNamespace(
+            tron_base_url="https://api.trongrid.io",
+            code="tron-mainnet",
+            tron_api_key="",
+        )
+
+        with self.assertRaisesMessage(TronClientError, "from tron-mainnet"):
+            TronHttpClient(chain=chain).get_latest_solid_block_number()
+
     @patch("tron.client.httpx.get")
     def test_get_latest_solid_block_number_reads_block_header_number(self, get_mock):
         get_mock.return_value.json.return_value = {

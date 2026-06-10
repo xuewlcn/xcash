@@ -66,7 +66,7 @@ class TronHttpClient:
         """
         last_exc: Exception | None = None
         max_attempts = len(_TRON_HTTP_RETRY_BACKOFF_SECONDS) + 1
-        chain_code = getattr(self.chain, "chain", "unknown")
+        chain_code = getattr(self.chain, "code", "unknown")
         for attempt in range(max_attempts):
             try:
                 # 走 httpx.get/post 而非 httpx.request 分发：测试用 @patch("tron.client.httpx.get/post")
