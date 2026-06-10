@@ -1,6 +1,7 @@
 import json
 from functools import wraps
 from hashlib import sha256
+from uuid import uuid4
 
 from django.core.cache import cache
 
@@ -27,14 +28,16 @@ def singleton_task(timeout, *, use_params=False):
             else:
                 lock_id = f"{task_func.__name__}-locked"
 
-            acquired = cache.add(lock_id, "true", timeout)
+            lock_token = uuid4().hex
+            acquired = cache.add(lock_id, lock_token, timeout)
             if not acquired:
                 return None
 
             try:
                 return task_func(*args, **kwargs)
             finally:
-                cache.delete(lock_id)
+                if cache.get(lock_id) == lock_token:
+                    cache.delete(lock_id)
 
         return wrapper
 
