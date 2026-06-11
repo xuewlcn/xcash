@@ -57,25 +57,38 @@ def build_dashboard_metrics() -> dict:
     delivery_attempt_queryset = DeliveryAttempt.objects.all()
     event_queryset = WebhookEvent.objects.all()
 
-    invoice_today = invoice_queryset.filter(created_at__gte=today_start)
-    invoice_7d = invoice_queryset.filter(created_at__gte=last_7d_start)
     invoice_30d = invoice_queryset.filter(created_at__gte=last_30d_start)
+    completed_today = invoice_queryset.filter(
+        status=InvoiceStatus.COMPLETED,
+        updated_at__gte=today_start,
+    )
+    completed_7d = invoice_queryset.filter(
+        status=InvoiceStatus.COMPLETED,
+        updated_at__gte=last_7d_start,
+    )
+    completed_30d = invoice_queryset.filter(
+        status=InvoiceStatus.COMPLETED,
+        updated_at__gte=last_30d_start,
+    )
 
-    today_completed = invoice_today.filter(status=InvoiceStatus.COMPLETED).aggregate(
+    today_completed = completed_today.aggregate(
         count=Count("id"),
         worth=Coalesce(Sum("worth"), ZERO_DECIMAL),
     )
-    rolling_7d = invoice_7d.filter(status=InvoiceStatus.COMPLETED).aggregate(
+    rolling_7d = completed_7d.aggregate(
         count=Count("id"),
         worth=Coalesce(Sum("worth"), ZERO_DECIMAL),
     )
-    rolling_30d = invoice_30d.filter(status=InvoiceStatus.COMPLETED).aggregate(
+    rolling_30d = completed_30d.aggregate(
         count=Count("id"),
         worth=Coalesce(Sum("worth"), ZERO_DECIMAL),
     )
 
     created_30d_count = invoice_30d.count()
     completed_30d_count = int(rolling_30d["count"] or 0)
+    cohort_completed_30d_count = invoice_30d.filter(
+        status=InvoiceStatus.COMPLETED
+    ).count()
 
     active_invoice_metrics = invoice_queryset.aggregate(
         waiting_count=Count(
@@ -115,43 +128,83 @@ def build_dashboard_metrics() -> dict:
     ).count()
     operational_risk = OperationalRiskService.build_summary()
 
-    daily_rows = (
+    created_daily_rows = (
         invoice_30d.annotate(day=TruncDate("created_at"))
         .values("day")
         .annotate(
             created_count=Count("id"),
+        )
+    )
+    completed_daily_rows = (
+        completed_30d.annotate(day=TruncDate("updated_at"))
+        .values("day")
+        .annotate(
             completed_count=Count("id", filter=Q(status=InvoiceStatus.COMPLETED)),
-            expired_count=Count("id", filter=Q(status=InvoiceStatus.EXPIRED)),
             completed_worth=Coalesce(
                 Sum("worth", filter=Q(status=InvoiceStatus.COMPLETED)),
                 ZERO_DECIMAL,
             ),
         )
     )
-    daily_map = {row["day"]: row for row in daily_rows}
+    expired_daily_rows = (
+        invoice_queryset.filter(
+            status=InvoiceStatus.EXPIRED,
+            updated_at__gte=last_30d_start,
+        )
+        .annotate(day=TruncDate("updated_at"))
+        .values("day")
+        .annotate(expired_count=Count("id"))
+    )
+    created_daily_map = {row["day"]: row for row in created_daily_rows}
+    completed_daily_map = {row["day"]: row for row in completed_daily_rows}
+    expired_daily_map = {row["day"]: row for row in expired_daily_rows}
     chart_rows = []
     for offset in range(30):
         day = today_date - timedelta(days=29 - offset)
-        row = daily_map.get(day, {})
+        created_row = created_daily_map.get(day, {})
+        completed_row = completed_daily_map.get(day, {})
+        expired_row = expired_daily_map.get(day, {})
         chart_rows.append(
             {
                 "label": day.strftime("%m-%d"),
-                "created_count": int(row.get("created_count") or 0),
-                "completed_count": int(row.get("completed_count") or 0),
-                "expired_count": int(row.get("expired_count") or 0),
-                "completed_worth": Decimal(row.get("completed_worth") or 0),
+                "created_count": int(created_row.get("created_count") or 0),
+                "completed_count": int(completed_row.get("completed_count") or 0),
+                "expired_count": int(expired_row.get("expired_count") or 0),
+                "completed_worth": Decimal(
+                    completed_row.get("completed_worth") or 0
+                ),
             }
         )
 
-    top_projects = list(
-        invoice_30d.values("project_id", "project__name")
+    top_project_rows = list(
+        completed_30d.values("project_id", "project__name")
         .annotate(
-            total_orders=Count("id"),
-            completed_orders=Count("id", filter=Q(status=InvoiceStatus.COMPLETED)),
+            completed_orders=Count("id"),
             gmv=Coalesce(
-                Sum("worth", filter=Q(status=InvoiceStatus.COMPLETED)),
+                Sum("worth"),
                 ZERO_DECIMAL,
             ),
+        )
+        .order_by("-gmv", "-completed_orders")[:5]
+    )
+    top_project_ids = [row["project_id"] for row in top_project_rows]
+    created_project_metrics = {
+        row["project_id"]: row
+        for row in invoice_30d.filter(project_id__in=top_project_ids)
+        .values("project_id")
+        .annotate(
+            total_orders=Count("id"),
+            conversion_completed_orders=Count(
+                "id",
+                filter=Q(status=InvoiceStatus.COMPLETED),
+            ),
+        )
+    }
+    active_project_metrics = {
+        row["project_id"]: row
+        for row in invoice_queryset.filter(project_id__in=top_project_ids)
+        .values("project_id")
+        .annotate(
             waiting_orders=Count(
                 "id",
                 filter=Q(status=InvoiceStatus.WAITING, transfer__isnull=True),
@@ -161,12 +214,28 @@ def build_dashboard_metrics() -> dict:
                 filter=Q(status=InvoiceStatus.WAITING, transfer__isnull=False),
             ),
         )
-        .order_by("-gmv", "-completed_orders")[:5]
-    )
+    }
+    top_projects = []
+    for row in top_project_rows:
+        project_id = row["project_id"]
+        created_metrics = created_project_metrics.get(project_id, {})
+        active_metrics = active_project_metrics.get(project_id, {})
+        top_projects.append(
+            {
+                **row,
+                "total_orders": int(created_metrics.get("total_orders") or 0),
+                "conversion_completed_orders": int(
+                    created_metrics.get("conversion_completed_orders") or 0
+                ),
+                "waiting_orders": int(active_metrics.get("waiting_orders") or 0),
+                "confirming_orders": int(
+                    active_metrics.get("confirming_orders") or 0
+                ),
+            }
+        )
 
     payment_methods = list(
-        invoice_30d.filter(
-            status=InvoiceStatus.COMPLETED,
+        completed_30d.filter(
             crypto__isnull=False,
             chain__isnull=False,
         )
@@ -201,7 +270,10 @@ def build_dashboard_metrics() -> dict:
             "rolling_30d_completed_count": completed_30d_count,
             "rolling_30d_completed_worth": Decimal(rolling_30d["worth"] or 0),
             "created_30d_count": created_30d_count,
-            "conversion_rate_30d": _rate(completed_30d_count, created_30d_count),
+            "conversion_rate_30d": _rate(
+                cohort_completed_30d_count,
+                created_30d_count,
+            ),
             "waiting_count": int(active_invoice_metrics["waiting_count"] or 0),
             "waiting_worth": Decimal(active_invoice_metrics["waiting_worth"] or 0),
             "confirming_count": int(active_invoice_metrics["confirming_count"] or 0),

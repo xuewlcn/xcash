@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
+from decimal import Decimal
 from os import environ
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +22,7 @@ from web3 import Web3
 from chains.constants import ChainType
 from chains.models import Chain
 from chains.models import Wallet
+from core.dashboard_metrics import build_dashboard_metrics
 from core.default_data import ensure_base_currencies
 from core.default_data import ensure_local_chains
 from core.models import SYSTEM_SETTINGS_CACHE_KEY
@@ -30,6 +35,9 @@ from currencies.models import CryptoOnChain
 from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 from evm.local_erc20 import LOCAL_EVM_ERC20_BYTECODE
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
+from invoices.models import Invoice
+from invoices.models import InvoiceStatus
+from projects.models import Project
 
 
 def setUpModule():
@@ -74,6 +82,103 @@ class SystemWalletTests(TestCase):
         self.assertEqual(same_system_wallet.wallet_id, system_wallet.wallet_id)
         self.assertEqual(SystemWallet.objects.count(), 1)
         self.assertEqual(Wallet.objects.count(), 1)
+
+
+class DashboardMetricsTests(TestCase):
+    def make_invoice(
+        self,
+        *,
+        project,
+        out_no,
+        worth,
+        status,
+        created_at,
+        updated_at,
+    ):
+        invoice = Invoice.objects.create(
+            project=project,
+            out_no=out_no,
+            title="Dashboard metric test",
+            currency="USD",
+            amount=Decimal(worth),
+            worth=Decimal(worth),
+            status=status,
+            expires_at=created_at + timedelta(hours=1),
+        )
+        Invoice.objects.filter(pk=invoice.pk).update(
+            created_at=created_at,
+            started_at=created_at,
+            updated_at=updated_at,
+        )
+        return invoice
+
+    @patch("core.dashboard_metrics.timezone.localdate")
+    @patch("core.dashboard_metrics.timezone.now")
+    def test_completed_metrics_use_completion_time_not_creation_time(
+        self,
+        timezone_now,
+        timezone_localdate,
+    ):
+        fixed_now = datetime(2026, 6, 11, 12, tzinfo=UTC)
+        timezone_now.return_value = fixed_now
+        timezone_localdate.return_value = fixed_now.date()
+        project = Project.objects.create(name="Dashboard Project")
+
+        # 旧账单今天才完成：必须计入今日/30日成交额，但不属于近30日创建 cohort。
+        self.make_invoice(
+            project=project,
+            out_no="old-completed-today",
+            worth="100",
+            status=InvoiceStatus.COMPLETED,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 11, 8, tzinfo=UTC),
+        )
+        # 近30日创建且已完成：计入成交额，也计入转化率分子。
+        self.make_invoice(
+            project=project,
+            out_no="created-and-completed",
+            worth="25",
+            status=InvoiceStatus.COMPLETED,
+            created_at=datetime(2026, 6, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        self.make_invoice(
+            project=project,
+            out_no="created-waiting",
+            worth="50",
+            status=InvoiceStatus.WAITING,
+            created_at=datetime(2026, 6, 11, 9, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 11, 9, tzinfo=UTC),
+        )
+        self.make_invoice(
+            project=project,
+            out_no="created-expired-today",
+            worth="75",
+            status=InvoiceStatus.EXPIRED,
+            created_at=datetime(2026, 6, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 11, 10, tzinfo=UTC),
+        )
+
+        metrics = build_dashboard_metrics()
+        snapshot = metrics["snapshot"]
+
+        self.assertEqual(snapshot["today_completed_count"], 1)
+        self.assertEqual(snapshot["today_completed_worth"], Decimal("100"))
+        self.assertEqual(snapshot["rolling_30d_completed_count"], 2)
+        self.assertEqual(snapshot["rolling_30d_completed_worth"], Decimal("125"))
+        self.assertEqual(snapshot["created_30d_count"], 3)
+        self.assertEqual(snapshot["conversion_rate_30d"], Decimal("33.3"))
+
+        today_chart = metrics["chart_rows"][-1]
+        self.assertEqual(today_chart["created_count"], 1)
+        self.assertEqual(today_chart["completed_count"], 1)
+        self.assertEqual(today_chart["expired_count"], 1)
+        self.assertEqual(today_chart["completed_worth"], Decimal("100"))
+
+        self.assertEqual(metrics["top_projects"][0]["gmv"], Decimal("125"))
+        self.assertEqual(metrics["top_projects"][0]["completed_orders"], 2)
+        self.assertEqual(metrics["top_projects"][0]["total_orders"], 3)
+        self.assertEqual(metrics["top_projects"][0]["conversion_completed_orders"], 1)
 
 
 @pytest.mark.skip(

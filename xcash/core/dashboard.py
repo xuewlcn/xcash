@@ -214,7 +214,7 @@ def dashboard_callback(request, context):
             "label": _("待链上确认账单收款"),
             "value": snapshot["confirming_count"],
             "detail": _fmt_usd(snapshot["confirming_worth"]),
-            "href": f"{reverse('admin:invoices_invoice_changelist')}?status__exact=waiting",
+            "href": f"{reverse('admin:invoices_invoice_changelist')}?status__exact=waiting&transfer__isnull=False",
         },
         {
             "label": _("待投递事件"),
@@ -259,7 +259,7 @@ def dashboard_callback(request, context):
                     "gmv": _fmt_usd(row["gmv"]),
                     "completed_orders": row["completed_orders"],
                     "conversion_rate": (
-                        f"{(row['completed_orders'] / row['total_orders'] * 100):.1f}%"
+                        f"{(row['conversion_completed_orders'] / row['total_orders'] * 100):.1f}%"
                         if row["total_orders"]
                         else "0.0%"
                     ),
