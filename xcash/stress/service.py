@@ -332,11 +332,11 @@ def _seed_stress_saas_permission_cache(project: Project) -> None:
 
 
 def _setup_wallet_for_vault(project: Project) -> None:
-    """为 Stress Project 分配系统钱包派生的独立 EVM vault 地址。
+    """为 Stress Project 分配系统钱包派生的独立 EVM 归集地址。
 
     合约账单（CONTRACT）依赖 project.evm_vault：它既是 CREATE2 派生 VaultSlot 的不可变归集地址，
     也是 VaultSlot 归集（sweep）的最终终点。Project.evm_vault 有唯一约束，不能让多轮 StressRun
-    复用 address_index=0 的系统热钱包地址；压测专用 vault 使用系统钱包按 project.pk 派生的地址，
+    复用 address_index=0 的系统热钱包地址；压测专用归集地址使用系统钱包按 project.pk 派生，
     仍由主系统托管私钥。address_index=0 继续作为系统热钱包支付 VaultSlot 部署与归集 gas。
     Project.evm_vault 一旦写入不可修改（见 Project.save 校验），故只在本次首次准备时赋值。
     """
@@ -346,7 +346,7 @@ def _setup_wallet_for_vault(project: Project) -> None:
 
     system_wallet = SystemWallet.get_current()
     if project.pk is None:
-        raise RuntimeError("Stress Project 必须先落库，才能按项目 ID 派生 vault 地址")
+        raise RuntimeError("Stress Project 必须先落库，才能按项目 ID 派生归集地址")
 
     evm_vault_address = system_wallet.wallet.get_address(
         chain_type=ChainType.EVM,
@@ -494,7 +494,7 @@ def _extract_error_detail(resp: httpx.Response) -> str:
 
 
 def _fund_vault_for_stress(project: Project) -> None:
-    """为 Stress Project 的 EVM Vault 地址注入测试币。
+    """为 Stress Project 的 EVM 归集地址注入测试币。
 
     在 prepare 事务提交后调用，确保 Wallet 和 Address 记录已落库。
     """
@@ -502,7 +502,7 @@ def _fund_vault_for_stress(project: Project) -> None:
 
 
 def _fund_evm_vault(project: Project) -> None:
-    """EVM 本地压测注资：项目 vault 收测试资产，系统热钱包支付 VaultSlot 部署 gas。"""
+    """EVM 本地压测注资：项目归集地址收测试资产，系统热钱包支付 VaultSlot 部署 gas。"""
     from web3 import Web3
 
     from chains.models import Address
@@ -519,7 +519,7 @@ def _fund_evm_vault(project: Project) -> None:
 
     vault_address = project.evm_vault
     if not vault_address:
-        raise RuntimeError("Stress Project Vault 地址未配置，无法注资")
+        raise RuntimeError("Stress Project 归集地址未配置，无法注资")
 
     w3 = _get_w3()
 

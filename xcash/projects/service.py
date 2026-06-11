@@ -26,7 +26,7 @@ class ProjectService:
     def contract_receivable_chain_codes(project: Project) -> set[str]:
         """VaultSlot 合约模式下项目可收款的链 code 集合。
 
-        合约收款依赖对应链类型的项目不可变 vault 地址；Tron 只有 Nile 验证结论与
+        合约收款依赖对应链类型的项目不可变归集地址；Tron 只有 Nile 验证结论与
         factory/template/fee_limit 明确配置后才暴露，默认配置下始终只返回 EVM。
         """
         chain_codes = set()

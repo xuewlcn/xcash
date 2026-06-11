@@ -24,7 +24,7 @@ make test
 
 - **单元测试**（`test/XcashVaultSlotTest.t.sol`、`XcashVaultSlotFactoryTest.t.sol`）：
   固定输入覆盖具体场景与 revert 分支，含 USDT 非标返回、false / 畸形返回等 token。
-- **Fuzz 属性测试**（`test/XcashVaultSlotFuzz.t.sol`）：对金额、vault 地址、salt
+- **Fuzz 属性测试**（`test/XcashVaultSlotFuzz.t.sol`）：对金额、归集地址、salt
   全空间随机取值，验证核心不变性——归集全额到位且 slot 清零、资金只流向编码的
   immutable vault、CREATE2 预测地址恒等于实际部署地址、不同 salt 不碰撞。
 

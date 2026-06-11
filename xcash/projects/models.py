@@ -71,7 +71,7 @@ class Project(models.Model):
         null=True,
         blank=True,
         help_text=_(
-            "用于生成 EVM VaultSlot 合约的不可变 vault，必须是 EVM checksum 地址。"
+            "用于生成 EVM VaultSlot 合约的不可变归集地址，必须是 EVM checksum 地址。"
             "留空时禁止在 EVM 生成 VaultSlot；一旦设置不可修改。"
         ),
         unique=True,
@@ -81,7 +81,7 @@ class Project(models.Model):
         null=True,
         blank=True,
         help_text=_(
-            "用于生成 Tron VaultSlot 合约的不可变 vault，必须是 Tron Base58 地址。"
+            "用于生成 Tron VaultSlot 合约的不可变归集地址，必须是 Tron Base58 地址。"
             "留空时禁止在 Tron 生成 VaultSlot；"
             "一旦设置不可修改。"
         ),
@@ -237,13 +237,13 @@ class Project(models.Model):
             == InvoiceReceivingMode.VaultSlot
             and not self.evm_vault
         ):
-            errors.append(_("EVM 金库地址未配置"))  # noqa
+            errors.append(_("EVM 归集地址未配置"))  # noqa
         if (
             self.resolved_invoice_receiving_mode(ChainType.TRON)
             == InvoiceReceivingMode.VaultSlot
             and not self.tron_vault
         ):
-            errors.append(_("Tron 金库地址未配置"))  # noqa
+            errors.append(_("Tron 归集地址未配置"))  # noqa
         if not self.ip_white_list:
             errors.append(_("IP 白名单未配置"))  # noqa
         if not self.webhook:

@@ -281,7 +281,7 @@ class Invoice(models.Model):
         vault_address = self.project.vault_address_for_chain_type(chain.type)
         if not vault_address:
             raise self.InvoiceAllocationError(
-                f"project={self.project_id}, chain={chain.code} VaultSlot Vault 地址未配置"
+                f"project={self.project_id}, chain={chain.code} VaultSlot 归集地址未配置"
             )
 
         reusable_slots = VaultSlot.objects.filter(

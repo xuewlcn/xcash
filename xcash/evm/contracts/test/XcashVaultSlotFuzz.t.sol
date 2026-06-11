@@ -8,7 +8,7 @@ import {XcashVaultSlotFactory} from "../src/XcashVaultSlotFactory.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
 
 /// @notice VaultSlot 属性测试：单元测试用固定输入验证个别 case，这里让 Foundry
-///         对金额、vault 地址、salt 全空间随机取值，验证归集与地址预测的核心不变性
+///         对金额、归集地址、salt 全空间随机取值，验证归集与地址预测的核心不变性
 ///         对任意输入都成立。
 contract XcashVaultSlotFuzzTest is Test {
     address payable internal vault = payable(address(0xBEEF));

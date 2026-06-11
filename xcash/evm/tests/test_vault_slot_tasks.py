@@ -792,7 +792,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         with (
             address_patch,
             patch.object(EvmTxTask, "schedule") as schedule,
-            self.assertRaisesRegex(RuntimeError, "VaultSlot Vault 地址未配置"),
+            self.assertRaisesRegex(RuntimeError, "VaultSlot 归集地址未配置"),
         ):
             VaultSlot.ensure_deposit_address(
                 chain=self.chain,

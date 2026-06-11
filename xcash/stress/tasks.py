@@ -438,7 +438,7 @@ def _maybe_trigger_invoice_collection_verification(stress_run_id: int) -> None:
 def verify_deposit_collection(self, stress_run_id: int) -> None:
     """VaultSlot 体系下，Deposit 确认（webhook OK）即代表充币入账完成，直接收口。
 
-    新架构里「归集」（VaultSlot → 项目 vault）是 confirm_deposit 触发的
+    新架构里「归集」（VaultSlot → 项目归集地址）是 confirm_deposit 触发的
     fire-and-forget 异步 TxTask，与商户视角的「充币是否成功」解耦，因此压测
     不再轮询归集进度——旧版按 Deposit.status 轮询，而该字段已随充币模型简化移除
     （Deposit 确认状态直接取自其 Transfer，不再维护独立状态机）。

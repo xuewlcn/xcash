@@ -887,7 +887,7 @@ class VaultSlot(models.Model):
         if usage == VaultSlotUsage.DEPOSIT:
             if customer is None:
                 raise ValueError("customer is required for deposit salt")
-            # 不掺 chain.code：同一链类型内的 factory/template/vault 地址一致时，
+            # 不掺 chain.code：同一链类型内的 factory/template/归集地址一致时，
             # 同一业务身份在该链类型所有网络上得到一致 VaultSlot 地址。
             return keccak(
                 namespace

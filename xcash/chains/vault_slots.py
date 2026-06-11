@@ -74,7 +74,7 @@ def ensure_deposit_address(
     vault_address = project.vault_address_for_chain_type(chain.type)
     if not vault_address:
         raise RuntimeError(
-            f"Project {customer.project_id} {chain.type} VaultSlot Vault 地址未配置"
+            f"Project {customer.project_id} {chain.type} VaultSlot 归集地址未配置"
         )
     salt = VaultSlot.build_salt(
         chain_type=chain.type,
@@ -140,7 +140,7 @@ def ensure_invoice_address(
     vault_address = project.vault_address_for_chain_type(chain.type)
     if not vault_address:
         raise RuntimeError(
-            f"Project {project.pk} {chain.type} VaultSlot Vault 地址未配置"
+            f"Project {project.pk} {chain.type} VaultSlot 归集地址未配置"
         )
     salt = VaultSlot.build_salt(
         chain_type=chain.type,
@@ -218,7 +218,7 @@ def schedule_deploy(slot_pk: int) -> TxTask | None:
 
         if not slot.project.vault_address_for_chain_type(slot.chain.type):
             raise RuntimeError(
-                f"Project {slot.project_id} {slot.chain.type} VaultSlot Vault 地址未配置"
+                f"Project {slot.project_id} {slot.chain.type} VaultSlot 归集地址未配置"
             )
 
         # 锁住 VaultSlot 本行后再创建任务，避免并发 on_commit 调度同时看到

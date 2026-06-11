@@ -56,7 +56,7 @@ class SystemSettings(models.Model):
         help_text=_("待投递 Webhook 事件超过该时间仍未送达时，进入异常巡检。"),
     )
     # 归集延迟按链类型分开：EVM gas 便宜（连以太坊转 USDT 都廉价），短延迟优先让资金快速
-    # 到账金库、改善商户现金流；Tron 归集一次能量/带宽成本高，长延迟把同槽位多笔到账批量
+    # 到账归集地址、改善商户现金流；Tron 归集一次能量/带宽成本高，长延迟把同槽位多笔到账批量
     # 摊薄成本。两者都只影响「确认后等多久再聚合归集」，不影响是否归集。
     evm_vault_slot_collect_delay_minutes = models.PositiveIntegerField(
         _("EVM VaultSlot 归集延迟(分钟)"),
