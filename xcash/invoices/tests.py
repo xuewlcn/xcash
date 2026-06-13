@@ -917,7 +917,7 @@ class InvoiceContractBillingValidationTests(TestCase):
             {
                 ChainCode.Tron: VaultSlotContractAddresses(
                     factory="TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
-                    template="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
+                    implementation="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
                 )
             },
         ):
