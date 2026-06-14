@@ -1,10 +1,13 @@
 // src/components/SummaryBar.jsx
-import { Moon, Sun } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { Clock, Moon, Sun } from "lucide-react"
 import LogoMark from "@/components/LogoMark"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useI18n } from "@/hooks/useI18n"
 import { getInvoiceDisplayStatus } from "@/lib/invoiceStatus"
+import { getRemainingMs } from "@/lib/dateTime"
+import { cn } from "@/lib/utils"
 
 // 状态 → Badge 语义变体。只改变用户可见状态色，不影响后端状态值。
 const STATUS_VARIANT = {
@@ -17,6 +20,71 @@ const STATUS_VARIANT = {
 
 // 进行中的状态展示一个脉冲点（继承 badge 文字色，非自定义颜色）。
 const PULSING = new Set(["waiting", "confirming", "finalizing"])
+
+function formatRemainingTime(remainingMs, t) {
+  if (remainingMs === null || typeof remainingMs === "undefined") {
+    return "--:--:--"
+  }
+
+  const totalSeconds = Math.floor(remainingMs / 1000)
+  const days = Math.floor(totalSeconds / 86400)
+  const hours = Math.floor((totalSeconds % 86400) / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (value) => value.toString().padStart(2, "0")
+
+  if (days > 0) {
+    return `${days}${t("waiting.days")} ${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
+  }
+
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
+}
+
+function InvoiceCountdown({ invoice, t }) {
+  const shouldShow = invoice?.status === "waiting" && Boolean(invoice?.expires_at)
+  const [remainingMs, setRemainingMs] = useState(() =>
+    shouldShow ? getRemainingMs(invoice.expires_at) : null
+  )
+
+  useEffect(() => {
+    if (!shouldShow) {
+      setRemainingMs(null)
+      return
+    }
+
+    const updateRemaining = () => {
+      setRemainingMs(getRemainingMs(invoice.expires_at))
+    }
+
+    updateRemaining()
+    const timer = setInterval(updateRemaining, 1000)
+    return () => clearInterval(timer)
+  }, [invoice?.expires_at, shouldShow])
+
+  const countdownTone = useMemo(() => {
+    if (remainingMs !== null && remainingMs <= 60_000) return "text-destructive"
+    return "text-muted-foreground"
+  }, [remainingMs])
+
+  const countdownText = useMemo(() => formatRemainingTime(remainingMs, t), [remainingMs, t])
+
+  if (!shouldShow) return null
+
+  return (
+    <div
+      className={cn(
+        "mt-1 flex items-center justify-center gap-1.5 text-xs tabular-nums",
+        countdownTone
+      )}
+    >
+      <Clock className="size-3.5 shrink-0" />
+      <span className="truncate">{t("waiting.timeRemaining")}</span>
+      <span className="font-mono font-semibold">
+        {remainingMs === 0 ? t("waiting.expired") : countdownText}
+      </span>
+    </div>
+  )
+}
 
 function SummaryBar({ invoice, isDark, toggleTheme }) {
   const { t, locale, setLocale } = useI18n()
@@ -50,6 +118,7 @@ function SummaryBar({ invoice, isDark, toggleTheme }) {
           {invoice?.title && (
             <div className="text-xs text-muted-foreground truncate mt-0.5">{invoice.title}</div>
           )}
+          <InvoiceCountdown invoice={invoice} t={t} />
         </div>
 
         {/* Status */}

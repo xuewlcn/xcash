@@ -43,7 +43,6 @@ function PaymentStepper({
   handleChainChange,
   resetSelection,
   cancelEdit,
-  refetch,
   isDark,
   toggleTheme,
 }) {
@@ -188,7 +187,7 @@ function PaymentStepper({
                       } : null}
                     />
                     {isWaiting && hasPaymentMethod && !hasPayment && !isEditing && !isExpired && (
-                      <WaitingPayment invoice={invoice} onExpired={refetch} />
+                      <WaitingPayment />
                     )}
                   </>
                 )}
