@@ -38,7 +38,7 @@ function SummaryBar({ invoice, isDark, toggleTheme }) {
         {/* Amount */}
         <div className="text-center flex-1 min-w-0">
           <div className="flex items-baseline justify-center gap-2 flex-wrap">
-            <span className="text-base font-semibold tabular-nums">
+            <span className="text-lg font-semibold tabular-nums sm:text-xl">
               {invoice?.amount} {invoice?.currency}
             </span>
             {hasPayMethod && (

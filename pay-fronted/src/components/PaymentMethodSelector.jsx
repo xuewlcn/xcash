@@ -39,26 +39,29 @@ function PaymentMethodSelector({
   onCancelEdit,
 }) {
   const { t } = useI18n()
+  const hasOrderNumber = Boolean(invoice.out_no)
 
   return (
     <div className="flex flex-col gap-3">
       {/* Invoice summary */}
       <Card>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-base font-semibold truncate">{invoice.title}</h2>
-              <p className="text-xs text-muted-foreground mt-1 font-mono">
-                {t("invoice.orderNumber")}: {invoice.out_no}
+        <CardContent className="flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-3">
+            <h2 className="truncate text-base font-semibold">{invoice.title}</h2>
+            <div className="space-y-2 text-xs text-muted-foreground">
+              {hasOrderNumber && (
+                <p>
+                  {t("invoice.orderNumber")}: <span className="font-mono">{invoice.out_no}</span>
+                </p>
+              )}
+              <p>
+                {t("invoice.systemNumber")}: <span className="font-mono">{invoice.sys_no}</span>
               </p>
             </div>
-            <div className="text-right shrink-0">
-              <div className="text-lg font-bold tabular-nums">{invoice.amount}</div>
-              <div className="text-xs text-muted-foreground">{invoice.currency}</div>
-            </div>
           </div>
-          <div className="text-xs text-muted-foreground">
-            {t("invoice.systemNumber")}: <span className="font-mono">{invoice.sys_no}</span>
+          <div className="shrink-0 text-right">
+            <div className="text-2xl font-bold leading-none tabular-nums">{invoice.amount}</div>
+            <div className="mt-2 text-sm text-muted-foreground">{invoice.currency}</div>
           </div>
         </CardContent>
       </Card>
@@ -66,7 +69,6 @@ function PaymentMethodSelector({
       {/* Title */}
       <div>
         <h2 className="text-base font-semibold">{t("payment.selectMethod")}</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">{t("payment.selectMethodDesc")}</p>
       </div>
 
       {/* Step 1: Token */}

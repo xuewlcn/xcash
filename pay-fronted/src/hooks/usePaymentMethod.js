@@ -1,11 +1,20 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { selectPayMethod } from "@/lib/api"
+import { sortCryptoOptions } from "@/lib/paymentMethodSort"
+
+function getFirstAvailableCrypto(methods) {
+  return sortCryptoOptions(Object.keys(methods ?? {}))[0] ?? ""
+}
 
 /**
  * 支付方式选择 Hook
  * 负责管理加密货币和公链的选择及自动提交
  */
 export function usePaymentMethod(invoice, sysNo, onInvoiceUpdate) {
+  const defaultCrypto = useMemo(
+    () => getFirstAvailableCrypto(invoice?.methods),
+    [invoice?.methods]
+  )
   const [selectedCrypto, setSelectedCrypto] = useState("")
   const [selectedChain, setSelectedChain] = useState("")
   const [isSelecting, setIsSelecting] = useState(false)
@@ -15,15 +24,25 @@ export function usePaymentMethod(invoice, sysNo, onInvoiceUpdate) {
   // 同步账单中已选择的支付方式
   useEffect(() => {
     if (!invoice || isEditing) return
-    setSelectedCrypto(invoice.crypto ?? "")
+    setSelectedCrypto(invoice.crypto || defaultCrypto)
     setSelectedChain(invoice.chain ?? "")
-  }, [invoice, isEditing])
+  }, [invoice, isEditing, defaultCrypto])
+
+  useEffect(() => {
+    if (!invoice || isEditing || invoice.crypto || selectedCrypto || !defaultCrypto) return
+    setSelectedCrypto(defaultCrypto)
+  }, [invoice, isEditing, selectedCrypto, defaultCrypto])
 
   // 选择加密货币时清空公链并进入编辑模式
   const handleCryptoChange = useCallback((value) => {
     setSelectedCrypto(value)
     setSelectedChain("")
     setIsEditing(true)  // 开始选择时进入编辑模式
+  }, [])
+
+  const handleChainChange = useCallback((value) => {
+    setSelectedChain(value)
+    setIsEditing(true)
   }, [])
 
   // 提交支付方式选择
@@ -91,17 +110,17 @@ export function usePaymentMethod(invoice, sysNo, onInvoiceUpdate) {
   // 重置选择 - 进入编辑模式
   const resetSelection = useCallback(() => {
     if (invoice?.status !== "waiting") return
-    setSelectedCrypto("")
+    setSelectedCrypto(defaultCrypto)
     setSelectedChain("")
     setIsEditing(true)
-  }, [invoice?.status])
+  }, [invoice?.status, defaultCrypto])
 
   // 取消编辑
   const cancelEdit = useCallback(() => {
-    setSelectedCrypto(invoice?.crypto ?? "")
+    setSelectedCrypto(invoice?.crypto || defaultCrypto)
     setSelectedChain(invoice?.chain ?? "")
     setIsEditing(false)
-  }, [invoice])
+  }, [invoice, defaultCrypto])
 
   return {
     selectedCrypto,
@@ -110,7 +129,7 @@ export function usePaymentMethod(invoice, sysNo, onInvoiceUpdate) {
     isEditing,
     error,
     handleCryptoChange,
-    handleChainChange: setSelectedChain,
+    handleChainChange,
     resetSelection,
     cancelEdit,
   }

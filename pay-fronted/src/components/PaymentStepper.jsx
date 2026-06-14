@@ -7,10 +7,30 @@ import StepCompleted from "@/components/StepCompleted"
 import PaymentMethodSelector from "@/components/PaymentMethodSelector"
 import PaymentAddress from "@/components/PaymentAddress"
 import WaitingPayment from "@/components/WaitingPayment"
+import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
 import { useI18n } from "@/hooks/useI18n"
 import { isPaymentConfirming } from "@/lib/invoiceStatus"
+
+function ExpiredOrderCard() {
+  const { t } = useI18n()
+
+  return (
+    <div className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
+      <Card className="w-full">
+        <CardContent className="flex flex-col items-center gap-4 px-8 py-12 text-center">
+          <div className="flex size-14 items-center justify-center rounded-full bg-muted text-destructive">
+            <AlertCircle className="size-7" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-semibold text-destructive">{t("expired.orderExpired")}</h2>
+            <p className="text-sm text-destructive/80">{t("expired.contactMerchant")}</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
 
 function PaymentStepper({
   invoice,
@@ -108,13 +128,15 @@ function PaymentStepper({
         {/* Fixed top: summary + step indicator */}
         <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b">
           <SummaryBar invoice={invoice} isDark={isDark} toggleTheme={toggleTheme} />
-          <StepIndicator
-            activeStep={activeStep}
-            naturalStep={naturalStep}
-            onStepClick={handleStepClick}
-            stepCount={stepCount}
-            lockBack={isCompleted}
-          />
+          {!isExpired && (
+            <StepIndicator
+              activeStep={activeStep}
+              naturalStep={naturalStep}
+              onStepClick={handleStepClick}
+              stepCount={stepCount}
+              lockBack={isCompleted}
+            />
+          )}
         </div>
 
         {/* Scrollable content */}
@@ -122,20 +144,7 @@ function PaymentStepper({
           <div className="max-w-lg mx-auto px-4 pt-5">
 
             {isExpired && (
-              <div className="space-y-3 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
-                <Alert variant="destructive">
-                  <AlertCircle />
-                  <AlertTitle>{t("expired.orderExpired")}</AlertTitle>
-                  <AlertDescription>{t("expired.contactMerchant")}</AlertDescription>
-                </Alert>
-                <Button
-                  onClick={() => window.location.reload()}
-                  variant="outline"
-                  className="w-full"
-                >
-                  {t("expired.refreshPage")}
-                </Button>
-              </div>
+              <ExpiredOrderCard />
             )}
 
             {!isExpired && !isSingleMethod && activeStep === methodStep && (
