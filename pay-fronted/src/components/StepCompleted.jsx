@@ -41,17 +41,17 @@ function StepCompleted({ invoice }) {
 
           {/* Basic invoice info */}
           {invoiceRows.length > 0 && (
-            <div className="bg-muted rounded-lg p-4 flex flex-col gap-3">
-              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="bg-muted rounded-lg p-4">
+              <div className="mb-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 {t("invoice.basicInfo")}
               </div>
-              <dl className="flex flex-col gap-2">
+              <dl className="grid gap-3">
                 {invoiceRows.map((row) => (
-                  <div key={row.label} className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 items-start">
-                    <dt className="text-xs text-muted-foreground">{row.label}</dt>
+                  <div key={row.label} className="grid min-h-6 grid-cols-[5rem_minmax(0,1fr)] items-center gap-4">
+                    <dt className="text-sm leading-6 text-muted-foreground">{row.label}</dt>
                     <dd className={row.mono
-                      ? "text-right text-xs font-mono break-all"
-                      : "text-right text-sm font-medium break-all"}
+                      ? "text-right text-sm font-mono leading-6 break-all"
+                      : "text-right text-sm font-semibold leading-6 break-words"}
                     >
                       {row.value}
                     </dd>
