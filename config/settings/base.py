@@ -362,7 +362,7 @@ CELERY_BROKER_URL = REDIS_URL
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_backend
 CELERY_RESULT_BACKEND = "django-db"
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-extended
-CELERY_RESULT_EXTENDED = get_bool_default("CELERY_RESULT_EXTENDED", default=False)
+CELERY_RESULT_EXTENDED = get_bool_default("CELERY_RESULT_EXTENDED", default=True)
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-backend-always-retry
 # https://github.com/celery/celery/pull/6122
 CELERY_RESULT_BACKEND_ALWAYS_RETRY = True
