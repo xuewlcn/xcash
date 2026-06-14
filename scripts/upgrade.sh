@@ -13,13 +13,13 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-false}"
 # 默认在线 dump（不停机生成演练数据，缩短停机窗口、提升升级体验）：dump 期间
 # django/worker/beat 继续服务，仅在 production migrate 前才停机。
-# 代价：dump 时刻到停机时刻之间的新写入不在备份内，production migrate 失败回滚
-# 会丢这段增量。要求"备份即上线前最后状态、回滚零丢失"时显式设
-# STOP_BEFORE_REHEARSAL=true 走停机 dump（停机更久）。
+# 代价：dump 时刻到停机时刻之间的新写入不在演练样本内。要求"演练样本即上线前最后
+# 状态"时显式设 STOP_BEFORE_REHEARSAL=true 走停机 dump（停机更久）。
 STOP_BEFORE_REHEARSAL="${STOP_BEFORE_REHEARSAL:-false}"
 UPGRADE_LOCK_FILE="${UPGRADE_LOCK_FILE:-/tmp/xcash-upgrade.lock}"
-# 升级前数据库备份目录：production migrate 一旦中途失败，这份 dump 是回滚到升级前
-# 状态的唯一依据，必须落在 TMP_DIR 之外、不随脚本退出清理。.gitignore 已忽略 backups/。
+# 迁移演练用数据库 dump 目录：dump 必须落在 TMP_DIR 之外，避免演练库 restore 时
+# 受临时目录清理影响；演练成功后立即删除本次生成的 dump，缩短敏感数据生命周期。
+# .gitignore 已忽略 backups/。
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 # postgres 就绪等待上限（秒）：避免 DB 起不来时在持有升级锁的情况下无限 hang。
 POSTGRES_WAIT_TIMEOUT="${POSTGRES_WAIT_TIMEOUT:-120}"
@@ -34,7 +34,7 @@ APP_SERVICES_TO_RESTORE=()
 REHEARSAL_IN_PROGRESS=false
 PRODUCTION_MIGRATE_STARTED=false
 PRODUCTION_MIGRATE_COMPLETED=false
-# 升级前备份文件路径，dump 时赋值；cleanup 在 nounset 下引用，故先声明为空。
+# 演练 dump 文件路径，dump 时赋值；cleanup 在 nounset 下引用，故先声明为空。
 MAIN_DUMP=""
 
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
@@ -73,11 +73,12 @@ cleanup() {
       printf '\n[upgrade] WARNING: production migrate was in progress when failure occurred.\n' >&2
       printf '[upgrade] NOT restarting services automatically — DB may be mid-migration.\n' >&2
       if [[ -n "${MAIN_DUMP}" && -f "${MAIN_DUMP}" ]]; then
-        printf '[upgrade] 升级前备份已保留：%s\n' "${MAIN_DUMP}" >&2
+        printf '[upgrade] 演练 dump 尚未删除，可临时作为回滚输入：%s\n' "${MAIN_DUMP}" >&2
         printf '[upgrade] 回滚方向：停业务服务 → 将 db 重置为空库 → 用该 dump 执行 pg_restore。\n' >&2
-        printf '[upgrade] 先看上方迁移报错，判断是修正后前滚（fix-forward）还是回滚到此备份。\n' >&2
+        printf '[upgrade] 先看上方迁移报错，判断是修正后前滚（fix-forward）还是回滚到该 dump。\n' >&2
       else
-        printf '[upgrade] WARNING: 未找到升级前备份，回滚需依赖你的外部备份。\n' >&2
+        printf '[upgrade] 演练 dump 已在演练成功后清理；回滚需依赖外部备份。\n' >&2
+        printf '[upgrade] 优先看上方迁移报错，判断能否修正后前滚（fix-forward）。\n' >&2
       fi
       printf '[upgrade] 核对/恢复 schema 后，再用 docker compose up -d 拉起服务。\n' >&2
     elif [[ "${PRODUCTION_MIGRATE_COMPLETED}" == "true" ]]; then
@@ -195,6 +196,16 @@ restore_main_database() {
     'pg_restore --exit-on-error --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <"${input}"
 }
 
+delete_rehearsal_dump() {
+  if [[ -z "${MAIN_DUMP}" || ! -f "${MAIN_DUMP}" ]]; then
+    return
+  fi
+
+  log "delete migration rehearsal dump"
+  rm -f "${MAIN_DUMP}"
+  log "migration rehearsal dump deleted after successful rehearsal: ${MAIN_DUMP}"
+}
+
 run_main_manage() {
   local postgres_host="$1"
   shift
@@ -307,9 +318,10 @@ TMP_DIR="$(mktemp -d)"
 MAIN_REHEARSAL_PLAN="${TMP_DIR}/main-rehearsal.plan"
 MAIN_PRODUCTION_PLAN="${TMP_DIR}/main-production.plan"
 
-# 升级前备份落在 TMP_DIR 之外的持久目录，绝不随 cleanup 删除；转绝对路径便于失败时
-# 照搬做回滚。同一份 dump 也用于灌入演练库——在线 dump 时不必为备份在停机窗口内再
-# dump 一次，省停机时间（代价见顶部 STOP_BEFORE_REHEARSAL 注释）。
+# 演练 dump 落在 TMP_DIR 之外的持久目录，失败时不随 cleanup 删除，便于排查失败演练。
+# 同一份 dump 用于灌入演练库——在线 dump 时不必为演练在停机窗口内再 dump 一次，
+# 省停机时间（代价见顶部 STOP_BEFORE_REHEARSAL 注释）。演练成功后会立即删除本次
+# dump，避免敏感数据长时间落盘。
 mkdir -p "${BACKUP_DIR}"
 BACKUP_DIR="$(cd "${BACKUP_DIR}" && pwd)"
 MAIN_DUMP="${BACKUP_DIR}/xcash-pre-upgrade-$(date +%Y%m%d-%H%M%S).dump"
@@ -320,11 +332,11 @@ log "build production images"
 "${COMPOSE[@]}" build
 
 log "ensure database and cache dependencies are running"
-# --no-recreate：在备份 dump 落盘之前，绝不因 compose 配置/镜像变更重建生产 DB
-# 容器，保证备份必定取自升级前已知良好的实例。否则一旦本次升级恰好改动了 db 服务
-# 配置（典型如卷映射写错），重建后的新容器会以空库启动，随后的"备份"与演练都将在
+# --no-recreate：在演练 dump 落盘之前，绝不因 compose 配置/镜像变更重建生产 DB
+# 容器，保证演练样本必定取自升级前已知良好的实例。否则一旦本次升级恰好改动了 db 服务
+# 配置（典型如卷映射写错），重建后的新容器会以空库启动，随后的 dump 与演练都将在
 # 空库上全绿通过，整条防线失效。db/redis 的配置变更统一推迟到升级末尾的
-# up -d --remove-orphans 应用——那时真实数据的备份已经在手。
+# up -d --remove-orphans 应用——那时真实数据已完成演练并进入受控升级路径。
 "${COMPOSE[@]}" up -d --no-recreate db redis
 wait_for_postgres db
 
@@ -336,7 +348,7 @@ else
 fi
 
 dump_main_database "${MAIN_DUMP}"
-log "pre-upgrade backup saved: ${MAIN_DUMP}"
+log "migration rehearsal dump saved: ${MAIN_DUMP}"
 
 log "reset rehearsal database"
 # -v 清理上一轮残留的匿名卷，理由见 cleanup 中同命令的注释。
@@ -359,6 +371,7 @@ run_main_manage migration-rehearsal-db migrate --noinput 2>&1 \
 run_main_manage migration-rehearsal-db check --deploy 2>&1 \
   | tee "${TMP_DIR}/main-rehearsal-check.log"
 REHEARSAL_IN_PROGRESS=false
+delete_rehearsal_dump
 
 if [[ "${STOP_BEFORE_REHEARSAL}" != "true" ]]; then
   stop_app_services "before production migration"
@@ -385,4 +398,3 @@ log "start application services"
 "${COMPOSE[@]}" up -d --remove-orphans
 
 log "upgrade completed"
-log "pre-upgrade backup kept at ${MAIN_DUMP} (confirm new version is stable, then delete to reclaim space)"
