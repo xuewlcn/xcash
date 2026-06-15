@@ -3,3 +3,4 @@ cache/
 broadcast/
 lib/
 crytic-export/
+.env
