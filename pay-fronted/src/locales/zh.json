@@ -52,7 +52,7 @@
     "transactionHash": "交易哈希",
     "scanQRCode": "使用钱包扫码完成账单收款",
     "transferTo": "请向以下地址转账",
-    "toAddress": "",
+    "toAddress": "到以下地址",
     "reselectMethod": "重新选择账单收款方式",
     "returnToMerchant": "返回商户"
   },
