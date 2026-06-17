@@ -31,6 +31,8 @@ from chains.models import VaultSlot
 from chains.models import VaultSlotUsage
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from core.models import SYSTEM_SETTINGS_CACHE_KEY
+from core.models import SystemSettings
 from currencies.models import Crypto
 from currencies.models import CryptoOnChain
 from currencies.models import Fiat
@@ -1726,6 +1728,13 @@ class InvoiceVaultSlotPaymentTest(TestCase, InvoiceTestMixin):
     def setUp(self):
         self.setup_base_fixtures()
 
+    def set_invoice_vault_slot_limit(self, limit: int) -> None:
+        cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
+        self.addCleanup(cache.delete, SYSTEM_SETTINGS_CACHE_KEY)
+        SystemSettings.objects.create(
+            invoice_vault_slot_limit_per_project_chain=limit,
+        )
+
     def _make_minimal_invoice(self):
         return self.create_test_invoice(out_no="billing-mode-test")
 
@@ -2334,6 +2343,178 @@ class InvoiceVaultSlotPaymentTest(TestCase, InvoiceTestMixin):
         invoice = self.create_test_invoice(
             out_no="contract-vault-missing",
         )
+
+        with self.assertRaises(Invoice.InvoiceAllocationError):
+            invoice._allocate_contract_slot(self.crypto, self.chain, Decimal("10"))
+
+    def test_contract_slot_reuses_existing_slot_after_limit_reached(self):
+        self.set_invoice_vault_slot_limit(1)
+        vault_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000F21"
+        )
+        self.project.evm_vault = vault_address
+        self.project.save(update_fields=["evm_vault"])
+        slot = VaultSlot.objects.create(
+            project=self.project,
+            chain=self.chain,
+            usage=VaultSlotUsage.INVOICE,
+            invoice_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000A21"
+            ),
+            salt=b"\x21" * 32,
+        )
+        invoice = self.create_test_invoice(out_no="contract-limit-reuse")
+
+        pay_address, pay_amount = invoice._allocate_contract_slot(
+            self.crypto,
+            self.chain,
+            Decimal("10"),
+        )
+
+        self.assertEqual(pay_address, slot.address)
+        self.assertEqual(pay_amount, Decimal("10"))
+        self.assertEqual(
+            VaultSlot.objects.filter(
+                project=self.project,
+                usage=VaultSlotUsage.INVOICE,
+                chain=self.chain,
+            ).count(),
+            1,
+        )
+
+    def test_contract_slot_rejects_new_slot_after_system_limit_reached(self):
+        self.set_invoice_vault_slot_limit(1)
+        vault_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000F22"
+        )
+        self.project.evm_vault = vault_address
+        self.project.save(update_fields=["evm_vault"])
+        slot = VaultSlot.objects.create(
+            project=self.project,
+            chain=self.chain,
+            usage=VaultSlotUsage.INVOICE,
+            invoice_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000A22"
+            ),
+            salt=b"\x22" * 32,
+        )
+        occupying_invoice = self.create_test_invoice(
+            out_no="contract-limit-system-occupy"
+        )
+        self._set_invoice_payment(
+            occupying_invoice,
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_address=slot.address,
+            pay_amount=Decimal("10"),
+        )
+        invoice = self.create_test_invoice(out_no="contract-limit-system-new")
+
+        with self.assertRaises(Invoice.InvoiceAllocationError):
+            invoice._allocate_contract_slot(self.crypto, self.chain, Decimal("10"))
+
+        self.assertEqual(
+            VaultSlot.objects.filter(
+                project=self.project,
+                usage=VaultSlotUsage.INVOICE,
+                chain=self.chain,
+            ).count(),
+            1,
+        )
+
+    @override_settings(
+        IS_SAAS=True,
+        SAAS_API_TOKEN="xcash-saas-token",
+        SAAS_CALLBACK_URL="http://saas",
+    )
+    def test_contract_slot_uses_saas_limit_before_system_settings(self):
+        self.set_invoice_vault_slot_limit(10)
+        permission_key = f"saas:permission:{self.project.appid}"
+        cache.set(
+            permission_key,
+            {
+                "frozen": False,
+                "max_invoice_vault_slots_per_chain": 1,
+                "_fetched_at": timezone.now().timestamp(),
+            },
+            None,
+        )
+        self.addCleanup(cache.delete, permission_key)
+        vault_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000F23"
+        )
+        self.project.evm_vault = vault_address
+        self.project.save(update_fields=["evm_vault"])
+        slot = VaultSlot.objects.create(
+            project=self.project,
+            chain=self.chain,
+            usage=VaultSlotUsage.INVOICE,
+            invoice_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000A23"
+            ),
+            salt=b"\x23" * 32,
+        )
+        occupying_invoice = self.create_test_invoice(
+            out_no="contract-limit-saas-occupy"
+        )
+        self._set_invoice_payment(
+            occupying_invoice,
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_address=slot.address,
+            pay_amount=Decimal("10"),
+        )
+        invoice = self.create_test_invoice(out_no="contract-limit-saas-new")
+
+        with self.assertRaises(Invoice.InvoiceAllocationError):
+            invoice._allocate_contract_slot(self.crypto, self.chain, Decimal("10"))
+
+    @override_settings(
+        IS_SAAS=True,
+        SAAS_API_TOKEN="xcash-saas-token",
+        SAAS_CALLBACK_URL="http://saas",
+    )
+    def test_contract_slot_missing_saas_limit_falls_back_to_system_settings(self):
+        self.set_invoice_vault_slot_limit(1)
+        permission_key = f"saas:permission:{self.project.appid}"
+        cache.set(
+            permission_key,
+            {
+                "frozen": False,
+                "_fetched_at": timezone.now().timestamp(),
+            },
+            None,
+        )
+        self.addCleanup(cache.delete, permission_key)
+        vault_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000F24"
+        )
+        self.project.evm_vault = vault_address
+        self.project.save(update_fields=["evm_vault"])
+        slot = VaultSlot.objects.create(
+            project=self.project,
+            chain=self.chain,
+            usage=VaultSlotUsage.INVOICE,
+            invoice_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000A24"
+            ),
+            salt=b"\x24" * 32,
+        )
+        occupying_invoice = self.create_test_invoice(
+            out_no="contract-limit-saas-fallback-occupy"
+        )
+        self._set_invoice_payment(
+            occupying_invoice,
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_address=slot.address,
+            pay_amount=Decimal("10"),
+        )
+        invoice = self.create_test_invoice(out_no="contract-limit-saas-fallback-new")
 
         with self.assertRaises(Invoice.InvoiceAllocationError):
             invoice._allocate_contract_slot(self.crypto, self.chain, Decimal("10"))

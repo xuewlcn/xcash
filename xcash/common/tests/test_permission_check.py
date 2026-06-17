@@ -13,6 +13,7 @@ from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.permission_check import _refresh_saas_permission
 from common.permission_check import check_saas_permission
+from common.permission_check import get_saas_invoice_vault_slot_limit
 from common.permission_check import get_saas_risk_marking_enabled
 
 
@@ -154,6 +155,41 @@ class CheckSaasPermissionTest(TestCase):
         )
 
         self.assertIs(get_saas_risk_marking_enabled(appid="XC-risk"), True)
+
+    def test_invoice_vault_slot_limit_reads_positive_integer(self):
+        cache.set(
+            "saas:permission:XC-invoice-slot-limit",
+            {
+                "frozen": False,
+                "max_invoice_vault_slots_per_chain": "12",
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        self.assertEqual(
+            get_saas_invoice_vault_slot_limit(appid="XC-invoice-slot-limit"),
+            12,
+        )
+
+    def test_invoice_vault_slot_limit_missing_or_invalid_means_fallback(self):
+        cases = (
+            {},
+            {"max_invoice_vault_slots_per_chain": None},
+            {"max_invoice_vault_slots_per_chain": 0},
+            {"max_invoice_vault_slots_per_chain": "bad"},
+        )
+
+        for index, payload in enumerate(cases):
+            appid = f"XC-invoice-slot-fallback-{index}"
+            cached_payload = {
+                "frozen": False,
+                "_fetched_at": time.time(),
+                **payload,
+            }
+            cache.set(f"saas:permission:{appid}", cached_payload, None)
+
+            self.assertIsNone(get_saas_invoice_vault_slot_limit(appid=appid))
 
     @override_settings(IS_SAAS=False)
     @patch("common.permission_check._refresh_saas_permission.delay")

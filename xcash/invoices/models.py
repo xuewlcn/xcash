@@ -279,13 +279,18 @@ class Invoice(models.Model):
         crypto_amount: Decimal,
     ) -> tuple[str, Decimal]:
         """智能合约收款：选择或创建本次账单可使用的 INVOICE VaultSlot。"""
+        from common.permission_check import get_saas_invoice_vault_slot_limit
+        from core.runtime_settings import get_invoice_vault_slot_limit_per_project_chain
+
         vault_address = self.project.vault_address_for_chain_type(chain.type)
         if not vault_address:
             raise self.InvoiceAllocationError(
                 f"project={self.project_id}, chain={chain.code} 智能合约收款归集地址未配置"
             )
 
-        reusable_slots = list(
+        # Project 行锁让同一项目的 slot 计数与创建串行化，避免并发请求同时越过上限。
+        Project.objects.select_for_update(of=("self",)).only("pk").get(pk=self.project_id)
+        existing_slots = list(
             VaultSlot.objects.select_for_update(of=("self",))
             .filter(
                 project=self.project,
@@ -294,7 +299,7 @@ class Invoice(models.Model):
             )
             .order_by("invoice_index", "pk")
         )
-        for slot in reusable_slots:
+        for slot in existing_slots:
             # 同一个合约收款槽位只在"币种 + 金额"重合且对方仍为 WAITING 时不可复用；
             # 不同金额通常可以复用同一 VaultSlot 地址，因为账单匹配要求 pay_amount
             # 精确相等；未部署 EVM 原生币由 initialNativeBalance 的聚合余额限制单独收紧。
@@ -318,9 +323,19 @@ class Invoice(models.Model):
                     )
                 return slot.address, crypto_amount
 
-        latest_index = reusable_slots[-1].invoice_index if reusable_slots else None
+        slot_limit = get_saas_invoice_vault_slot_limit(appid=self.project.appid)
+        if slot_limit is None:
+            slot_limit = get_invoice_vault_slot_limit_per_project_chain()
+
+        latest_index = existing_slots[-1].invoice_index if existing_slots else None
         invoice_index = 0 if latest_index is None else latest_index + 1
+        seen_slot_ids = {slot.pk for slot in existing_slots}
         for _retry in range(self.MAX_ALLOCATION_RETRY):
+            if len(existing_slots) >= slot_limit:
+                raise self.InvoiceAllocationError(
+                    f"project={self.project_id}, chain={chain.code} "
+                    f"账单 VaultSlot 数量已达上限({slot_limit})"
+                )
             try:
                 VaultSlot.ensure_invoice_address(
                     project=self.project,
@@ -339,6 +354,9 @@ class Invoice(models.Model):
                     invoice_index=invoice_index,
                 )
             )
+            if slot.pk not in seen_slot_ids:
+                existing_slots.append(slot)
+                seen_slot_ids.add(slot.pk)
             if self.contract_slot_is_available_for_payment(
                 slot=slot,
                 crypto=crypto,

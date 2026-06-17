@@ -70,6 +70,15 @@ class SystemSettings(models.Model):
             "Tron 归集成本高，默认长延迟批量摊薄。"
         ),
     )
+    invoice_vault_slot_limit_per_project_chain = models.PositiveIntegerField(
+        _("账单 VaultSlot 单项目单链上限"),
+        default=10,
+        validators=[MinValueValidator(1)],
+        help_text=_(
+            "单个项目在单条链上最多可创建的账单收款 VaultSlot 数量。"
+            "达到上限后仍可复用已有可用槽位，但不再创建新槽位。"
+        ),
+    )
     aml_screening_enabled = models.BooleanField(
         _("开启 AML 筛查"),
         default=False,

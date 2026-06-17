@@ -131,6 +131,26 @@ def get_saas_deposit_customer_limit(*, appid: str) -> int | None:
     return limit if limit > 0 else None
 
 
+def get_saas_invoice_vault_slot_limit(*, appid: str) -> int | None:
+    """读取 SaaS 下发的账单 VaultSlot 单项目单链上限。
+
+    None 表示回退 Xcash SystemSettings：包括自托管、冷缓存、老缓存缺 key、
+    SaaS 下发 null/0 或非法值。
+    """
+    perm = _read_saas_perm(appid)
+    if perm is None:
+        return None
+
+    raw_limit = perm.get("max_invoice_vault_slots_per_chain")
+    if raw_limit in (None, ""):
+        return None
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return None
+    return limit if limit > 0 else None
+
+
 @shared_task(
     ignore_result=True,
     soft_time_limit=8,
