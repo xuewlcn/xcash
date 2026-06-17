@@ -403,7 +403,7 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "sort_order",
-                    models.PositiveIntegerField(default=0, verbose_name="排序序号"),
+                    models.PositiveIntegerField(default=100, verbose_name="排序序号"),
                 ),
                 ("active", models.BooleanField(default=False, verbose_name="启用")),
                 (

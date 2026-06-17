@@ -62,7 +62,7 @@ class Chain(models.Model):
     latest_block_number = models.PositiveIntegerField(
         default=0, verbose_name=_("最新区块")
     )
-    sort_order = models.PositiveIntegerField(default=0, verbose_name=_("排序序号"))
+    sort_order = models.PositiveIntegerField(default=100, verbose_name=_("排序序号"))
     active = models.BooleanField(default=False, verbose_name=_("启用"))
 
     # For EVM
@@ -1444,9 +1444,9 @@ class Transfer(models.Model):
         if self.chain.type != ChainType.EVM:
             return False
         try:
-            return Web3.to_checksum_address(self.from_address) == Web3.to_checksum_address(
-                EVM_UNKNOWN_SOURCE_ADDRESS
-            )
+            return Web3.to_checksum_address(
+                self.from_address
+            ) == Web3.to_checksum_address(EVM_UNKNOWN_SOURCE_ADDRESS)
         except ValueError:
             return False
 
