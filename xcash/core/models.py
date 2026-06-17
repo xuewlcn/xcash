@@ -145,7 +145,7 @@ class SystemSettings(models.Model):
         verbose_name_plural = verbose_name
 
     def __str__(self):
-        return _("系统运行参数")
+        return str(_("系统运行参数"))
 
     def save(self, *args, **kwargs):
         # 强制收口为单例记录，避免后台误建第二份配置导致读取口径分叉。

@@ -115,6 +115,11 @@ class SystemSettingsRuntimeTests(TestCase):
         cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
         super().tearDown()
 
+    def test_str_returns_plain_string_for_admin_log(self):
+        system_settings = SystemSettings()
+
+        self.assertEqual(str(system_settings), "系统运行参数")
+
     def test_runtime_settings_use_database_override_before_settings_fallback(self):
         # 系统运行参数中心存在记录时，业务读取应优先采用数据库值，而不是继续回退到 settings 常量。
         SystemSettings.objects.create(
