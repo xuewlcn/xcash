@@ -32,6 +32,7 @@ class ChainAdminForm(forms.ModelForm):
 @admin.register(Chain)
 class ChainAdmin(ModelAdmin):
     form = ChainAdminForm
+    ordering = ("is_testnet", "sort_order", "code")
     # 字段瘦身后，type / native_coin / confirm_block_count 已转为 property，
     # 通过 display 方法暴露到列表页，方便运维一眼看清链配置。
     list_display = (

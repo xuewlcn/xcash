@@ -62,6 +62,100 @@ def _address_change_href(sender) -> str:
     return reverse("admin:chains_address_change", args=[sender.pk])
 
 
+def _tone_title_class(tone: str) -> str:
+    if tone == "danger":
+        return "text-red-700 dark:text-red-400"
+    if tone == "warning":
+        return "text-orange-700 dark:text-orange-400"
+    return "text-gray-500"
+
+
+def _tone_metric_class(tone: str) -> str:
+    if tone == "danger":
+        return "text-3xl mt-2 text-red-700 dark:text-red-400"
+    if tone == "warning":
+        return "text-3xl mt-2 text-orange-700 dark:text-orange-400"
+    return "text-3xl mt-2 text-gray-900 dark:text-gray-100"
+
+
+def _tone_subtitle_class(tone: str) -> str:
+    if tone == "danger":
+        return "text-sm mt-3 text-red-600 dark:text-red-300"
+    if tone == "warning":
+        return "text-sm mt-3 text-orange-600 dark:text-orange-300"
+    return "text-sm mt-3 text-gray-500"
+
+
+def _tone_badge_class(tone: str) -> str:
+    if tone == "danger":
+        return "inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-500/20 dark:text-red-400"
+    if tone == "warning":
+        return "inline-flex rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold text-orange-700 dark:bg-orange-500/20 dark:text-orange-400"
+    return "inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600"
+
+
+def _active_summary_tone(count: int, *, tone: str) -> str:
+    return tone if int(count) > 0 else "neutral"
+
+
+def _inspection_row(
+    *,
+    level,
+    title,
+    description,
+    href: str = "",
+    tone: str,
+) -> dict:
+    return {
+        "level": level,
+        "title": title,
+        "description": description,
+        "href": href,
+        "title_class": f"font-medium {_tone_title_class(tone)}",
+        "description_class": f"text-sm mt-1 {_tone_title_class(tone)}",
+        "level_class": _tone_badge_class(tone),
+    }
+
+
+def _inspection_section(
+    *,
+    title,
+    subtitle,
+    rows: list[dict],
+    empty_text,
+    tone: str = "neutral",
+) -> dict:
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "count": len(rows),
+        "rows": rows,
+        "empty_text": empty_text,
+        "count_class": _tone_badge_class(tone if rows else "neutral"),
+    }
+
+
+def _summary_card(
+    *,
+    title,
+    metric,
+    subtitle,
+    tone: str,
+    active_count: int,
+    background: str,
+) -> dict:
+    active_tone = _active_summary_tone(active_count, tone=tone)
+    return {
+        "title": title,
+        "metric": metric,
+        "subtitle": subtitle,
+        "tone": background,
+        "title_class": _tone_title_class(active_tone),
+        "metric_class": _tone_metric_class(active_tone),
+        "subtitle_class": _tone_subtitle_class(active_tone),
+    }
+
+
 def _empty_resource_risk_summary() -> dict:
     return {
         "evm_low_native_balance_count": 0,
@@ -75,12 +169,13 @@ def _build_admin_security_rows() -> list[dict]:
     if settings.ADMIN_PATH_CONFIGURED:
         return []
     return [
-        {
-            "level": _("中"),
-            "title": _("后台入口未配置"),
-            "description": _("ADMIN_PATH 未设置，后台仍使用默认入口；建议配置独立后台路径。"),
-            "href": "",
-        }
+        _inspection_row(
+            level=_("中"),
+            title=_("后台入口未配置"),
+            description=_("ADMIN_PATH 未设置，后台仍使用默认入口；建议配置独立后台路径。"),
+            href="",
+            tone="warning",
+        )
     ]
 
 
@@ -110,12 +205,13 @@ def _build_evm_resource_rows(resource_risk_summary: dict) -> list[dict]:
                 "task_count": alert.get("task_count") or 0,
             }
         rows.append(
-            {
-                "level": _("高"),
-                "title": _("EVM Gas 余额不足"),
-                "description": description,
-                "href": _address_change_href(sender),
-            }
+            _inspection_row(
+                level=_("高"),
+                title=_("EVM Gas 余额不足"),
+                description=description,
+                href=_address_change_href(sender),
+                tone="danger",
+            )
         )
     return rows
 
@@ -148,12 +244,13 @@ def _build_tron_resource_rows(resource_risk_summary: dict) -> list[dict]:
                 "task_count": alert.get("task_count") or 0,
             }
         rows.append(
-            {
-                "level": _("高"),
-                "title": _("Tron 资源不足"),
-                "description": description,
-                "href": _address_change_href(sender),
-            }
+            _inspection_row(
+                level=_("高"),
+                title=_("Tron 资源不足"),
+                description=description,
+                href=_address_change_href(sender),
+                tone="danger",
+            )
         )
     return rows
 
@@ -166,113 +263,116 @@ def _build_operational_inspection_payload(metrics, resource_risk_summary=None):
 
     admin_security_rows = _build_admin_security_rows()
     inspection_sections.append(
-        {
-            "title": _("后台安全配置"),
-            "subtitle": _("后台入口路径与基础安全配置检查"),
-            "count": len(admin_security_rows),
-            "rows": admin_security_rows,
-            "empty_text": _("当前没有后台安全配置风险"),
-        }
+        _inspection_section(
+            title=_("后台安全配置"),
+            subtitle=_("后台入口路径与基础安全配置检查"),
+            rows=admin_security_rows,
+            empty_text=_("当前没有后台安全配置风险"),
+            tone="warning",
+        )
     )
     attention_items.extend(admin_security_rows)
 
     evm_resource_rows = _build_evm_resource_rows(resource_risk_summary)
     inspection_sections.append(
-        {
-            "title": _("EVM Gas 水位巡检"),
-            "subtitle": _("主动上链任务 sender 原生币余额检查"),
-            "count": len(evm_resource_rows),
-            "rows": evm_resource_rows,
-            "empty_text": _("当前没有 EVM Gas 余额不足的 sender"),
-        }
+        _inspection_section(
+            title=_("EVM Gas 水位巡检"),
+            subtitle=_("主动上链任务 sender 原生币余额检查"),
+            rows=evm_resource_rows,
+            empty_text=_("当前没有 EVM Gas 余额不足的 sender"),
+            tone="danger",
+        )
     )
     attention_items.extend(evm_resource_rows)
 
     tron_resource_rows = _build_tron_resource_rows(resource_risk_summary)
     inspection_sections.append(
-        {
-            "title": _("Tron 资源水位巡检"),
-            "subtitle": _("待广播或需重签任务的 Energy / Bandwidth 检查"),
-            "count": len(tron_resource_rows),
-            "rows": tron_resource_rows,
-            "empty_text": _("当前没有 Tron 资源不足的 sender"),
-        }
+        _inspection_section(
+            title=_("Tron 资源水位巡检"),
+            subtitle=_("待广播或需重签任务的 Energy / Bandwidth 检查"),
+            rows=tron_resource_rows,
+            empty_text=_("当前没有 Tron 资源不足的 sender"),
+            tone="danger",
+        )
     )
     attention_items.extend(tron_resource_rows)
 
     failed_attempt_rows = [
-        {
-            "level": _("高"),
-            "title": _("Webhook 投递失败"),
-            "description": _("项目 %(project)s 在 %(time)s 投递失败：HTTP %(status)s")
+        _inspection_row(
+            level=_("高"),
+            title=_("Webhook 投递失败"),
+            description=_("项目 %(project)s 在 %(time)s 投递失败：HTTP %(status)s")
             % {
                 "project": attempt.event.project.name,
                 "time": attempt.created_at.strftime("%m-%d %H:%M"),
                 "status": attempt.response_status or "-",
             },
-            "href": reverse("admin:webhooks_deliveryattempt_change", args=[attempt.pk]),
-        }
+            href=reverse("admin:webhooks_deliveryattempt_change", args=[attempt.pk]),
+            tone="danger",
+        )
         for attempt in metrics["recent_failed_attempts"]
     ]
     inspection_sections.append(
-        {
-            "title": _("Webhook 投递失败"),
-            "subtitle": _("近24小时失败回调明细"),
-            "count": len(failed_attempt_rows),
-            "rows": failed_attempt_rows,
-            "empty_text": _("近24小时没有新的投递失败"),
-        }
+        _inspection_section(
+            title=_("Webhook 投递失败"),
+            subtitle=_("近24小时失败回调明细"),
+            rows=failed_attempt_rows,
+            empty_text=_("近24小时没有新的投递失败"),
+            tone="danger",
+        )
     )
     attention_items.extend(failed_attempt_rows)
 
     stalled_invoice_rows = [
-        {
-            "level": _("中"),
-            "title": _("账单收款长时间待链上确认"),
-            "description": _("%(project)s / %(sys_no)s / %(crypto)s-%(chain)s")
+        _inspection_row(
+            level=_("中"),
+            title=_("账单收款长时间待链上确认"),
+            description=_("%(project)s / %(sys_no)s / %(crypto)s-%(chain)s")
             % {
                 "project": invoice.project.name,
                 "sys_no": invoice.sys_no,
                 "crypto": invoice.crypto.symbol if invoice.crypto else "-",
                 "chain": invoice.chain.code if invoice.chain else "-",
             },
-            "href": reverse("admin:invoices_invoice_change", args=[invoice.pk]),
-        }
+            href=reverse("admin:invoices_invoice_change", args=[invoice.pk]),
+            tone="warning",
+        )
         for invoice in metrics["recent_stalled_invoices"]
     ]
     inspection_sections.append(
-        {
-            "title": _("链上确认巡检"),
-            "subtitle": _("已观察到付款但长时间未满足确认数的账单收款"),
-            "count": len(stalled_invoice_rows),
-            "rows": stalled_invoice_rows,
-            "empty_text": _("当前没有长时间待链上确认的账单收款"),
-        }
+        _inspection_section(
+            title=_("链上确认巡检"),
+            subtitle=_("已观察到付款但长时间未满足确认数的账单收款"),
+            rows=stalled_invoice_rows,
+            empty_text=_("当前没有长时间待链上确认的账单收款"),
+            tone="warning",
+        )
     )
     attention_items.extend(stalled_invoice_rows)
 
     stalled_webhook_rows = [
-        {
-            "level": _("高"),
-            "title": _("Webhook 长时间未送达"),
-            "description": _("%(project)s / %(nonce)s / 创建于 %(time)s")
+        _inspection_row(
+            level=_("高"),
+            title=_("Webhook 长时间未送达"),
+            description=_("%(project)s / %(nonce)s / 创建于 %(time)s")
             % {
                 "project": event.project.name,
                 "nonce": event.nonce,
                 "time": event.created_at.strftime("%m-%d %H:%M"),
             },
-            "href": reverse("admin:webhooks_webhookevent_change", args=[event.pk]),
-        }
+            href=reverse("admin:webhooks_webhookevent_change", args=[event.pk]),
+            tone="danger",
+        )
         for event in metrics["recent_stalled_webhook_events"]
     ]
     inspection_sections.append(
-        {
-            "title": _("Webhook 堆积巡检"),
-            "subtitle": _("创建后长时间未送达的事件"),
-            "count": len(stalled_webhook_rows),
-            "rows": stalled_webhook_rows,
-            "empty_text": _("当前没有堆积中的 Webhook 事件"),
-        }
+        _inspection_section(
+            title=_("Webhook 堆积巡检"),
+            subtitle=_("创建后长时间未送达的事件"),
+            rows=stalled_webhook_rows,
+            empty_text=_("当前没有堆积中的 Webhook 事件"),
+            tone="danger",
+        )
     )
     attention_items.extend(stalled_webhook_rows)
 
@@ -286,48 +386,58 @@ def _build_operational_inspection_summary_cards(snapshot, resource_risk_summary)
     # 改动原因：独立巡检页需要先给出风险摘要，用户不必逐段滚动才能判断当前是否有异常。
     admin_path_configured = settings.ADMIN_PATH_CONFIGURED
     return [
-        {
-            "title": _("后台安全"),
-            "metric": 0 if admin_path_configured else 1,
-            "subtitle": _("ADMIN_PATH 已配置")
+        _summary_card(
+            title=_("后台安全"),
+            metric=0 if admin_path_configured else 1,
+            subtitle=_("ADMIN_PATH 已配置")
             if admin_path_configured
             else _("ADMIN_PATH 未设置"),
-            "tone": "bg-emerald-50" if admin_path_configured else "bg-rose-50",
-        },
-        {
-            "title": _("EVM Gas 风险"),
-            "metric": resource_risk_summary["evm_low_native_balance_count"],
-            "subtitle": _("Gas 余额不足 sender %(count)s 个")
+            tone="warning",
+            active_count=0 if admin_path_configured else 1,
+            background="bg-emerald-50" if admin_path_configured else "bg-orange-50",
+        ),
+        _summary_card(
+            title=_("EVM Gas 风险"),
+            metric=resource_risk_summary["evm_low_native_balance_count"],
+            subtitle=_("Gas 余额不足 sender %(count)s 个")
             % {"count": resource_risk_summary["evm_low_native_balance_count"]},
-            "tone": "bg-rose-50",
-        },
-        {
-            "title": _("Tron 资源风险"),
-            "metric": resource_risk_summary["tron_low_resource_count"],
-            "subtitle": _("Energy / Bandwidth 不足 sender %(count)s 个")
+            tone="danger",
+            active_count=resource_risk_summary["evm_low_native_balance_count"],
+            background="bg-rose-50",
+        ),
+        _summary_card(
+            title=_("Tron 资源风险"),
+            metric=resource_risk_summary["tron_low_resource_count"],
+            subtitle=_("Energy / Bandwidth 不足 sender %(count)s 个")
             % {"count": resource_risk_summary["tron_low_resource_count"]},
-            "tone": "bg-orange-50",
-        },
-        {
-            "title": _("链上确认风险"),
-            "metric": snapshot["confirming_count"],
-            "subtitle": _("待链上确认 %(count)s 笔，临近超时 %(soon)s 笔")
+            tone="danger",
+            active_count=resource_risk_summary["tron_low_resource_count"],
+            background="bg-orange-50",
+        ),
+        _summary_card(
+            title=_("链上确认风险"),
+            metric=snapshot["confirming_count"],
+            subtitle=_("待链上确认 %(count)s 笔，临近超时 %(soon)s 笔")
             % {
                 "count": snapshot["confirming_count"],
                 "soon": snapshot["expiring_soon_count"],
             },
-            "tone": "bg-amber-50",
-        },
-        {
-            "title": _("Webhook 巡检"),
-            "metric": snapshot["stalled_webhook_event_count"],
-            "subtitle": _("待投递 %(pending)s 条，失败事件 %(failed)s 条")
+            tone="warning",
+            active_count=snapshot["confirming_count"],
+            background="bg-amber-50",
+        ),
+        _summary_card(
+            title=_("Webhook 巡检"),
+            metric=snapshot["stalled_webhook_event_count"],
+            subtitle=_("待投递 %(pending)s 条，失败事件 %(failed)s 条")
             % {
                 "pending": snapshot["pending_events_count"],
                 "failed": snapshot["failed_events_count"],
             },
-            "tone": "bg-sky-50",
-        },
+            tone="danger",
+            active_count=snapshot["stalled_webhook_event_count"],
+            background="bg-sky-50",
+        ),
     ]
 
 
