@@ -22,11 +22,7 @@ class CryptoAdmin(ModelAdmin):
     inlines = (CryptoOnChainInline,)
 
     def get_queryset(self, request):
-        return (
-            super()
-            .get_queryset(request)
-            .prefetch_related("crypto_on_chains__chain")
-        )
+        return super().get_queryset(request).prefetch_related("crypto_on_chains__chain")
 
     def get_readonly_fields(self, request, obj=None):
         if obj:
@@ -41,6 +37,7 @@ class CryptoAdmin(ModelAdmin):
         "active",
     )
     list_filter = ("active", "is_native")
+    readonly_fields = ("is_native",)
 
     @display(
         description="类型",
