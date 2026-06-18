@@ -42,9 +42,10 @@ clean:
 
 # ===== 链上部署 / 验证 =====
 # 用法： make deploy <chainid>     make verify <chainid>
-#   chainid: 1 = Ethereum    56 = BSC    11155111 = Sepolia
+#   chainid: 见 xcash/chains/constants.py 中的 EVM 链
 # 凭据从 .env 自动读取（.env 已 gitignore，切勿提交）：
 #   PRIVATE_KEY=0x...        部署私钥
+#   RPC_URL=https://...      可选；未设置时从 Chainlist 自动选择无密钥公共 RPC
 #   ETHERSCAN_API_KEY=...    源码验证 key（Etherscan V2 单 key 全链通用）
 # deploy / verify 均一次处理实现合约 + 工厂两个合约。
 
@@ -54,11 +55,9 @@ CHAIN := $(word 2,$(MAKECMDGOALS))
 %:
 	@:
 
-# 各链公共 RPC（取自 chainlist，无需 key）
-RPC_1        := https://ethereum-rpc.publicnode.com
-RPC_56       := https://bsc-rpc.publicnode.com
-RPC_11155111 := https://ethereum-sepolia-rpc.publicnode.com
-RPC          := $(RPC_$(CHAIN))
+# 从 xcash/chains/constants.py 静态解析 ChainType.EVM 的 chain_id，避免部署工具链清单漂移。
+# Anvil 没有公共 RPC，部署时固定使用本地节点；其余链运行时从 Chainlist 获取。
+EVM_CHAIN_IDS := $(shell python3 scripts/evm_chain_ids.py)
 
 # BSC 走 legacy gas，规避 EIP-1559 估价异常
 EXTRA_56 := --legacy
@@ -71,15 +70,29 @@ IMPL_ADDR    := $(shell grep -oE 'EXPECTED_IMPLEMENTATION = 0x[0-9a-fA-F]{40}' s
 FACTORY_ADDR := $(shell grep -oE 'EXPECTED_FACTORY = 0x[0-9a-fA-F]{40}' scripts/DeployXcashVaultSlot.s.sol | grep -oE '0x[0-9a-fA-F]{40}')
 
 deploy: deps
-	@test -n "$(RPC)" || { echo "用法: make deploy <chainid>（支持 1 / 56 / 11155111）"; exit 1; }
+	@test -n "$(filter $(CHAIN),$(EVM_CHAIN_IDS))" || { echo "用法: make deploy <chainid>（支持 $(EVM_CHAIN_IDS)）"; exit 1; }
 	@set -a; . ./.env; set +a; test -n "$$PRIVATE_KEY" || { echo "❌ .env 缺少 PRIVATE_KEY"; exit 1; }; \
-		echo "▶ 部署到 chain $(CHAIN)  RPC=$(RPC)"; \
-		$(FORGE) script scripts/DeployXcashVaultSlot.s.sol --tc DeployXcashVaultSlot --rpc-url $(RPC) --private-key "$$PRIVATE_KEY" --broadcast $(EXTRA) -vvv
+		rpc="$$RPC_URL"; rpc_source=".env RPC_URL"; \
+		if test -z "$$rpc"; then \
+			if test "$(CHAIN)" = "31337"; then rpc="http://127.0.0.1:8545"; rpc_source="Anvil 本地节点"; \
+			else rpc="$$(python3 scripts/chainlist_rpc.py "$(CHAIN)")" || exit 1; rpc_source="Chainlist"; fi; \
+		fi; \
+		actual_chain="$$(cast chain-id --rpc-url "$$rpc" 2>/dev/null || true)"; \
+		test "$$actual_chain" = "$(CHAIN)" || { echo "❌ RPC chain id 校验失败：期望 $(CHAIN)，实际 $${actual_chain:-无法读取}"; exit 1; }; \
+		echo "▶ 部署到 chain $(CHAIN)（RPC 来源：$$rpc_source）"; \
+		$(FORGE) script scripts/DeployXcashVaultSlot.s.sol --tc DeployXcashVaultSlot --rpc-url "$$rpc" --private-key "$$PRIVATE_KEY" --broadcast $(EXTRA) -vvv
 
 verify: deps
-	@test -n "$(RPC)" || { echo "用法: make verify <chainid>（支持 1 / 56 / 11155111）"; exit 1; }
+	@test -n "$(filter $(CHAIN),$(EVM_CHAIN_IDS))" || { echo "用法: make verify <chainid>（支持 $(EVM_CHAIN_IDS)）"; exit 1; }
 	@test -n "$(IMPL_ADDR)" -a -n "$(FACTORY_ADDR)" || { echo "❌ 无法从 scripts/DeployXcashVaultSlot.s.sol 解析 EXPECTED_* 地址"; exit 1; }
 	@set -a; . ./.env; set +a; test -n "$$ETHERSCAN_API_KEY" || { echo "❌ .env 缺少 ETHERSCAN_API_KEY"; exit 1; }; \
+		rpc="$$RPC_URL"; rpc_source=".env RPC_URL"; \
+		if test -z "$$rpc"; then \
+			if test "$(CHAIN)" = "31337"; then rpc="http://127.0.0.1:8545"; rpc_source="Anvil 本地节点"; \
+			else rpc="$$(python3 scripts/chainlist_rpc.py "$(CHAIN)")" || exit 1; rpc_source="Chainlist"; fi; \
+		fi; \
+		actual_chain="$$(cast chain-id --rpc-url "$$rpc" 2>/dev/null || true)"; \
+		test "$$actual_chain" = "$(CHAIN)" || { echo "❌ RPC chain id 校验失败：期望 $(CHAIN)，实际 $${actual_chain:-无法读取}"; exit 1; }; \
 		echo "▶ 验证 chain $(CHAIN)：impl=$(IMPL_ADDR)  factory=$(FACTORY_ADDR)"; \
 		$(FORGE) verify-contract $(IMPL_ADDR) src/XcashVaultSlot.sol:XcashVaultSlot --chain $(CHAIN) --etherscan-api-key "$$ETHERSCAN_API_KEY" --watch; \
 		$(FORGE) verify-contract $(FACTORY_ADDR) src/XcashVaultSlotFactory.sol:XcashVaultSlotFactory --chain $(CHAIN) --etherscan-api-key "$$ETHERSCAN_API_KEY" --constructor-args $$(cast abi-encode "constructor(address)" $(IMPL_ADDR)) --watch
