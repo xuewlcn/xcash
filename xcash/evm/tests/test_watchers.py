@@ -288,6 +288,40 @@ class CrossChainDepositSlotTests(TestCase):
             1,
         )
 
+    def test_mainnet_deposit_is_not_materialized_on_testnet(self):
+        # 主网/测试网隔离：生产项目（is_test=False）的充值地址不得被补建到测试网，
+        # 否则测试币会进入生产 Deposit/回调记账。
+        sepolia = make_evm_chain(code=ChainCode.Sepolia, rpc="http://sepolia.local")
+
+        owned = load_owned_addresses_for_candidates(
+            chain=sepolia,
+            addresses={self.deposit_address},
+        )
+
+        self.assertEqual(owned, frozenset())
+        self.assertFalse(VaultSlot.objects.filter(chain=sepolia).exists())
+
+    def test_existing_target_slot_with_different_address_not_owned(self):
+        # 该客户在本链已有「地址不同」的历史槽位（基础合约地址曾轮换）：候选地址在本链并无
+        # 对应 VaultSlot，不能标记 owned，否则 scanner 造出无法匹配 Deposit 的 Unmatched。
+        rotated_address = Web3.to_checksum_address("0x" + "33" * 20)
+        VaultSlot.objects.create(
+            customer=self.customer,
+            usage=VaultSlotUsage.DEPOSIT,
+            chain=self.bsc,
+            address=rotated_address,
+            salt=b"\x07" * 32,
+        )
+
+        owned = load_owned_addresses_for_candidates(
+            chain=self.bsc,
+            addresses={self.deposit_address},
+        )
+
+        self.assertEqual(owned, frozenset())
+        slot = VaultSlot.objects.get(chain=self.bsc, customer=self.customer)
+        self.assertEqual(slot.address, rotated_address)
+
     def test_recompute_mismatch_is_rejected(self):
         # 源行地址与 (vault, salt) 不自洽：本链复算结果不等于该地址，拒绝补建，
         # 避免把无法在本链部署归集的地址记成充值。

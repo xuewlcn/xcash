@@ -105,6 +105,7 @@ def ensure_cross_chain_deposit_slots(
         VaultSlot.objects.filter(
             usage=VaultSlotUsage.DEPOSIT,
             chain__type=chain.type,
+            project__is_test=chain.is_testnet,
             address__in=candidates,
         )
         .exclude(chain=chain)
@@ -144,15 +145,28 @@ def materialize_deposit_slot_on_chain(*, chain: Chain, source: VaultSlot) -> boo
         return False
 
     # get_or_create 受 (customer, chain) / (chain, address) 唯一约束保护，重放窗口或
-    # 多 worker 并发补建同一槽位时由唯一约束收口，IntegrityError 被 get_or_create 吞掉后
-    # 回退为 get，幂等安全。不在此触发部署：ERC20 充值的部署延迟到归集前置闸门按需进行。
-    VaultSlot.objects.get_or_create(
+    # 多 worker 并发补建同一槽位时由唯一约束收口，幂等安全。不在此触发部署：ERC20
+    # 充值的部署延迟到归集前置闸门按需进行。
+    slot, _ = VaultSlot.objects.get_or_create(
         chain=chain,
         project=source.project,
         usage=VaultSlotUsage.DEPOSIT,
         customer=source.customer,
         defaults={"address": source.address, "salt": salt},
     )
+    # 该客户在本链可能已有「地址不同」的历史槽位（基础合约地址曾轮换）。get_or_create 按
+    # (chain, project, usage, customer) 命中旧行而非候选地址，此时候选地址在本链并无对应
+    # VaultSlot——若仍标记 owned，scanner 会造出无法匹配 Deposit 的 Unmatched Transfer。
+    # 故仅当落地行地址与候选完全一致才认定 owned。
+    if slot.address != source.address:
+        logger.warning(
+            "本链已存在该客户的充值槽位但地址不一致，跨链候选不补建",
+            chain=chain.code,
+            customer_id=source.customer_id,
+            candidate_address=source.address,
+            existing_address=slot.address,
+        )
+        return False
     return True
 
 
