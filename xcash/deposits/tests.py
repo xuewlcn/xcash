@@ -488,6 +488,17 @@ def create_tron_deposit_context(*, native=False):
     )
 
 
+class DepositPublicRouteSurfaceTests(SimpleTestCase):
+    def test_deposit_router_does_not_expose_record_query_actions(self):
+        from config.api_v1 import router
+
+        route_names = {url.name for url in router.urls if url.name}
+
+        self.assertIn("deposit-address", route_names)
+        self.assertNotIn("deposit-list", route_names)
+        self.assertNotIn("deposit-detail", route_names)
+
+
 class DepositAddressTestnetGateTests(TestCase):
     """充币地址门控：项目 is_test 与链 is_testnet 必须一致，否则拒绝。"""
 
@@ -523,15 +534,89 @@ class DepositAddressTestnetGateTests(TestCase):
         self.assertEqual(response.data["code"], ErrorCode.INVALID_CHAIN.code)
 
 
+class DepositAddressValidationTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.header_key = "HTTP_" + APPID_HEADER.upper().replace("-", "_")
+
+    def call_address(self, *, project, chain, crypto):
+        from rest_framework.permissions import AllowAny
+
+        from deposits.viewsets import DepositViewSet
+
+        request = self.factory.get(
+            "/deposit/address",
+            {"uid": "deposit-user", "chain": chain.code, "crypto": crypto.symbol},
+            **{self.header_key: project.appid},
+        )
+        with (
+            patch.object(DepositViewSet, "permission_classes", [AllowAny]),
+            patch("deposits.viewsets.check_saas_permission", return_value=None),
+        ):
+            return DepositViewSet.as_view({"get": "address"})(request)
+
+    def test_address_rejects_inactive_crypto_on_chain(self):
+        project = Project.objects.create(
+            name="Inactive Mapping Deposit Project",
+            evm_vault=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000a01"
+            ),
+        )
+        chain = make_evm_chain(code=ChainCode.Ethereum)
+        crypto = Crypto.objects.create(
+            name="Inactive Mapping Token",
+            symbol="IMT",
+            coingecko_id="inactive-mapping-token",
+        )
+        CryptoOnChain.objects.create(
+            crypto=crypto,
+            chain=chain,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000e21"
+            ),
+            decimals=6,
+            active=False,
+        )
+
+        with patch(
+            "deposits.viewsets.VaultSlot.ensure_deposit_address"
+        ) as ensure_address:
+            response = self.call_address(project=project, chain=chain, crypto=crypto)
+
+        self.assertEqual(response.status_code, ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT.status)
+        self.assertEqual(response.data["code"], ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT.code)
+        ensure_address.assert_not_called()
+
+    def test_address_returns_4001_when_vault_not_configured(self):
+        project = Project.objects.create(name="Missing Vault Deposit Project")
+        chain = make_evm_chain(code=ChainCode.Ethereum)
+        crypto = chain.native_coin
+
+        response = self.call_address(project=project, chain=chain, crypto=crypto)
+
+        self.assertEqual(response.status_code, ErrorCode.RECIPIENT_NOT_CONFIGURED.status)
+        self.assertEqual(response.data["code"], ErrorCode.RECIPIENT_NOT_CONFIGURED.code)
+
+
 @override_settings(IS_SAAS=True)
 class DepositCustomerLimitTests(TestCase):
     def setUp(self):
         from common.permission_check import _cache_key
 
         self.cache_key = _cache_key
-        self.project = Project.objects.create(name="Deposit Customer Limit")
+        self.project = Project.objects.create(
+            name="Deposit Customer Limit",
+            evm_vault=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000c01"
+            ),
+        )
         self.chain = make_evm_chain(code=ChainCode.Ethereum)
         self.crypto = self.chain.native_coin
+        CryptoOnChain.objects.update_or_create(
+            crypto=self.crypto,
+            chain=self.chain,
+            defaults={"address": "", "decimals": 18, "active": True},
+        )
         self.factory = APIRequestFactory()
         self.header_key = "HTTP_" + APPID_HEADER.upper().replace("-", "_")
 
@@ -575,7 +660,7 @@ class DepositCustomerLimitTests(TestCase):
 
         response = self.call_address("new-user")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.data)
         self.assertTrue(Customer.objects.filter(project=self.project, uid="new-user").exists())
 
     def test_rejects_new_customer_at_limit(self):
@@ -584,7 +669,11 @@ class DepositCustomerLimitTests(TestCase):
 
         response = self.call_address("new-user")
 
-        self.assertEqual(response.status_code, ErrorCode.DEPOSIT_CUSTOMER_LIMIT_REACHED.status)
+        self.assertEqual(
+            response.status_code,
+            ErrorCode.DEPOSIT_CUSTOMER_LIMIT_REACHED.status,
+            response.data,
+        )
         self.assertEqual(response.data["code"], ErrorCode.DEPOSIT_CUSTOMER_LIMIT_REACHED.code)
 
     def test_allows_existing_customer_at_limit(self):
@@ -593,7 +682,7 @@ class DepositCustomerLimitTests(TestCase):
 
         response = self.call_address("existing")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.data)
 
     def test_missing_limit_key_means_unlimited(self):
         Customer.objects.create(project=self.project, uid="existing")
@@ -601,5 +690,5 @@ class DepositCustomerLimitTests(TestCase):
 
         response = self.call_address("new-user")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.data)
         self.assertTrue(Customer.objects.filter(project=self.project, uid="new-user").exists())

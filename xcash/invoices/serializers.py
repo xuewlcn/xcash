@@ -7,6 +7,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from rest_framework.serializers import Serializer
 
+from chains.capabilities import ChainProductCapabilityService
 from chains.serializers import TransferSerializer
 from chains.service import ChainService
 from common.consts import APPID_HEADER
@@ -57,7 +58,10 @@ class InvoiceSetCryptoChainSerializer(Serializer):
             crypto = CryptoService.get_by_symbol(attrs["crypto"])
         except ObjectDoesNotExist:
             return False
-        return crypto.support_this_chain(chain)
+        return ChainProductCapabilityService.supports_existing_invoice_method(
+            chain=chain,
+            crypto=crypto,
+        )
 
 
 class InvoiceCreateSerializer(Serializer):

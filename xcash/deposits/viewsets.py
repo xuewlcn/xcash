@@ -96,11 +96,21 @@ class DepositViewSet(viewsets.GenericViewSet):
                 ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT,
                 detail=f"{crypto_symbol} 不支持 {chain_code} 链",
             )
+        if not ChainProductCapabilityService.has_active_crypto_on_chain(
+            chain=chain,
+            crypto=crypto,
+        ):
+            raise APIError(
+                ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT,
+                detail=f"{crypto_symbol} 未在 {chain_code} 链启用",
+            )
         if not ChainProductCapabilityService.supports_deposit_address(
             chain=chain,
             crypto=crypto,
         ):
             raise APIError(ErrorCode.INVALID_CHAIN)
+        if not project.vault_address_for_chain_type(chain.type):
+            raise APIError(ErrorCode.RECIPIENT_NOT_CONFIGURED)
         customer_exists = Customer.objects.filter(project=project, uid=uid).exists()
         if not customer_exists:
             customer_limit = get_saas_deposit_customer_limit(appid=appid)

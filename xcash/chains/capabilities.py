@@ -9,9 +9,21 @@ class ChainProductCapabilityService:
     INVOICE_RECIPIENT_CHAIN_TYPES = frozenset({ChainType.EVM, ChainType.TRON})
     DEPOSIT_CHAIN_TYPES = frozenset({ChainType.EVM})
 
+    @staticmethod
+    def has_active_crypto_on_chain(*, chain, crypto) -> bool:
+        """币、链关系启用才允许进入真实收款入口。
+
+        Crypto.active 与 Chain.active 只能表达全局开关；CryptoOnChain.active 才是某个
+        「币×链」组合能否被扫描器处理的开关。公开收款入口必须和扫描器使用同一条件，
+        否则会返回一个系统不会入账的充值/支付指引。
+        """
+        return crypto.crypto_on_chains.filter(chain=chain, active=True).exists()
+
     @classmethod
     def supports_existing_invoice_method(cls, *, chain, crypto) -> bool:
         """判断已存在 CryptoOnChain 关系的链币组合是否可用于 Invoice。"""
+        if not cls.has_active_crypto_on_chain(chain=chain, crypto=crypto):
+            return False
         if chain.type not in cls.INVOICE_RECIPIENT_CHAIN_TYPES:
             return False
         # 支付按法币计价，必须有价格来源；无价格源的币（如未上 CoinGecko 的自定义代币）
@@ -27,7 +39,7 @@ class ChainProductCapabilityService:
 
     @classmethod
     def supports_deposit_address(cls, *, chain, crypto) -> bool:
-        if not crypto.support_this_chain(chain):
+        if not cls.has_active_crypto_on_chain(chain=chain, crypto=crypto):
             return False
         if chain.type in cls.DEPOSIT_CHAIN_TYPES:
             return True

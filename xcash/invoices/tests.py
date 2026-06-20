@@ -198,6 +198,24 @@ class InvoicePaymentSelectionTests(TestCase):
             datetime=now,
         )
 
+    def test_select_method_response_uses_public_fields(self):
+        invoice = self.create_invoice(out_no="select-public-fields")
+
+        response = InvoiceViewSet.as_view({"post": "select_method"})(
+            APIRequestFactory().post(
+                f"/v1/invoice/{invoice.sys_no}/select-method",
+                {"crypto": self.crypto.symbol, "chain": self.chain_a.code},
+                format="json",
+            ),
+            sys_no=invoice.sys_no,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sys_no"], invoice.sys_no)
+        self.assertNotIn("appid", response.data)
+        self.assertNotIn("out_no", response.data)
+        self.assertNotIn("notify_url", response.data)
+
     def enable_differ_mode(self, *, address_suffix: str = "d01") -> str:
         self.project.evm_invoice_receiving_mode = InvoiceReceivingMode.Differ
         self.project.tron_invoice_receiving_mode = InvoiceReceivingMode.Differ
@@ -1579,7 +1597,7 @@ class InvoiceCreatePermissionCheckTests(TestCase):
             patch("invoices.viewsets.CryptoService.get_by_symbol", return_value=crypto),
             patch("invoices.viewsets.ChainService.get_by_code", return_value=chain),
             patch(
-                "invoices.viewsets.InvoiceDisplaySerializer",
+                "invoices.viewsets.InvoicePublicSerializer",
                 return_value=Mock(data={}),
             ),
             patch("invoices.viewsets.cache") as cache_mock,

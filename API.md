@@ -41,6 +41,11 @@
 | Linea | `linea` | EVM | `ETH` | `59144` |
 | Scroll | `scroll` | EVM | `ETH` | `534352` |
 | Tron | `tron` | Tron | `TRX` | - |
+| Sepolia | `sepolia` | EVM 测试网 | `ETH` | `11155111` |
+| Nile | `nile` | Tron 测试网 | `TRX` | - |
+| Anvil Local | `anvil` | EVM 本地测试链 | `ETH` | `31337` |
+
+测试项目只能使用测试网或本地测试链（如 `sepolia`、`nile`、`anvil`），非测试项目只能使用主网链。
 
 ### Crypto Symbol
 
@@ -59,7 +64,7 @@
 | `appid` | 项目唯一标识，例如 `XC-A3BK7NMG` |
 | `hmac_key` | 项目 HMAC 签名密钥 |
 
-项目至少需要配置 `IP 白名单` 和 `通知地址` 才能通过公开 API 的项目就绪检查。
+项目至少需要配置 `IP 白名单`、`通知地址`，并具备可用收款地址配置（钱包直收地址或对应链类型的智能合约归集地址），才能通过公开 API 的项目就绪检查。若项目把某链的账单收款模式设为智能合约，则必须配置该链类型的归集地址。
 
 ### 请求头
 
@@ -146,15 +151,23 @@ const signature = crypto
 
 ## 响应格式
 
-成功时直接返回业务 JSON。创建类接口通常返回 HTTP `201`，查询和选择类接口返回 HTTP `200`。
+成功时直接返回业务 JSON。创建类接口通常返回 HTTP `201`，查询类接口返回 HTTP `200`。
 
-错误响应：
+业务错误响应：
 
 ```json
 {
   "code": "1001",
   "message": "AppID无效",
   "detail": ""
+}
+```
+
+框架级错误（例如不存在的资源 `404`、请求方法错误 `405`、限流 `429`）可能返回 DRF 默认格式：
+
+```json
+{
+  "detail": "Not found."
 }
 ```
 
@@ -181,27 +194,29 @@ const signature = crypto
 | `title` | string | 是 | 账单收款标题，最长 32 位 |
 | `currency` | string | 是 | 计价法币代码（如 `USD`、`CNY`），必须是系统支持的法币；收款加密货币由 `methods` 指定 |
 | `amount` | string | 是 | 计价金额，范围 `0.00000001` 到 `1000000` |
-| `duration` | integer | 否 | 有效期分钟数，范围 `10` 到 `30`，默认 `10` |
+| `duration` | integer | 否 | 有效期分钟数，范围 `5` 到 `30`，默认 `10` |
 | `methods` | object | 否 | 限定账单收款方式，格式 `{"币种": ["链码"]}` |
 | `notify_url` | string | 否 | 账单收款级 Webhook 地址，优先于项目默认通知地址 |
 | `return_url` | string | 否 | 账单收款完成后的同步跳转地址 |
 
 ### methods 生成规则
 
-`methods` 是最终可账单收款组合的收敛条件：
+`methods` 是项目级可收款能力的收敛条件：
 
-- 不传 `methods`：系统按项目配置生成全部可用组合。
+- 不传 `methods`：系统按项目配置生成当前项目可用的链币组合。
 - 传入 `methods`：必须是系统生成组合的子集，否则返回无可用账单收款方式。
-- `currency` 仅决定 `amount` 的计价单位（法币），与买家实际支付的加密货币解耦——后者完全由 `methods` 决定。若想固定收某种稳定币（如 `USDT`），用 `currency: "USD"` 计价并在 `methods` 中限定 `USDT` 即可（稳定币对 USD 按 1:1 锚定）。
+- `currency` 仅决定 `amount` 的计价单位（法币），与买家实际支付的加密货币解耦——后者由 `methods` 限定。
+- 买家最终应支付的链、币、地址与数量以账单页/查询接口返回的 `chain`、`crypto`、`pay_address`、`pay_amount` 为准；不要自行按 `amount` 推导链上付款数量。
 - `crypto` symbol 使用大写，`chain` code 使用上方表格中的小写 code。
 
-### 智能合约收款
+### 收款模式与链支持
 
-- 只支持 EVM 链。
-- 项目必须先配置“收款归集地址”，且该地址必须是符合系统校验规则的 EVM 多签地址。
-- 买家在账单收款页选定链和币种后，系统为账单收款分配智能合约收款地址；买家向该地址付款。
-- 账单收款确认后，系统会调度智能合约归集，业务资金最终流入项目配置的收款归集地址。
-- 系统钱包需要在对应 EVM 链上保留少量 Gas，用于智能合约部署和归集交易广播。
+- 账单收款按链类型支持两种模式：钱包直收（Differ）和智能合约收款（VaultSlot）。
+- 钱包直收模式下，系统使用项目配置的钱包直收地址，并可能通过微调 `pay_amount` 区分同地址上的不同账单。
+- 智能合约收款模式下，系统为账单分配 VaultSlot 地址；确认后会调度归集，资金最终流入项目配置的对应链类型归集地址。
+- EVM 与 Tron 均可用于账单收款；实际可用链币组合取决于后台启用状态、链上币种关系、项目收款模式和归集地址配置。
+- EVM 归集地址必须是 checksum 地址，Tron 归集地址必须是 Base58 地址。
+- 使用智能合约收款时，系统钱包需要在对应链保留少量 Gas / Energy，用于合约部署和归集交易广播。
 
 ### 请求示例
 
@@ -221,7 +236,7 @@ const signature = crypto
 }
 ```
 
-固定只收某种稳定币示例（USD 计价 + `methods` 限定 USDT，稳定币 1:1 锚定 USD，等价于「精确收 100 USDT」）：
+限定只允许买家使用某种稳定币示例（USD 计价 + `methods` 限定 USDT）。最终链上付款数量仍以返回的 `pay_amount` 为准：
 
 ```json
 {
@@ -248,7 +263,7 @@ const signature = crypto
   "currency": "USD",
   "amount": "29.99",
   "methods": {
-    "USDT": ["ethereum", "tron"],
+    "USDT": ["ethereum"],
     "USDC": ["base"]
   },
   "chain": null,
@@ -296,12 +311,13 @@ const signature = crypto
 | `pay_address` | string \| null | 账单收款地址 |
 | `pay_amount` | string \| null | 买家应付加密货币数量 |
 | `pay_url` | string | 账单收款页地址 |
-| `started_at` | string \| null | 账单收款方式分配时间 |
+| `started_at` | string | 账单创建时间；买家切换支付方式后会更新为当前支付指引分配时间 |
 | `created_at` | string | 创建时间 |
 | `expires_at` | string | 过期时间 |
 | `return_url` | string \| null | 同步跳转地址 |
 | `payment` | object \| null | 匹配到的链上转账 |
-| `status` | string | `waiting` / `confirming` / `completed` / `expired` |
+| `payment_uri` | string \| null | EVM 链可用的 EIP-681 支付 URI；非 EVM 或无法精确编码金额时为空 |
+| `status` | string | `waiting` / `completed` / `expired` |
 | `risk_level` | string \| null | 风险等级 |
 | `risk_score` | string \| null | 风险分数 |
 
@@ -318,7 +334,7 @@ const signature = crypto
 | `amount` | string | 链上到账金额 |
 | `datetime` | string | 交易时间 |
 | `status` | string | 转账状态 |
-| `confirm_progress` | string | 确认进度 |
+| `confirm_progress` | object | 确认进度，包含 `has_confirmed_count`、`need_confirmed_count`、`progress` |
 
 ### 限流
 
@@ -328,14 +344,14 @@ const signature = crypto
 
 `GET /v1/deposit/address`
 
-需要 HMAC 签名。为项目下的终端客户获取 EVM 充值收款地址。同一项目、同一 `uid`、同一链会稳定返回同一个智能合约收款地址。
+需要 HMAC 签名。为项目下的终端客户获取充值收款地址。同一项目、同一 `uid`、同一链会稳定返回同一个智能合约收款地址。
 
 ### 查询参数
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `uid` | string | 是 | 终端客户标识，1 到 128 位，只允许字母、数字、下划线和中划线 |
-| `chain` | string | 是 | EVM 链 code，如 `ethereum`、`base` |
+| `chain` | string | 是 | 链 code，如 `ethereum`、`base`、`tron` |
 | `crypto` | string | 是 | 币种 symbol，如 `USDT` |
 
 请求示例：
@@ -356,8 +372,8 @@ GET 请求签名时 `request_body` 为空字符串。
 
 注意事项：
 
-- 当前充值收款地址接口只面向 EVM 链开放。
-- 请求的链和币种必须已启用，且币种必须支持该链。
+- 当前充值收款地址接口支持 EVM 与 Tron；Tron 当前开放 USDT 与原生 TRX。
+- 请求的链、币种和链上币种关系必须均已启用，且项目的测试/主网属性必须与链匹配。
 - 充值收款确认后，系统会调度智能合约归集；系统钱包需要在对应链保留少量 Gas。
 
 ### 限流
@@ -403,13 +419,11 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 - EPay V1 通知成功响应：HTTP `200`，响应体去除首尾空白后等于 `success`。
 - 单次 HTTP 请求超时为 5 秒。
 - 只有网络错误或 5xx 会按指数退避重试；2xx 非 200、3xx、4xx 不重试。
+- 项目通知开关必须开启；即使账单或 EPay 订单传入了独立 `notify_url`，项目通知开关关闭时也不会投递。
 
 ### 账单收款 Webhook
 
-触发逻辑：
-
-- `confirmed=false`：账单收款匹配到链上付款、进入 `confirming`，且项目开启预通知，并且该笔账单收款需要完整区块确认。
-- `confirmed=true`：账单收款进入 `completed`。
+触发逻辑：账单收款进入 `completed` 后发送一次通知，`confirmed=true`。
 
 示例：
 
@@ -434,10 +448,9 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 
 ### 充值收款 Webhook
 
-触发逻辑：
+触发逻辑：充值收款对应链上转账达到确认要求后发送一次通知，`confirmed=true`。
 
-- `confirmed=false`：检测到充值收款并创建记录后，若项目开启预通知，会发送一次预通知。
-- `confirmed=true`：充值收款对应链上转账达到确认要求。
+`risk_level` 与 `risk_score` 是发送通知时的风险快照；AML 任务异步执行时，这两个字段可能暂时为 `null`，不要把首次 Webhook 视为最终风控报告。
 
 示例：
 
@@ -465,7 +478,7 @@ Xcash 提供易支付 V1 兼容入口，适配常见 Typecho、WordPress、Discu
 
 ### 商户身份
 
-每个项目会自动分配 EPay 商户身份：
+通过 Xcash SaaS 创建的项目会自动分配 EPay 商户身份；自托管或后台手工创建的项目请在管理后台确认 EPay 配置已存在并启用：
 
 | 字段 | 说明 |
 |------|------|
@@ -479,12 +492,12 @@ Xcash 提供易支付 V1 兼容入口，适配常见 Typecho、WordPress、Discu
 
 `GET /epay/submit.php` 或 `POST /epay/submit.php`
 
-EPay 入口不使用 Xcash HMAC 头，使用 EPay 自有 MD5 签名。
+EPay 入口不使用 Xcash HMAC 头，使用 EPay 自有 MD5 签名。`POST` 请求请使用 `application/x-www-form-urlencoded` 或 `multipart/form-data` 表单编码；不要发送 JSON。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `pid` | integer | 是 | EPay 商户 ID |
-| `type` | string | 否 | EPay 支付方式标识，最长 32 位 |
+| `type` | string | 否 | EPay 兼容字段，最长 32 位；Xcash 不会用该字段限定链或币种，只在通知中原样回传 |
 | `out_trade_no` | string | 是 | 商户订单号，最长 64 位，同一 EPay 商户下唯一 |
 | `notify_url` | string | 是 | EPay 异步通知地址 |
 | `return_url` | string | 否 | 同步跳转地址 |
@@ -495,7 +508,7 @@ EPay 入口不使用 Xcash HMAC 头，使用 EPay 自有 MD5 签名。
 | `sign` | string | 是 | MD5 签名 |
 | `sign_type` | string | 是 | 固定 `MD5` |
 
-EPay 订单按项目账单收款模式创建，有效期 15 分钟。
+EPay 订单按项目账单收款模式创建，有效期 15 分钟。相同 `out_trade_no` 且订单元数据完全一致时，重复提交会返回同一笔账单；若元数据不一致则失败。
 
 ### EPay 签名
 
@@ -538,6 +551,7 @@ params["sign"] = hashlib.md5(
 
 - 成功：HTTP `302`，重定向到 Xcash 账单收款页 `/pay/{sys_no}`。
 - 失败：HTTP `400`，纯文本 `fail`。
+- 触发限流时可能返回 HTTP `429`。
 
 ### EPay 异步通知
 
@@ -548,7 +562,7 @@ params["sign"] = hashlib.md5(
 | `pid` | EPay 商户 ID |
 | `trade_no` | Xcash 系统订单号 |
 | `out_trade_no` | 商户订单号 |
-| `type` | EPay 支付方式标识 |
+| `type` | EPay 兼容字段 |
 | `name` | 商品名称 |
 | `money` | 订单金额，两位小数 |
 | `trade_status` | 固定 `TRADE_SUCCESS` |
@@ -573,8 +587,6 @@ params["sign"] = hashlib.md5(
 | `1002` | IP 禁止 | 403 |
 | `1003` | 签名错误 | 403 |
 | `1004` | 项目未配置 | 400 |
-| `1005` | 无访问权限 | 403 |
-| `1006` | 手续费不足 | 403 |
 | `1007` | 单号 `out_no` 重复 | 400 |
 | `1008` | Timestamp 请求头未设置或过期 | 400 |
 | `1009` | 请求重复 | 400 |
@@ -586,10 +598,6 @@ params["sign"] = hashlib.md5(
 | `2000` | 无效链 | 400 |
 | `2001` | 无效加密货币 | 400 |
 | `2002` | 本链不支持此加密货币 | 400 |
-| `2003` | 地址格式错误 | 400 |
-| `2004` | 合约地址错误 | 400 |
-| `2005` | 链、加密货币设置错误 | 400 |
-| `3006` | 金额精度超过该链上代币所支持的小数位 | 400 |
 
 ### 充值收款错误
 
@@ -597,21 +605,15 @@ params["sign"] = hashlib.md5(
 |--------|------|------|
 | `4000` | 无效 UID | 400 |
 | `4001` | 项目未配置该链的归集收款地址 | 400 |
+| `4002` | 充值用户数已达到当前套餐上限 | 403 |
 
 ### 账单收款错误
 
 | 错误码 | 说明 | HTTP |
 |--------|------|------|
 | `5000` | 账单收款类型错误 | 400 |
-| `5003` | 账单收款时间错误 | 400 |
-| `5005` | 无效参数：`sys_no` | 400 |
-| `5006` | 账单收款状态错误 | 400 |
-| `5007` | 不允许的链与加密货币 | 400 |
 | `5008` | 无可用账单收款方式 | 400 |
 | `5009` | 待支付记录过多 | 400 |
-| `5010` | 无效的账单收款方式 | 400 |
-| `5011` | 账单收款不存在 | 400 |
-| `5012` | 账单收款已过期 | 400 |
 
 ### SaaS / 内部权限错误
 
@@ -619,7 +621,6 @@ params["sign"] = hashlib.md5(
 |--------|------|------|
 | `6000` | 内部 API 令牌无效 | 401 |
 | `6002` | 项目不存在 | 404 |
-| `6003` | 该功能未开放 | 403 |
 | `6004` | 账户已冻结 | 403 |
 
 ## 完整流程

@@ -80,11 +80,18 @@ class SaasDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
             raise APIError(ErrorCode.INVALID_CRYPTO)
         if not crypto.support_this_chain(chain=chain):
             raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
+        if not ChainProductCapabilityService.has_active_crypto_on_chain(
+            chain=chain,
+            crypto=crypto,
+        ):
+            raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
         if not ChainProductCapabilityService.supports_deposit_address(
             chain=chain,
             crypto=crypto,
         ):
             raise APIError(ErrorCode.INVALID_CHAIN)
+        if not project.vault_address_for_chain_type(chain.type):
+            raise APIError(ErrorCode.RECIPIENT_NOT_CONFIGURED)
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
         deposit_address = VaultSlot.ensure_deposit_address(
             chain=chain,

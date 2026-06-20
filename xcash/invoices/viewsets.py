@@ -211,7 +211,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         cache.delete(invoice_public_cache_key(invoice.sys_no))
 
         return Response(
-            InvoiceDisplaySerializer(
+            InvoicePublicSerializer(
                 invoice,
                 context={
                     "request": request,

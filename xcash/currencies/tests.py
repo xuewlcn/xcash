@@ -27,6 +27,14 @@ class CustomTokenPricingTests(TestCase):
         self.usdt = Crypto.objects.create(
             name="Tether", symbol="USDT", coingecko_id="tether"
         )
+        CryptoOnChain.objects.create(
+            crypto=self.usdt,
+            chain=self.chain,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000e01"
+            ),
+            decimals=6,
+        )
 
     def test_blank_coingecko_id_normalized_to_null(self):
         # 空 coingecko_id 落库归一为 NULL，多条无 slug 币才能并存而不撞唯一约束。
@@ -93,6 +101,18 @@ class CustomTokenPricingTests(TestCase):
         )
         other_trc20 = Crypto.objects.create(
             name="OtherTrc20", symbol="OTC", coingecko_id="other-trc20"
+        )
+        CryptoOnChain.objects.create(
+            crypto=self.usdt,
+            chain=tron,
+            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            decimals=6,
+        )
+        CryptoOnChain.objects.create(
+            crypto=other_trc20,
+            chain=tron,
+            address="TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+            decimals=6,
         )
         self.assertTrue(
             ChainProductCapabilityService.supports_existing_invoice_method(
