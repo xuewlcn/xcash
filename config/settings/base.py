@@ -277,8 +277,6 @@ STATIC_URL = "/static/"
 # https://docs.djangoproject.com/en/dev/ref/contrib/staticfiles/#std:setting-STATICFILES_DIRS
 STATICFILES_DIRS = [
     str(APPS_DIR / "static"),
-    # 支付前端构建产物，collectstatic 后托管至 /static/pay/
-    ("pay", str(BASE_DIR / "pay-fronted" / "dist")),  # noqa
 ]
 
 # TEMPLATES

@@ -29,18 +29,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --locked --group production --no-group dev
 
-FROM node:22-bookworm-slim AS frontend-build-stage
-
-WORKDIR /frontend
-
-COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml ./
-
-RUN corepack enable && pnpm install --frozen-lockfile
-
-COPY pay-fronted/ ./
-
-RUN pnpm build
-
 # Python 'run' stage
 FROM python:3.13-slim-bookworm AS python-run-stage
 
@@ -74,7 +62,6 @@ RUN set -eux; \
 
 # Copy the application from the builder
 COPY --from=python-build-stage --chown=django:django ${APP_HOME} ${APP_HOME}
-COPY --from=frontend-build-stage --chown=django:django /frontend/dist /app/pay-fronted/dist
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH" \

@@ -7,6 +7,15 @@ import { fileURLToPath, URL } from 'node:url'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: '/static/pay/',
+  build: {
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name][extname]',
+      },
+    },
+  },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL('./src', import.meta.url)),
