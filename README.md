@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://xca.sh"><img src="https://img.shields.io/badge/Website-xca.sh-blue" alt="Website"></a>
+  <a href="https://xca.sh/docs/"><img src="https://img.shields.io/badge/Docs-xca.sh/docs-blue" alt="Docs"></a>
   <a href="https://github.com/xca-sh/xcash/stargazers"><img src="https://img.shields.io/github/stars/xca-sh/xcash" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python">
@@ -21,6 +22,8 @@
 ## Xcash 是什么？
 
 **Xcash** 是最先进的开源、自托管**加密货币收款网关**，面向商家、SaaS 产品、交易所和钱包平台，提供账单收款、USDT 收款和充值收款能力。
+
+完整部署、配置和 API 对接说明请查看 [Xcash 官方文档](https://xca.sh/docs/)。
 
 不同于 CoinGate、OpenNode 这类托管式收款处理商，Xcash 强调**完全自托管**：收款经智能合约直达你的归集地址，Xcash 全程不过手资金，也不抽取平台手续费。它适合需要多链资产收款、充值收款和 Webhook 通知能力的业务系统。
 

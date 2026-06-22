@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://xca.sh"><img src="https://img.shields.io/badge/Website-xca.sh-blue" alt="Website"></a>
+  <a href="https://xca.sh/docs/"><img src="https://img.shields.io/badge/Docs-xca.sh/docs-blue" alt="Docs"></a>
   <a href="https://github.com/xca-sh/xcash/stargazers"><img src="https://img.shields.io/github/stars/xca-sh/xcash" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python">
@@ -21,6 +22,8 @@
 ## What is Xcash?
 
 **Xcash** is an advanced open-source, self-hosted **cryptocurrency collection gateway** for merchants, SaaS products, exchanges, and wallet platforms. It provides cryptocurrency collection, USDT collection, and on-chain deposit capabilities.
+
+For full deployment, configuration, and API integration instructions, see the [Xcash documentation](https://xca.sh/docs/).
 
 Unlike hosted payment processors such as CoinGate or OpenNode, Xcash emphasizes **full self-custody**: funds flow through smart contracts directly to your multisig wallet address. Xcash never takes custody of funds and charges no platform fee. It is designed for business systems that need multi-chain asset collection, deposits, and webhook notifications.
 
@@ -237,7 +240,7 @@ Confirm at least the following configuration:
 
 ## API Integration
 
-After deployment, see [API.md](API.md) to integrate payments, deposits, and webhook callbacks.
+After deployment, see the [API integration documentation](https://xca.sh/docs/#api-base) to integrate payments, deposits, and webhook callbacks.
 
 Invoice creation can include an invoice-level `notify_url` to override the project default webhook. The EasyPay V1-compatible `submit.php` entry also maps `notify_url` to the invoice-level notification URL.
 
