@@ -7,6 +7,8 @@ import { Progress } from "@/components/ui/progress"
 import { useMetadataContext } from "@/context/MetadataContext"
 import { getConfirmationProgress, isPaymentConfirming } from "@/lib/invoiceStatus"
 import { useI18n } from "@/hooks/useI18n"
+import WalletPay from "@/components/WalletPay"
+import TronWalletPay from "@/components/TronWalletPay"
 
 // 复制按钮：copied 命中当前字段时切换为对勾。提到组件外，避免在 render 期间创建组件。
 function CopyButton({ copied, onCopy }) {
@@ -17,7 +19,7 @@ function CopyButton({ copied, onCopy }) {
   )
 }
 
-function PaymentAddress({ invoice, onReset }) {
+function PaymentAddress({ invoice, onReset, onBroadcast }) {
   const { t } = useI18n()
   const { getChain, getCrypto } = useMetadataContext()
   const [qrCodeUrl, setQrCodeUrl] = useState("")
@@ -234,6 +236,11 @@ function PaymentAddress({ invoice, onReset }) {
             </code>
           </div>
         )}
+
+        {/* Wallet pay (注入式 EVM 钱包) — 作为「手动转账」之外的备选项放在底部；
+            组件在未检测到钱包时自渲染为 null，二维码与地址始终保留作主路径 */}
+        {!hasPayment && <WalletPay invoice={invoice} onBroadcast={onBroadcast} />}
+        {!hasPayment && <TronWalletPay invoice={invoice} onBroadcast={onBroadcast} />}
 
         {/* Reselect payment method */}
         {!hasPayment && onReset && (

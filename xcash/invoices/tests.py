@@ -2775,3 +2775,378 @@ class InvoicePaymentUriTests(InvoiceTestMixin, TestCase):
         # 尚未选择支付方式（无 crypto/chain/pay_address/pay_amount）时不生成 URI。
         invoice = self.create_test_invoice(out_no="unallocated-uri")
         self.assertIsNone(InvoiceService.build_payment_uri(invoice))
+
+
+class InvoiceEvmWalletPaymentTests(InvoiceTestMixin, TestCase):
+    """InvoiceService.build_evm_wallet_payment 的注入式钱包一键支付参数编码行为。
+
+    覆盖原生币 value/data、代币 ERC-20 transfer calldata 的精确编码，以及精度
+    溢出、非 EVM 链、未分配支付指引时的安全降级（返回 None）。金额换算与 calldata
+    编码属核心逻辑：编错会导致钱包按错误金额/收款人发交易，必须断言到字节。
+    """
+
+    PAY_ADDRESS = Web3.to_checksum_address(
+        "0x00000000000000000000000000000000000000d1"
+    )
+
+    def setUp(self):
+        # USDT @ Ethereum，decimals=6，chainId=1。
+        self.setup_base_fixtures()
+
+    def make_invoice(self, *, crypto, chain, pay_amount, out_no="evm-pay-order"):
+        return self.create_test_invoice(
+            out_no=out_no,
+            crypto=crypto,
+            chain=chain,
+            pay_address=self.PAY_ADDRESS,
+            pay_amount=pay_amount,
+        )
+
+    def test_native_coin_value_is_hex_wei_and_data_is_none(self):
+        # 原生币：to 为收款地址、value 为 hex(金额×10^decimals) wei、data 为 None。
+        eth = self.chain.native_coin
+        CryptoOnChain.objects.get_or_create(
+            crypto=eth,
+            chain=self.chain,
+            defaults={"address": "", "decimals": 18},
+        )
+        invoice = self.make_invoice(
+            crypto=eth,
+            chain=self.chain,
+            pay_amount=Decimal("0.05"),
+            out_no="native-evm-pay",
+        )
+
+        payload = InvoiceService.build_evm_wallet_payment(invoice)
+
+        self.assertEqual(payload["chain_id"], 1)
+        self.assertEqual(payload["to"], self.PAY_ADDRESS)
+        # 0.05 ETH = 5 * 10^16 wei = hex(50000000000000000)。
+        self.assertEqual(payload["value"], hex(50000000000000000))
+        self.assertIsNone(payload["data"])
+
+    def test_erc20_token_encodes_transfer_calldata(self):
+        # 代币：to 为合约地址、value 为 "0x0"、data 为 ERC-20 transfer calldata。
+        # 选取能整除的金额 12.34 USDT（decimals=6 → 12340000 最小单位）手算期望值。
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_amount=Decimal("12.34"),
+        )
+        contract = self.crypto.address(self.chain)
+
+        payload = InvoiceService.build_evm_wallet_payment(invoice)
+
+        # 手算期望 calldata：选择器 + 左补零收款地址 + 左补零金额。
+        selector = "a9059cbb"
+        recipient_word = self.PAY_ADDRESS.lower().removeprefix("0x").zfill(64)
+        amount_word = format(12340000, "064x")
+        expected_data = "0x" + selector + recipient_word + amount_word
+
+        self.assertEqual(payload["chain_id"], 1)
+        self.assertEqual(payload["to"], contract)
+        self.assertEqual(payload["value"], "0x0")
+        self.assertEqual(payload["data"], expected_data)
+        # calldata 总长固定：0x + 8(选择器) + 64(地址) + 64(金额) = 138 字符。
+        self.assertEqual(len(payload["data"]), 138)
+
+    def test_precision_beyond_chain_decimals_returns_none(self):
+        # USDT 链上 6 位精度，7 位报价无法精确编码 → 降级 None，绝不截断金额。
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_amount=Decimal("0.1234567"),
+        )
+        self.assertIsNone(InvoiceService.build_evm_wallet_payment(invoice))
+
+    def test_non_evm_chain_returns_none(self):
+        # Tron 无 chain_id，不产出注入式钱包交易参数。
+        tron_chain = Chain.objects.create(
+            code=ChainCode.Tron,
+            rpc="http://tron.invalid",
+            tron_api_key="tron-key",
+            active=True,
+        )
+        CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=tron_chain,
+            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            decimals=6,
+        )
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=tron_chain,
+            pay_amount=Decimal("12.34"),
+            out_no="tron-evm-pay",
+        )
+        self.assertIsNone(InvoiceService.build_evm_wallet_payment(invoice))
+
+    def test_unallocated_invoice_returns_none(self):
+        # 尚未选择支付方式（无 chain/crypto/pay_address/pay_amount）时不产出参数。
+        invoice = self.create_test_invoice(out_no="unallocated-evm-pay")
+        self.assertIsNone(InvoiceService.build_evm_wallet_payment(invoice))
+
+
+class InvoicePublicEvmPaymentFieldTests(InvoiceTestMixin, TestCase):
+    """公开 retrieve 端点 JSON 必须含 evm_payment 键：EVM 为对象、非 EVM 为 null。"""
+
+    PAY_ADDRESS = Web3.to_checksum_address(
+        "0x00000000000000000000000000000000000000d2"
+    )
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.setup_base_fixtures()
+
+    def retrieve_response(self, sys_no: str):
+        request = self.factory.get(f"/v1/invoice/{sys_no}")
+        return InvoiceViewSet.as_view({"get": "retrieve"})(request, sys_no=sys_no)
+
+    def test_retrieve_includes_evm_payment_object_for_evm_invoice(self):
+        cache.clear()
+        invoice = self.create_test_invoice(
+            out_no="public-evm-pay",
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_address=self.PAY_ADDRESS,
+            pay_amount=Decimal("12.34"),
+        )
+
+        response = self.retrieve_response(invoice.sys_no)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("evm_payment", response.data)
+        evm_payment = response.data["evm_payment"]
+        self.assertEqual(evm_payment["chain_id"], 1)
+        self.assertEqual(evm_payment["to"], self.crypto.address(self.chain))
+        self.assertEqual(evm_payment["value"], "0x0")
+        self.assertTrue(evm_payment["data"].startswith("0xa9059cbb"))
+
+    def test_retrieve_returns_null_evm_payment_for_tron_invoice(self):
+        cache.clear()
+        tron_chain = Chain.objects.create(
+            code=ChainCode.Tron,
+            rpc="http://tron.invalid",
+            tron_api_key="tron-key",
+            active=True,
+        )
+        CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=tron_chain,
+            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            decimals=6,
+        )
+        invoice = self.create_test_invoice(
+            out_no="public-tron-pay",
+            crypto=self.crypto,
+            chain=tron_chain,
+            pay_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            pay_amount=Decimal("12.34"),
+        )
+
+        response = self.retrieve_response(invoice.sys_no)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("evm_payment", response.data)
+        self.assertIsNone(response.data["evm_payment"])
+
+
+class InvoiceTronWalletPaymentTests(InvoiceTestMixin, TestCase):
+    """InvoiceService.build_tron_wallet_payment 的 TronLink 一键支付参数编码行为。
+
+    覆盖原生 TRX（sun 换算）、TRC20（代币精度 + 合约地址）、主网/测试网标识，
+    以及精度溢出、未分配支付指引、非 Tron 链时的安全降级（返回 None）。金额换算
+    属核心逻辑：编错会导致钱包按错误金额发交易、链上扫描必然无法匹配，必须断言。
+    """
+
+    PAY_ADDRESS = "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
+    USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+    def setUp(self):
+        # 复用基础 fixture 拿到 User/Project/USDT Crypto/USD 法币，链改用 Tron。
+        self.setup_base_fixtures()
+        self.tron_chain = Chain.objects.create(
+            code=ChainCode.Tron,
+            rpc="http://tron.invalid",
+            tron_api_key="tron-key",
+            active=True,
+        )
+        # Tron-USDT（TRC20），decimals=6。
+        self.usdt_on_tron = CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=self.tron_chain,
+            address=self.USDT_CONTRACT,
+            decimals=6,
+        )
+
+    def make_invoice(self, *, crypto, chain, pay_amount, out_no="tron-pay-order"):
+        return self.create_test_invoice(
+            out_no=out_no,
+            crypto=crypto,
+            chain=chain,
+            pay_address=self.PAY_ADDRESS,
+            pay_amount=pay_amount,
+        )
+
+    def test_native_trx_encodes_amount_in_sun(self):
+        # 原生 TRX：is_native=True、contract=None、amount 为 sun（×10^6）、带 fee_limit。
+        trx = self.tron_chain.native_coin
+        CryptoOnChain.objects.get_or_create(
+            crypto=trx,
+            chain=self.tron_chain,
+            defaults={"address": "", "decimals": 6},
+        )
+        invoice = self.make_invoice(
+            crypto=trx,
+            chain=self.tron_chain,
+            pay_amount=Decimal("12.34"),
+            out_no="native-trx-pay",
+        )
+
+        payload = InvoiceService.build_tron_wallet_payment(invoice)
+
+        self.assertTrue(payload["is_native"])
+        self.assertEqual(payload["to"], self.PAY_ADDRESS)
+        self.assertIsNone(payload["contract"])
+        # 12.34 TRX = 12340000 sun。
+        self.assertEqual(payload["amount"], "12340000")
+        self.assertEqual(payload["fee_limit"], 100000000)
+        self.assertFalse(payload["is_testnet"])
+
+    def test_trc20_token_encodes_contract_and_amount(self):
+        # TRC20：is_native=False、contract 为合约地址、amount 为代币最小单位。
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=self.tron_chain,
+            pay_amount=Decimal("12.34"),
+        )
+
+        payload = InvoiceService.build_tron_wallet_payment(invoice)
+
+        self.assertFalse(payload["is_native"])
+        self.assertEqual(payload["to"], self.PAY_ADDRESS)
+        self.assertEqual(payload["contract"], self.USDT_CONTRACT)
+        self.assertEqual(payload["amount"], "12340000")
+        self.assertEqual(payload["fee_limit"], 100000000)
+        self.assertFalse(payload["is_testnet"])
+
+    def test_nile_testnet_invoice_sets_is_testnet_true(self):
+        # Nile 测试网账单：is_testnet=True，供前端校验 TronLink 当前网络。
+        nile_chain = Chain.objects.create(
+            code=ChainCode.Nile,
+            rpc="http://nile.invalid",
+            tron_api_key="tron-key",
+            active=True,
+        )
+        CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=nile_chain,
+            address=self.USDT_CONTRACT,
+            decimals=6,
+        )
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=nile_chain,
+            pay_amount=Decimal("12.34"),
+            out_no="nile-trc20-pay",
+        )
+
+        payload = InvoiceService.build_tron_wallet_payment(invoice)
+
+        self.assertTrue(payload["is_testnet"])
+
+    def test_precision_beyond_token_decimals_returns_none(self):
+        # USDT 链上 6 位精度，7 位报价无法精确换算 → 降级 None，绝不截断金额。
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=self.tron_chain,
+            pay_amount=Decimal("0.1234567"),
+        )
+        self.assertIsNone(InvoiceService.build_tron_wallet_payment(invoice))
+
+    def test_non_tron_chain_returns_none(self):
+        # EVM 账单不产出 Tron 支付参数。
+        invoice = self.make_invoice(
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_amount=Decimal("12.34"),
+            out_no="evm-on-tron-builder",
+        )
+        self.assertIsNone(InvoiceService.build_tron_wallet_payment(invoice))
+
+    def test_unallocated_invoice_returns_none(self):
+        # 尚未选择支付方式（无 chain/crypto/pay_address/pay_amount）时不产出参数。
+        invoice = self.create_test_invoice(out_no="unallocated-tron-pay")
+        self.assertIsNone(InvoiceService.build_tron_wallet_payment(invoice))
+
+
+class InvoicePublicTronPaymentFieldTests(InvoiceTestMixin, TestCase):
+    """公开 retrieve 端点 JSON 必须同时含 evm_payment 与 tron_payment 两键，互斥共存。"""
+
+    EVM_PAY_ADDRESS = Web3.to_checksum_address(
+        "0x00000000000000000000000000000000000000d3"
+    )
+    TRON_PAY_ADDRESS = "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
+    TRON_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.setup_base_fixtures()
+
+    def retrieve_response(self, sys_no: str):
+        request = self.factory.get(f"/v1/invoice/{sys_no}")
+        return InvoiceViewSet.as_view({"get": "retrieve"})(request, sys_no=sys_no)
+
+    def test_retrieve_includes_tron_payment_object_for_tron_invoice(self):
+        cache.clear()
+        tron_chain = Chain.objects.create(
+            code=ChainCode.Tron,
+            rpc="http://tron.invalid",
+            tron_api_key="tron-key",
+            active=True,
+        )
+        CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=tron_chain,
+            address=self.TRON_USDT_CONTRACT,
+            decimals=6,
+        )
+        invoice = self.create_test_invoice(
+            out_no="public-tron-payment",
+            crypto=self.crypto,
+            chain=tron_chain,
+            pay_address=self.TRON_PAY_ADDRESS,
+            pay_amount=Decimal("12.34"),
+        )
+
+        response = self.retrieve_response(invoice.sys_no)
+
+        self.assertEqual(response.status_code, 200)
+        # Tron 账单：tron_payment 是对象、evm_payment 为 None，两键互斥共存。
+        self.assertIn("tron_payment", response.data)
+        self.assertIn("evm_payment", response.data)
+        tron_payment = response.data["tron_payment"]
+        self.assertFalse(tron_payment["is_native"])
+        self.assertEqual(tron_payment["to"], self.TRON_PAY_ADDRESS)
+        self.assertEqual(tron_payment["contract"], self.TRON_USDT_CONTRACT)
+        self.assertEqual(tron_payment["amount"], "12340000")
+        self.assertIsNone(response.data["evm_payment"])
+
+    def test_retrieve_evm_invoice_has_both_keys_tron_null_evm_object(self):
+        cache.clear()
+        invoice = self.create_test_invoice(
+            out_no="public-evm-with-tron-key",
+            crypto=self.crypto,
+            chain=self.chain,
+            pay_address=self.EVM_PAY_ADDRESS,
+            pay_amount=Decimal("12.34"),
+        )
+
+        response = self.retrieve_response(invoice.sys_no)
+
+        self.assertEqual(response.status_code, 200)
+        # EVM 账单：两键都在；evm_payment 是对象，tron_payment 为 None，证明互斥共存。
+        self.assertIn("evm_payment", response.data)
+        self.assertIn("tron_payment", response.data)
+        self.assertIsNotNone(response.data["evm_payment"])
+        self.assertIsNone(response.data["tron_payment"])

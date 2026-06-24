@@ -55,6 +55,19 @@
     "reselectMethod": "Reselect Payment Method",
     "returnToMerchant": "Return to Merchant"
   },
+  "wallet": {
+    "payWithWallet": "Pay with Wallet",
+    "connecting": "Connecting wallet...",
+    "switching": "Switching network...",
+    "sending": "Please confirm the transaction in your wallet...",
+    "submitted": "Transaction submitted, awaiting block confirmation",
+    "or": "OR",
+    "chooseWallet": "Choose Wallet",
+    "userRejected": "You cancelled the payment",
+    "switchFailed": "Please switch to the correct network in your wallet and retry, or pay via QR code",
+    "tronWrongNetwork": "Please switch to the correct network in TronLink and retry",
+    "failed": "Wallet payment failed. Please retry or pay via QR code"
+  },
   "confirmation": {
     "blockConfirmation": "Block Confirmation Progress",
     "confirmed": "Confirmed",
@@ -67,6 +80,8 @@
   "waiting": {
     "title": "Waiting for Payment",
     "description": "Please complete the payment as soon as possible",
+    "broadcastTitle": "Awaiting Block Confirmation",
+    "broadcastDescription": "Transaction broadcast. It will complete automatically once confirmed — please don't pay again.",
     "timeRemaining": "Time Remaining",
     "expired": "Expired",
     "days": "days"

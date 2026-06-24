@@ -148,6 +148,8 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
     return_url = serializers.SerializerMethodField()
     payment = TransferSerializer(source="transfer", read_only=True)
     payment_uri = serializers.SerializerMethodField()
+    evm_payment = serializers.SerializerMethodField()
+    tron_payment = serializers.SerializerMethodField()
 
     def get_pay_url(self, obj: Invoice) -> str:
         pay_path = reverse("payment-invoice", kwargs={"sys_no": obj.sys_no})
@@ -174,6 +176,14 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
         """EVM 账单返回 EIP-681 支付 URI；其余返回 None，前端降级为地址二维码。"""
         return InvoiceService.build_payment_uri(obj)
 
+    def get_evm_payment(self, obj: Invoice) -> dict | None:
+        """EVM 账单返回注入式钱包一键支付的结构化交易参数；不可一键支付时为 None。"""
+        return InvoiceService.build_evm_wallet_payment(obj)
+
+    def get_tron_payment(self, obj: Invoice) -> dict | None:
+        """Tron 账单返回 TronLink 一键支付的结构化交易参数；不可一键支付时为 None。"""
+        return InvoiceService.build_tron_wallet_payment(obj)
+
     class Meta:
         model = Invoice
         fields = (
@@ -194,6 +204,8 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
             "return_url",
             "payment",
             "payment_uri",
+            "evm_payment",
+            "tron_payment",
             "status",
             "risk_level",
             "risk_score",

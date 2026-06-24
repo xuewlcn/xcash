@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# TRC20 转账 feeLimit 上限（单位 sun，100 TRX），够付绝大多数 TRC20 转账所需的能量/带宽。
+TRON_TRC20_FEE_LIMIT_SUN = 100_000_000
+
 
 class InvoiceService:
     @staticmethod
@@ -225,6 +228,94 @@ class InvoiceService:
         }
 
     @staticmethod
+    def wallet_payment_base_units(invoice: Invoice):
+        """一键支付的链无关前置校验与金额换算，供 EVM / Tron 各链型复用。
+
+        返回 (base_units, crypto_on_chain) 或 None。把「账单字段齐全 + 取链上币种
+        记录 + 金额按 decimals 换算为最小单位整数」这套与具体链型无关的逻辑收口在
+        此处，各链型只在调用前后做自己的门控与参数拼装，避免重复实现易漂移。
+
+        校验/换算口径（任一不满足即返回 None，由调用方降级）：
+        - 账单必须已分配支付指引（chain/crypto/pay_address/pay_amount 齐全）。
+        - 金额按该币在该链的 decimals 换算为最小单位整数；若除不尽（报价精度
+          超过链上可表示精度）返回 None 而非截断——绝不产出与 pay_amount 不一致
+          的金额，否则付款必然无法匹配，比不编码金额更糟。
+        """
+        if (
+            invoice.chain_id is None
+            or invoice.crypto_id is None
+            or not invoice.pay_address
+            or invoice.pay_amount is None
+        ):
+            return None
+
+        # decimals 与合约地址同属一条链上币种记录，一次取出，避免高频 retrieve
+        # 端点对同一行重复查询。lazy import 规避潜在循环依赖。
+        from currencies.models import CryptoOnChain
+
+        try:
+            crypto_on_chain = CryptoOnChain.objects.get(
+                crypto=invoice.crypto, chain=invoice.chain
+            )
+        except CryptoOnChain.DoesNotExist:
+            return None
+
+        scaled = invoice.pay_amount * (Decimal(10) ** crypto_on_chain.decimals)
+        if scaled != scaled.to_integral_value():
+            # 报价精度超过链上精度，无法精确编码，降级为地址二维码。
+            return None
+        return int(scaled), crypto_on_chain
+
+    @staticmethod
+    def evm_payment_params(invoice: Invoice) -> dict | None:
+        """提炼 EVM 一键支付所需的规范化参数，供 URI 与注入式钱包两路复用。
+
+        集中所有「可一键支付」前置校验与金额换算，返回结构化结果或 None：
+
+            原生币  {chain_id, is_native=True,  base_units, token_address=None, recipient}
+            代币    {chain_id, is_native=False, base_units, token_address,      recipient}
+
+        校验/换算口径（任一不满足即返回 None，由调用方降级）：
+        - 仅 EVM 链有 chainId；非 EVM（如 Tron）无统一标准，不产出参数。
+        - 账单齐全校验与金额换算统一委托 wallet_payment_base_units。
+        - 标记为非原生却查不到合约地址属配置异常，同样降级。
+        """
+        # 未分配支付指引时 invoice.chain 为 None，先挡住再读链属性，避免空引用。
+        if invoice.chain_id is None:
+            return None
+
+        chain = invoice.chain
+
+        # 仅 EVM 链有 chain_id 与 EIP-681；其余链型暂不产出结构化支付参数。
+        if chain.type != ChainType.EVM or chain.chain_id is None:
+            return None
+
+        base = InvoiceService.wallet_payment_base_units(invoice)
+        if base is None:
+            return None
+        base_units, crypto_on_chain = base
+
+        if invoice.crypto.is_native:
+            return {
+                "chain_id": chain.chain_id,
+                "is_native": True,
+                "base_units": base_units,
+                "token_address": None,
+                "recipient": invoice.pay_address,
+            }
+
+        if not crypto_on_chain.address:
+            # 标记为非原生却查不到合约地址属配置异常，降级而非产出错误参数。
+            return None
+        return {
+            "chain_id": chain.chain_id,
+            "is_native": False,
+            "base_units": base_units,
+            "token_address": crypto_on_chain.address,
+            "recipient": invoice.pay_address,
+        }
+
+    @staticmethod
     def build_payment_uri(invoice: Invoice) -> str | None:
         """为已分配支付指引的账单生成钱包可扫描的支付 URI（EIP-681）。
 
@@ -237,50 +328,111 @@ class InvoiceService:
 
         非 EVM 链（如 Tron 无跨钱包标准）返回 None，由前端降级为纯地址二维码。
 
-        金额按该币在该链的 decimals 换算为最小单位整数；若换算除不尽（报价精度
-        超过链上可表示精度），返回 None 而非截断——绝不生成与账单 pay_amount
-        不一致的金额，否则扫码付款必然无法匹配，反而比不编码金额更糟。
+        金额换算与各 None 降级分支统一委托 evm_payment_params，本方法只负责把
+        规范化参数拼成 EIP-681 字符串，保证与注入式钱包支付走同一套校验口径。
         """
-        if (
-            invoice.chain_id is None
-            or invoice.crypto_id is None
-            or not invoice.pay_address
-            or invoice.pay_amount is None
-        ):
+        params = InvoiceService.evm_payment_params(invoice)
+        if params is None:
+            return None
+
+        if params["is_native"]:
+            return (
+                f"ethereum:{params['recipient']}@{params['chain_id']}"
+                f"?value={params['base_units']}"
+            )
+        return (
+            f"ethereum:{params['token_address']}@{params['chain_id']}"
+            f"/transfer?address={params['recipient']}&uint256={params['base_units']}"
+        )
+
+    @staticmethod
+    def build_evm_wallet_payment(invoice: Invoice) -> dict | None:
+        """为注入式 EVM 钱包（MetaMask 等）一键支付输出结构化交易参数。
+
+        前端拿到该字段后可直接构造 eth_sendTransaction，无需买家手输任何金额，
+        从源头消除「付款金额不符」。后端结算仍走盯地址扫链匹配，本字段只是同一
+        付款意图的另一种结构化表达，不改变结算模型。
+
+        复用 evm_payment_params 的全部前置校验与金额换算；不可一键支付时返回 None：
+
+            原生币  {chain_id, to=<收款地址>, value=hex(wei),  data=None}
+            代币    {chain_id, to=<合约地址>, value="0x0",      data=ERC-20 transfer calldata}
+
+        代币 calldata 按 ERC-20 transfer(address,uint256) ABI 编码：函数选择器
+        a9059cbb + 收款地址（去 0x、小写、左补零到 64 hex）+ 金额（hex、左补零到
+        64 hex），与链上实际转账完全一致。
+        """
+        params = InvoiceService.evm_payment_params(invoice)
+        if params is None:
+            return None
+
+        if params["is_native"]:
+            return {
+                "chain_id": params["chain_id"],
+                "to": params["recipient"],
+                "value": hex(params["base_units"]),
+                "data": None,
+            }
+
+        # ERC-20 transfer(address,uint256)：选择器 + 32 字节地址 + 32 字节金额。
+        selector = "a9059cbb"
+        recipient_word = params["recipient"].lower().removeprefix("0x").zfill(64)
+        amount_word = format(params["base_units"], "064x")
+        return {
+            "chain_id": params["chain_id"],
+            "to": params["token_address"],
+            "value": "0x0",
+            "data": "0x" + selector + recipient_word + amount_word,
+        }
+
+    @staticmethod
+    def build_tron_wallet_payment(invoice: Invoice) -> dict | None:
+        """为 TronLink 等 Tron 钱包一键支付输出结构化交易参数；不可一键支付时返回 None。
+
+        Tron 没有 chainId 与 EIP-1193，无法照搬 EVM 那套参数。前端拿到这些字段后用
+        TronWeb 自行构造并签名交易（原生 TRX 走 sendTrx、TRC20 走合约 transfer），
+        后端只负责给出收款地址、最小单位金额、合约地址与网络标识；结算仍走盯地址扫链
+        匹配，本字段只是同一付款意图的另一种结构化表达，不改变结算模型。
+
+            原生 TRX  {is_native=True,  to, contract=None,        amount, fee_limit, is_testnet}
+            TRC20    {is_native=False, to, contract=<合约地址>,   amount, fee_limit, is_testnet}
+
+        amount 为最小单位整数字符串（TRX 用 sun、TRC20 用代币精度）；is_testnet 供前端
+        校验 TronLink 当前网络（主网 / Nile）。账单齐全校验与金额换算统一委托
+        wallet_payment_base_units；标记为非原生却查不到合约地址属配置异常，降级为 None。
+        """
+        # 未分配支付指引时 invoice.chain 为 None，先挡住再读链属性，避免空引用。
+        if invoice.chain_id is None:
             return None
 
         chain = invoice.chain
-        crypto = invoice.crypto
 
-        # 仅 EVM 链有 chain_id 与 EIP-681；其余链型暂不生成结构化 URI。
-        if chain.type != ChainType.EVM or chain.chain_id is None:
+        # 仅 Tron 链产出该结构化支付参数，其余链型不适用。
+        if chain.type != ChainType.TRON:
             return None
 
-        # decimals 与合约地址同属一条链上币种记录，一次取出，避免高频 retrieve
-        # 端点对同一行重复查询。lazy import 规避潜在循环依赖。
-        from currencies.models import CryptoOnChain
-
-        try:
-            crypto_on_chain = CryptoOnChain.objects.get(crypto=crypto, chain=chain)
-        except CryptoOnChain.DoesNotExist:
+        base = InvoiceService.wallet_payment_base_units(invoice)
+        if base is None:
             return None
+        base_units, crypto_on_chain = base
 
-        scaled = invoice.pay_amount * (Decimal(10) ** crypto_on_chain.decimals)
-        if scaled != scaled.to_integral_value():
-            # 报价精度超过链上精度，无法精确编码，降级为地址二维码。
-            return None
-        base_units = int(scaled)
-
-        if crypto.is_native:
-            return f"ethereum:{invoice.pay_address}@{chain.chain_id}?value={base_units}"
+        # fee_limit 对原生 TRX 转账无意义（前端忽略即可），仍统一带上以保持字段稳定。
+        payment = {
+            "is_native": invoice.crypto.is_native,
+            "to": invoice.pay_address,
+            "contract": None,
+            "amount": str(base_units),
+            "fee_limit": TRON_TRC20_FEE_LIMIT_SUN,
+            "is_testnet": chain.is_testnet,
+        }
+        if invoice.crypto.is_native:
+            return payment
 
         if not crypto_on_chain.address:
-            # 标记为非原生却查不到合约地址属配置异常，降级而非生成错误 URI。
+            # 标记为非原生却查不到合约地址属配置异常，降级而非产出错误参数。
             return None
-        return (
-            f"ethereum:{crypto_on_chain.address}@{chain.chain_id}"
-            f"/transfer?address={invoice.pay_address}&uint256={base_units}"
-        )
+        payment["contract"] = crypto_on_chain.address
+        return payment
 
     @staticmethod
     @transaction.atomic

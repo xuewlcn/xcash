@@ -55,6 +55,19 @@
     "reselectMethod": "重新选择支付方式",
     "returnToMerchant": "返回商户"
   },
+  "wallet": {
+    "payWithWallet": "使用钱包支付",
+    "connecting": "正在连接钱包...",
+    "switching": "正在切换网络...",
+    "sending": "请在钱包中确认交易...",
+    "submitted": "交易已提交,等待区块确认",
+    "or": "或",
+    "chooseWallet": "选择钱包",
+    "userRejected": "您已取消支付",
+    "switchFailed": "请在钱包中手动切换到正确网络后重试,或使用二维码支付",
+    "tronWrongNetwork": "请在 TronLink 中切换到正确的网络后重试",
+    "failed": "钱包支付失败,请重试或使用二维码支付"
+  },
   "confirmation": {
     "blockConfirmation": "区块确认进度",
     "confirmed": "已确认",
@@ -67,6 +80,8 @@
   "waiting": {
     "title": "等待支付",
     "description": "请尽快完成支付",
+    "broadcastTitle": "等待区块确认",
+    "broadcastDescription": "交易已广播,确认后将自动完成,请勿重复支付",
     "timeRemaining": "剩余时间",
     "expired": "已过期",
     "days": "天"

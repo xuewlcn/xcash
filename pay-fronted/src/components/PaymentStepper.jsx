@@ -1,5 +1,5 @@
 // src/components/PaymentStepper.jsx
-import { useState, useEffect, useMemo, useRef } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { AlertCircle, Loader2 } from "lucide-react"
 import SummaryBar from "@/components/SummaryBar"
 import StepIndicator from "@/components/StepIndicator"
@@ -94,6 +94,14 @@ function PaymentStepper({
   const [activeStep, setActiveStep] = useState(initialStep)
   const maxNaturalStepRef = useRef(initialStep)
 
+  // 钱包一键支付广播成功后置位：让下方总状态卡从「请尽快完成支付」切到「等待区块确认」，
+  // 与支付卡片内「交易已提交」一致。支付目标(pay_address)变化时复位，避免重选后残留。
+  const [broadcasted, setBroadcasted] = useState(false)
+  const handleWalletBroadcast = useCallback(() => setBroadcasted(true), [])
+  useEffect(() => {
+    setBroadcasted(false)
+  }, [invoice.pay_address])
+
   // Auto-advance only when server state moves forward.
   useEffect(() => {
     if (naturalStep > maxNaturalStepRef.current) {
@@ -180,6 +188,7 @@ function PaymentStepper({
                   <>
                     <PaymentAddress
                       invoice={invoice}
+                      onBroadcast={handleWalletBroadcast}
                       onReset={isWaiting && !hasPayment && !isSingleMethod ? () => {
                         resetSelection()
                         maxNaturalStepRef.current = methodStep
@@ -187,7 +196,7 @@ function PaymentStepper({
                       } : null}
                     />
                     {isWaiting && hasPaymentMethod && !hasPayment && !isEditing && !isExpired && (
-                      <WaitingPayment />
+                      <WaitingPayment broadcasted={broadcasted} />
                     )}
                   </>
                 )}
