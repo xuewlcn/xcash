@@ -607,22 +607,34 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
             fee_limit=TRON_VAULT_SLOT_FEE_LIMIT,
         )
 
-    def unsigned_transaction(self, *, contract_address: str | None = None) -> dict:
+    def unsigned_transaction(
+        self,
+        *,
+        contract_address: str | None = None,
+        visible_addresses: bool = False,
+    ) -> dict:
         from tron.codec import TronAddressCodec
 
         raw_data_hex = "0a02abcd"
+        contract_address = contract_address or "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
+        owner_value = (
+            self.sender.address
+            if visible_addresses
+            else TronAddressCodec.base58_to_hex41(self.sender.address)
+        )
+        contract_value = (
+            contract_address
+            if visible_addresses
+            else TronAddressCodec.base58_to_hex41(contract_address)
+        )
         raw_data = {
             "contract": [
                 {
                     "type": "TriggerSmartContract",
                     "parameter": {
                         "value": {
-                            "owner_address": TronAddressCodec.base58_to_hex41(
-                                self.sender.address
-                            ),
-                            "contract_address": TronAddressCodec.base58_to_hex41(
-                                contract_address or "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
-                            ),
+                            "owner_address": owner_value,
+                            "contract_address": contract_value,
                             "data": _selector("collect(address)") + "00" * 32,
                         }
                     },
@@ -724,6 +736,35 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
             {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 10_000},
         ]
         transaction = self.unsigned_transaction()
+        client.trigger_smart_contract.return_value = {"transaction": transaction}
+        sign_transaction.return_value = self.signed_payload(transaction)
+        client.broadcast_transaction.return_value = {"result": True}
+
+        task.broadcast()
+
+        client.broadcast_transaction.assert_called_once()
+        task.base_task.refresh_from_db()
+        self.assertEqual(task.base_task.status, TxTaskStatus.SUBMITTED)
+        self.assertEqual(task.base_task.tx_hash, transaction["txID"])
+
+    @patch("tron.models.TronHttpClient")
+    @patch("chains.models.Address.sign_tron_transaction")
+    def test_broadcast_accepts_visible_unsigned_addresses(
+        self,
+        sign_transaction,
+        client_class,
+    ):
+        task = self.make_task()
+        client = client_class.return_value
+        client.trigger_constant_contract.return_value = {
+            "result": {"result": True},
+            "energy_used": 1_000,
+        }
+        client.get_account_resource.side_effect = [
+            {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 10_000},
+            {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 10_000},
+        ]
+        transaction = self.unsigned_transaction(visible_addresses=True)
         client.trigger_smart_contract.return_value = {"transaction": transaction}
         sign_transaction.return_value = self.signed_payload(transaction)
         client.broadcast_transaction.return_value = {"result": True}

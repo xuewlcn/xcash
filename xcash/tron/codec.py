@@ -28,6 +28,20 @@ class TronAddressCodec:
         return cls._decode_base58(value).hex()
 
     @classmethod
+    def normalize_to_hex41(cls, value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("empty tron address")
+        if raw.lower().startswith("0x") or len(raw) == cls.ADDRESS_HEX_LENGTH:
+            normalized_hex = cls._normalize_hex(raw)
+            if len(normalized_hex) != cls.ADDRESS_HEX_LENGTH:
+                raise ValueError(f"invalid tron hex41 address: {value}")
+            if not normalized_hex.startswith(cls.ADDRESS_HEX_PREFIX):
+                raise ValueError(f"invalid tron hex41 prefix: {value}")
+            return normalized_hex
+        return cls.base58_to_hex41(raw).lower()
+
+    @classmethod
     def hex41_to_base58(cls, value: str) -> str:
         normalized_hex = cls._normalize_hex(value)
         if len(normalized_hex) != cls.ADDRESS_HEX_LENGTH:

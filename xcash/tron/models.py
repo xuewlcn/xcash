@@ -384,11 +384,20 @@ class TronTxTask(UndeletableModel):
         if not isinstance(value, dict):
             raise TronClientError("tron unsigned transaction parameter mismatch")
 
-        expected_owner = TronAddressCodec.base58_to_hex41(self.sender.address).lower()
-        expected_contract = TronAddressCodec.base58_to_hex41(self.to).lower()
-        if str(value.get("owner_address") or "").lower() != expected_owner:
+        expected_owner = TronAddressCodec.normalize_to_hex41(self.sender.address)
+        expected_contract = TronAddressCodec.normalize_to_hex41(self.to)
+        try:
+            actual_owner = TronAddressCodec.normalize_to_hex41(
+                value.get("owner_address")
+            )
+            actual_contract = TronAddressCodec.normalize_to_hex41(
+                value.get("contract_address")
+            )
+        except ValueError as exc:
+            raise TronClientError("tron unsigned transaction address invalid") from exc
+        if actual_owner != expected_owner:
             raise TronClientError("tron unsigned transaction owner mismatch")
-        if str(value.get("contract_address") or "").lower() != expected_contract:
+        if actual_contract != expected_contract:
             raise TronClientError("tron unsigned transaction contract mismatch")
 
         selector = Web3.keccak(text=self.function_selector)[:4].hex()
