@@ -4,10 +4,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import eth_abi
+from tron.constants import TRON_NILE_VAULT_SLOT_DEFAULT_FEE_LIMIT
 from tron.constants import TRON_VAULT_SLOT_FEE_LIMIT
 from tron.contracts_codec import tron_base58_to_evm_address
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import TxTaskType
 
 if TYPE_CHECKING:
@@ -59,6 +61,12 @@ def build_contract_call_intent(
     )
 
 
+def vault_slot_fee_limit_for_chain(chain: Chain) -> int:
+    if chain.code == ChainCode.Nile:
+        return TRON_NILE_VAULT_SLOT_DEFAULT_FEE_LIMIT
+    return TRON_VAULT_SLOT_FEE_LIMIT
+
+
 def build_vault_slot_deploy_intent(
     *,
     sender: Address,
@@ -80,7 +88,7 @@ def build_vault_slot_deploy_intent(
         contract_address=factory_address,
         function_selector_value="deployVaultSlot(address,bytes32)",
         parameter=parameter,
-        fee_limit=TRON_VAULT_SLOT_FEE_LIMIT,
+        fee_limit=vault_slot_fee_limit_for_chain(chain),
         tx_type=TxTaskType.VaultSlotDeploy,
         verify_fn=verify_fn,
     )
@@ -104,7 +112,7 @@ def build_vault_slot_collect_intent(
         contract_address=slot_address,
         function_selector_value="collect(address)",
         parameter=parameter,
-        fee_limit=TRON_VAULT_SLOT_FEE_LIMIT,
+        fee_limit=vault_slot_fee_limit_for_chain(chain),
         tx_type=TxTaskType.VaultSlotCollect,
         verify_fn=verify_fn,
     )

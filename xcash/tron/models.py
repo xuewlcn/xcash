@@ -13,12 +13,14 @@ from django.utils.translation import gettext_lazy as _
 from tron.client import TronClientError
 from tron.client import TronHttpClient
 from tron.codec import TronAddressCodec
+from tron.constants import TRON_NILE_VAULT_SLOT_DEFAULT_FEE_LIMIT
 from tron.resources import TronResourceGuardError
 from tron.resources import TronSimulationRevertError
 from tron.resources import require_bandwidth_for_signed_transaction
 from tron.resources import require_energy_for_contract_call
 from web3 import Web3
 
+from chains.constants import ChainCode
 from chains.models import TxHash
 from chains.models import TxTask
 from chains.models import TxTaskStatus
@@ -184,27 +186,34 @@ class TronTxTask(UndeletableModel):
 
     def execute_broadcast(self) -> None:
         self.record_broadcast_attempt()
+        self.apply_nile_fee_limit_floor()
         self.validate_fee_limit()
         client = TronHttpClient(chain=self.chain)
-        try:
-            resource_quote = require_energy_for_contract_call(
-                client=client,
-                owner_address=self.sender.address,
-                contract_address=self.to,
-                function_selector=self.function_selector,
-                parameter=self.parameter,
-            )
-        except TronSimulationRevertError as exc:
-            # 模拟 revert 不是资源问题，等待无意义；Tron 无 nonce、无顺序约束，
-            # 按连续观测策略标记失败并跳过，防止注定失败的任务永久占用调度队列。
-            self.register_simulation_revert(reason=str(exc))
-            return
-        except TronResourceGuardError:
-            # 资源不足时模拟本身已通过（或属暂时性校验异常），交易并非必然
-            # revert：打断连续 revert 计数，维持「等待资源补充」语义后上抛。
+        resource_quote = None
+        if self.should_skip_resource_preflight:
+            # Nile 是测试网：允许节点直接按 fee_limit 燃烧测试网 TRX，
+            # 不用本地 Energy/Bandwidth 预检阻断广播。
             self.clear_simulation_revert_streak()
-            raise
-        self.clear_simulation_revert_streak()
+        else:
+            try:
+                resource_quote = require_energy_for_contract_call(
+                    client=client,
+                    owner_address=self.sender.address,
+                    contract_address=self.to,
+                    function_selector=self.function_selector,
+                    parameter=self.parameter,
+                )
+            except TronSimulationRevertError as exc:
+                # 模拟 revert 不是资源问题，等待无意义；Tron 无 nonce、无顺序约束，
+                # 按连续观测策略标记失败并跳过，防止注定失败的任务永久占用调度队列。
+                self.register_simulation_revert(reason=str(exc))
+                return
+            except TronResourceGuardError:
+                # 资源不足时模拟本身已通过（或属暂时性校验异常），交易并非必然
+                # revert：打断连续 revert 计数，维持「等待资源补充」语义后上抛。
+                self.clear_simulation_revert_streak()
+                raise
+            self.clear_simulation_revert_streak()
         unsigned = client.trigger_smart_contract(
             owner_address=self.sender.address,
             contract_address=self.to,
@@ -220,12 +229,13 @@ class TronTxTask(UndeletableModel):
         signed = self.sender.sign_tron_transaction(unsigned_transaction=transaction)
         if str(signed.tx_hash).lower() != expected_tx_id:
             raise TronClientError("tron signed tx hash mismatch unsigned txID")
-        require_bandwidth_for_signed_transaction(
-            client=client,
-            owner_address=self.sender.address,
-            transaction=signed.raw_transaction,
-            quote=resource_quote,
-        )
+        if resource_quote is not None:
+            require_bandwidth_for_signed_transaction(
+                client=client,
+                owner_address=self.sender.address,
+                transaction=signed.raw_transaction,
+                quote=resource_quote,
+            )
         self.persist_signed_payload(signed_payload=signed.raw_transaction, tx_id=signed.tx_hash)
 
         response = client.broadcast_transaction(transaction=signed.raw_transaction)
@@ -317,6 +327,19 @@ class TronTxTask(UndeletableModel):
         self.save(
             update_fields=["simulation_revert_count", "simulation_revert_first_at"]
         )
+
+    @property
+    def should_skip_resource_preflight(self) -> bool:
+        return self.chain.code == ChainCode.Nile
+
+    def apply_nile_fee_limit_floor(self) -> None:
+        if (
+            self.chain.code != ChainCode.Nile
+            or self.fee_limit >= TRON_NILE_VAULT_SLOT_DEFAULT_FEE_LIMIT
+        ):
+            return
+        self.fee_limit = TRON_NILE_VAULT_SLOT_DEFAULT_FEE_LIMIT
+        self.save(update_fields=["fee_limit"])
 
     def validate_fee_limit(self) -> None:
         if self.fee_limit <= 0:
