@@ -36,6 +36,7 @@ PRODUCTION_MIGRATE_STARTED=false
 PRODUCTION_MIGRATE_COMPLETED=false
 # 演练 dump 文件路径，dump 时赋值；cleanup 在 nounset 下引用，故先声明为空。
 MAIN_DUMP=""
+RUN_MIGRATION_REHEARSAL=true
 
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 REHEARSAL_COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" --profile migration-rehearsal)
@@ -326,7 +327,15 @@ mkdir -p "${BACKUP_DIR}"
 BACKUP_DIR="$(cd "${BACKUP_DIR}" && pwd)"
 MAIN_DUMP="${BACKUP_DIR}/xcash-pre-upgrade-$(date +%Y%m%d-%H%M%S).dump"
 
+PRE_UPGRADE_HEAD="$(git rev-parse HEAD)"
 pull_code
+POST_UPGRADE_HEAD="$(git rev-parse HEAD)"
+if [[ "${SKIP_GIT_PULL}" != "true" ]] && git diff --quiet "${PRE_UPGRADE_HEAD}" "${POST_UPGRADE_HEAD}" -- \
+  ':(glob)**/migrations/*.py' \
+  ':(exclude,glob)**/migrations/__init__.py'; then
+  RUN_MIGRATION_REHEARSAL=false
+  log "no migration file changes detected; skip migration rehearsal"
+fi
 
 log "build production images"
 "${COMPOSE[@]}" build
@@ -340,6 +349,7 @@ log "ensure database and cache dependencies are running"
 "${COMPOSE[@]}" up -d --no-recreate db redis
 wait_for_postgres db
 
+if [[ "${RUN_MIGRATION_REHEARSAL}" == "true" ]]; then
 if [[ "${STOP_BEFORE_REHEARSAL}" == "true" ]]; then
   log "quiesced dump: stop app services before dump (backup == production at migrate time)"
   stop_app_services "before rehearsal dump"
@@ -374,15 +384,18 @@ run_main_manage migration-rehearsal-db check --deploy 2>&1 \
   | tee "${TMP_DIR}/main-rehearsal-check.log"
 REHEARSAL_IN_PROGRESS=false
 delete_rehearsal_dump
+fi
 
-if [[ "${STOP_BEFORE_REHEARSAL}" != "true" ]]; then
+if [[ "${RUN_MIGRATION_REHEARSAL}" == "true" && "${STOP_BEFORE_REHEARSAL}" != "true" ]]; then
   stop_app_services "before production migration"
 fi
 
-log "verify production migration plans"
-run_main_manage db migrate --plan 2>&1 \
-  | tee "${TMP_DIR}/main-production-plan.log" >"${MAIN_PRODUCTION_PLAN}"
-compare_plans "${MAIN_REHEARSAL_PLAN}" "${MAIN_PRODUCTION_PLAN}" "main database"
+if [[ "${RUN_MIGRATION_REHEARSAL}" == "true" ]]; then
+  log "verify production migration plans"
+  run_main_manage db migrate --plan 2>&1 \
+    | tee "${TMP_DIR}/main-production-plan.log" >"${MAIN_PRODUCTION_PLAN}"
+  compare_plans "${MAIN_REHEARSAL_PLAN}" "${MAIN_PRODUCTION_PLAN}" "main database"
+fi
 
 # 跨过此线后 production 主库可能进入（部分）迁移后状态；迁移完成后
 # cleanup 才会按新 schema 尝试拉起服务。
