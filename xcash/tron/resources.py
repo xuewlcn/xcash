@@ -12,7 +12,7 @@ from tron.client import TronHttpClient
 
 
 class TronResourceGuardError(TronClientError):
-    """本地资源预检无法证明交易不会燃烧 TRX，因此拒绝广播。"""
+    """本地资源/余额预检表明交易大概率无法被 Tron 节点接受，因此拒绝广播。"""
 
 
 class TronSimulationRevertError(TronClientError):
@@ -31,6 +31,10 @@ TRON_SIMULATION_EXECUTION_FAILED_CODE = "CONTRACT_EXE_ERROR"
 
 # Solidity Error(string) 的 4 字节选择器，revert reason 的标准 ABI 编码前缀。
 SOLIDITY_ERROR_STRING_SELECTOR = "08c379a0"
+
+# Tron 当前带宽单价为 1000 sun/byte；当可用 Bandwidth 覆盖不了整笔交易时，
+# 节点会燃烧 TRX 支付带宽成本。这里按整笔交易带宽估算最大 burn，而非只按缺口估算。
+TRON_BANDWIDTH_BURN_PRICE_SUN_PER_BYTE = 1_000
 
 
 def decode_hex_text(value: object) -> str:
@@ -82,6 +86,7 @@ class TronResourceQuote:
     available_energy: int
     required_bandwidth: int | None = None
     available_bandwidth: int | None = None
+    bandwidth_burn_fee_sun: int = 0
 
 
 def available_energy(resource: dict) -> int:
@@ -208,7 +213,13 @@ def estimate_signed_transaction_bandwidth(transaction: dict) -> int:
     return len(encoded)
 
 
-def require_bandwidth_for_signed_transaction(
+def estimate_bandwidth_burn_fee_sun(*, required: int, available: int) -> int:
+    if available >= required:
+        return 0
+    return required * TRON_BANDWIDTH_BURN_PRICE_SUN_PER_BYTE
+
+
+def require_bandwidth_or_balance_for_signed_transaction(
     *,
     client: TronHttpClient,
     owner_address: str,
@@ -220,15 +231,24 @@ def require_bandwidth_for_signed_transaction(
     )
     resource = client.get_account_resource(address=owner_address)
     available = available_bandwidth(resource)
-    if available < required:
-        raise TronResourceGuardError(
-            "tron bandwidth insufficient: "
-            f"required={required} available={available}"
-        )
+    burn_fee_sun = estimate_bandwidth_burn_fee_sun(
+        required=required,
+        available=available,
+    )
+    if burn_fee_sun:
+        account = client.get_account(address=owner_address)
+        balance_sun = int_payload_value(account, "balance")
+        if balance_sun < burn_fee_sun:
+            raise TronResourceGuardError(
+                "tron bandwidth trx insufficient: "
+                f"required_bandwidth={required} available_bandwidth={available} "
+                f"required_burn_sun={burn_fee_sun} balance_sun={balance_sun}"
+            )
     return TronResourceQuote(
         estimated_energy=quote.estimated_energy,
         required_energy=quote.required_energy,
         available_energy=quote.available_energy,
         required_bandwidth=required,
         available_bandwidth=available,
+        bandwidth_burn_fee_sun=burn_fee_sun,
     )

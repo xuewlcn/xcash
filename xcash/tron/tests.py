@@ -833,7 +833,7 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
 
     @patch("tron.models.TronHttpClient")
     @patch("chains.models.Address.sign_tron_transaction")
-    def test_broadcast_stops_after_sign_when_bandwidth_is_insufficient(
+    def test_broadcast_stops_after_sign_when_bandwidth_burn_balance_is_insufficient(
         self,
         sign_transaction,
         client_class,
@@ -851,14 +851,45 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         transaction = self.unsigned_transaction()
         client.trigger_smart_contract.return_value = {"transaction": transaction}
         sign_transaction.return_value = self.signed_payload(transaction)
+        client.get_account.return_value = {"balance": 0}
 
-        with self.assertRaisesMessage(TronClientError, "tron bandwidth insufficient"):
+        with self.assertRaisesMessage(TronClientError, "tron bandwidth trx insufficient"):
             task.broadcast()
 
         client.broadcast_transaction.assert_not_called()
         task.base_task.refresh_from_db()
         self.assertEqual(task.base_task.status, TxTaskStatus.QUEUED)
         self.assertIsNone(task.base_task.tx_hash)
+
+    @patch("tron.models.TronHttpClient")
+    @patch("chains.models.Address.sign_tron_transaction")
+    def test_broadcast_continues_when_bandwidth_is_insufficient_but_balance_covers_burn(
+        self,
+        sign_transaction,
+        client_class,
+    ):
+        task = self.make_task()
+        client = client_class.return_value
+        client.trigger_constant_contract.return_value = {
+            "result": {"result": True},
+            "energy_used": 1_000,
+        }
+        client.get_account_resource.side_effect = [
+            {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 0},
+            {"EnergyLimit": 2_000, "EnergyUsed": 0, "freeNetLimit": 0},
+        ]
+        client.get_account.return_value = {"balance": 10_000_000}
+        transaction = self.unsigned_transaction()
+        client.trigger_smart_contract.return_value = {"transaction": transaction}
+        sign_transaction.return_value = self.signed_payload(transaction)
+        client.broadcast_transaction.return_value = {"result": True}
+
+        task.broadcast()
+
+        client.broadcast_transaction.assert_called_once()
+        task.base_task.refresh_from_db()
+        self.assertEqual(task.base_task.status, TxTaskStatus.SUBMITTED)
+        self.assertEqual(task.base_task.tx_hash, transaction["txID"])
 
     @patch("tron.models.TronHttpClient")
     @patch("chains.models.Address.sign_tron_transaction")

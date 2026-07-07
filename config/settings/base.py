@@ -71,13 +71,13 @@ DEFAULT_SUPERUSER_PASSWORD = env.str(
 # 加密入库，密钥取自该高熵主密钥。生产环境必须显式配置（chains.checks 在 check 阶段拦截缺失）。
 WALLET_MNEMONIC_ENCRYPTION_KEY = env.str("WALLET_MNEMONIC_ENCRYPTION_KEY", default="")
 TRON_RPC_TIMEOUT = 8.0
-# 广播前必须能证明本次合约调用可完全由资源覆盖；估算值乘以安全边际后再与
-# EnergyLimit - EnergyUsed 比较，避免动态 Energy 模型波动导致 fallback 燃烧 TRX。
+# Energy 是合约调用的主要成本，广播前必须能证明估算值乘以安全边际后可被覆盖；
+# Bandwidth 不足时允许按 Tron 规则燃烧 TRX，但 Energy 仍不走本地余额兜底。
 TRON_RESOURCE_SAFETY_MARGIN_BPS = env.int(
     "TRON_RESOURCE_SAFETY_MARGIN_BPS",
     default=12_000,
 )
-# 带宽不足同样会燃烧 TRX；签名后用 JSON 载荷长度做保守估算，再额外预留固定字节。
+# 签名后用 JSON 载荷长度保守估算带宽成本，再额外预留固定字节。
 TRON_BANDWIDTH_SAFETY_BYTES = env.int("TRON_BANDWIDTH_SAFETY_BYTES", default=512)
 
 # 只有当 TCP 对端本身属于受信代理网段时，才接受其转发的 X-Real-IP。

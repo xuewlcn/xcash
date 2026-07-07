@@ -16,7 +16,7 @@ from tron.codec import TronAddressCodec
 from tron.constants import TRON_NILE_VAULT_SLOT_DEFAULT_FEE_LIMIT
 from tron.resources import TronResourceGuardError
 from tron.resources import TronSimulationRevertError
-from tron.resources import require_bandwidth_for_signed_transaction
+from tron.resources import require_bandwidth_or_balance_for_signed_transaction
 from tron.resources import require_energy_for_contract_call
 from web3 import Web3
 
@@ -255,12 +255,23 @@ class TronTxTask(UndeletableModel):
         if str(signed.tx_hash).lower() != expected_tx_id:
             raise TronClientError("tron signed tx hash mismatch unsigned txID")
         if resource_quote is not None:
-            require_bandwidth_for_signed_transaction(
+            resource_quote = require_bandwidth_or_balance_for_signed_transaction(
                 client=client,
                 owner_address=self.sender.address,
                 transaction=signed.raw_transaction,
                 quote=resource_quote,
             )
+            if resource_quote.bandwidth_burn_fee_sun:
+                logger.warning(
+                    "Tron 任务带宽不足，将消耗 TRX 广播",
+                    tron_task_id=self.pk,
+                    tx_task_id=self.base_task_id,
+                    chain=self.chain.code,
+                    sender=self.sender.address,
+                    required_bandwidth=resource_quote.required_bandwidth,
+                    available_bandwidth=resource_quote.available_bandwidth,
+                    bandwidth_burn_fee_sun=resource_quote.bandwidth_burn_fee_sun,
+                )
         self.persist_signed_payload(signed_payload=signed.raw_transaction, tx_id=signed.tx_hash)
 
         response = client.broadcast_transaction(transaction=signed.raw_transaction)
