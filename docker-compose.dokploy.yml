@@ -6,155 +6,249 @@
 # 调整内容：
 # 1. 删除 PostgreSQL 容器
 # 2. 删除 Redis 容器
-# 3. 使用宿主机 PostgreSQL / Redis
+# 3. 使用 1Panel 已有 PostgreSQL / Redis
 # 4. 保留 Caddy 作为静态文件服务器 + Django Proxy
 # 5. 入口交给 Dokploy Traefik
 #
 # ==========================================================
 
+
 services:
+
 
   # ========================================================
   # Django Web Application
   #
-  # 提供：
-  # - API
-  # - Admin
-  # - Web Backend
+  # 网络：
   #
-  # 对外不直接暴露
-  # 由 Caddy 转发
+  # default:
+  #   Xcash 内部通信
+  #
+  # xcash_public:
+  #   Caddy -> Django
+  #
+  # 1panel-network:
+  #   PostgreSQL / Redis
+  #
   # ========================================================
 
   django:
+
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
-      # 使用生产 Python 镜像阶段
       target: python-run-stage
 
+
     restart: unless-stopped
+
 
     env_file:
       - .env
 
-    # 使用 1Panel 网络访问已有服务
+
     networks:
+      - default
+      - xcash_public
       - 1panel-network
 
+
     command: /start
+
 
     expose:
       - "8000"
 
 
+
   # ========================================================
   # Celery Worker
   #
-  # 负责：
-  # - 链上扫描
-  # - 交易确认
-  # - Webhook
-  # - 后台任务
+  # 网络：
+  #
+  # default:
+  #   内部任务通信
+  #
+  # 1panel-network:
+  #   Redis / PostgreSQL
   #
   # ========================================================
 
   worker:
+
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
       target: python-run-stage
 
+
     restart: unless-stopped
+
 
     env_file:
       - .env
 
+
     networks:
+      - default
       - 1panel-network
 
+
     command: /start-worker
+
 
 
   # ========================================================
   # Celery Beat
   #
-  # 定时任务调度
-  #
   # ========================================================
 
   beat:
+
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
       target: python-run-stage
 
+
     restart: unless-stopped
+
 
     env_file:
       - .env
 
+
     networks:
+      - default
       - 1panel-network
+
 
     command: /start-beat
 
 
+
   # ========================================================
   # Caddy
   #
-  # 保留原因：
+  # 作用：
   #
-  # 1. 提供 /static 静态资源
-  # 2. 转发 Django:8000
+  # 1. 静态文件服务
+  # 2. Django 反向代理
   #
-  # Dokploy Traefik:
   #
-  # Internet
-  #    |
-  # Traefik
-  #    |
-  # Caddy
-  #    |
-  # Django
+  # 网络：
+  #
+  # dokploy-network:
+  #   Traefik -> Caddy
+  #
+  # xcash_public:
+  #   Caddy -> Django
+  #
+  # default:
+  #   保持官方结构
   #
   # ========================================================
 
   caddy:
+
+
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
-
-      # 使用 Caddy 镜像阶段
       target: caddy-run-stage
+
 
     restart: unless-stopped
 
+
     depends_on:
+
       - django
 
-    networks:
-      - 1panel-network
 
-    # 不映射宿主机端口
-    #
-    # Dokploy 会通过 Docker 网络访问
-    #
+
+    networks:
+
+      - default
+
+      - dokploy-network
+
+      xcash_public:
+        aliases:
+          - xcash-caddy
+
+
+
     expose:
+
       - "80"
 
-      
+
+
 # ==========================================================
-# External Networks
-#
-# 使用 1Panel 已存在网络
+# Networks
 #
 # ==========================================================
 
 networks:
 
-  1panel-network:
+
+  # ========================================================
+  # Compose Default Network
+  #
+  # 保持官方 Xcash 行为
+  #
+  # ========================================================
+
+  default:
+
+
+
+  # ========================================================
+  # Dokploy Traefik Network
+  #
+  # Traefik -> Caddy
+  #
+  # 已由 Dokploy 创建
+  #
+  # ========================================================
+
+  dokploy-network:
+
     external: true
+
+
+
+  # ========================================================
+  # Xcash Public Network
+  #
+  # Caddy -> Django
+  #
+  # 保持官方设计
+  #
+  # ========================================================
+
+  xcash_public:
+
+    name: xcash_public
+
+
+
+  # ========================================================
+  # 1Panel Network
+  #
+  # Django / Worker / Beat
+  #
+  # -> PostgreSQL / Redis
+  #
+  # 已由 1Panel 创建
+  #
+  # ========================================================
+
+  1panel-network:
+
+    external: true
+
 
 
 # ==========================================================
