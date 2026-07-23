@@ -1,0 +1,187 @@
+# ==========================================================
+# Xcash - Dokploy Production Compose
+#
+# 与官方 docker-compose.yml 分离
+#
+# 调整内容：
+# 1. 删除 PostgreSQL 容器
+# 2. 删除 Redis 容器
+# 3. 使用宿主机 PostgreSQL / Redis
+# 4. 保留 Caddy 作为静态文件服务器 + Django Proxy
+# 5. 入口交给 Dokploy Traefik
+#
+# ==========================================================
+
+
+services:
+
+
+  # ========================================================
+  # Django Web Application
+  #
+  # 提供：
+  # - API
+  # - Admin
+  # - Web Backend
+  #
+  # 对外不直接暴露
+  # 由 Caddy 转发
+  # ========================================================
+
+  django:
+
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+
+      # 使用生产 Python 镜像阶段
+      target: python-run-stage
+
+
+    restart: unless-stopped
+
+
+    env_file:
+      - .env
+
+
+    # 允许容器访问宿主机 PostgreSQL / Redis
+    extra_hosts:
+      - 1panel-network
+
+
+    command: /start
+
+
+    expose:
+      - "8000"
+
+
+
+  # ========================================================
+  # Celery Worker
+  #
+  # 负责：
+  # - 链上扫描
+  # - 交易确认
+  # - Webhook
+  # - 后台任务
+  #
+  # ========================================================
+
+  worker:
+
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+      target: python-run-stage
+
+
+    restart: unless-stopped
+
+
+    env_file:
+      - .env
+
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+
+    command: /start-worker
+
+
+
+  # ========================================================
+  # Celery Beat
+  #
+  # 定时任务调度
+  #
+  # ========================================================
+
+  beat:
+
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+      target: python-run-stage
+
+
+    restart: unless-stopped
+
+
+    env_file:
+      - .env
+
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+
+    command: /start-beat
+
+
+
+  # ========================================================
+  # Caddy
+  #
+  # 保留原因：
+  #
+  # 1. 提供 /static 静态资源
+  # 2. 转发 Django:8000
+  #
+  # Dokploy Traefik:
+  #
+  # Internet
+  #    |
+  # Traefik
+  #    |
+  # Caddy
+  #    |
+  # Django
+  #
+  # ========================================================
+
+  caddy:
+
+
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+
+      # 使用 Caddy 镜像阶段
+      target: caddy-run-stage
+
+
+    restart: unless-stopped
+
+
+
+    depends_on:
+
+      - django
+
+
+
+    # 不映射宿主机端口
+    #
+    # Dokploy 会通过 Docker 网络访问
+    #
+    expose:
+
+      - "80"
+
+
+
+
+# ==========================================================
+# 注意：
+#
+# 不定义：
+#
+# postgres
+# redis
+#
+# 因为使用服务器已有服务
+#
+# ==========================================================
