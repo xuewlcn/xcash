@@ -12,9 +12,7 @@
 #
 # ==========================================================
 
-
 services:
-
 
   # ========================================================
   # Django Web Application
@@ -29,36 +27,25 @@ services:
   # ========================================================
 
   django:
-
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
-
       # 使用生产 Python 镜像阶段
       target: python-run-stage
 
-
     restart: unless-stopped
-
 
     env_file:
       - .env
 
-
-    # 允许容器访问宿主机 PostgreSQL / Redis
-
-
+    # 使用 1Panel 网络访问已有服务
     networks:
-      1panel-network:
-        external: true
-
+      - 1panel-network
 
     command: /start
 
-
     expose:
       - "8000"
-
 
 
   # ========================================================
@@ -73,26 +60,20 @@ services:
   # ========================================================
 
   worker:
-
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
       target: python-run-stage
 
-
     restart: unless-stopped
-
 
     env_file:
       - .env
 
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
+    networks:
+      - 1panel-network
 
     command: /start-worker
-
 
 
   # ========================================================
@@ -103,26 +84,20 @@ services:
   # ========================================================
 
   beat:
-
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
       target: python-run-stage
 
-
     restart: unless-stopped
-
 
     env_file:
       - .env
 
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
+    networks:
+      - 1panel-network
 
     command: /start-beat
-
 
 
   # ========================================================
@@ -146,8 +121,6 @@ services:
   # ========================================================
 
   caddy:
-
-
     build:
       context: .
       dockerfile: ./compose/production/django/Dockerfile
@@ -155,26 +128,33 @@ services:
       # 使用 Caddy 镜像阶段
       target: caddy-run-stage
 
-
     restart: unless-stopped
 
-
-
     depends_on:
-
       - django
 
-
+    networks:
+      - 1panel-network
 
     # 不映射宿主机端口
     #
     # Dokploy 会通过 Docker 网络访问
     #
     expose:
-
       - "80"
 
 
+# ==========================================================
+# External Networks
+#
+# 使用 1Panel 已存在网络
+#
+# ==========================================================
+
+networks:
+
+  1panel-network:
+    external: true
 
 
 # ==========================================================
