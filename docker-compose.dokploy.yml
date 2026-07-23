@@ -142,10 +142,8 @@ services:
     #
     expose:
       - "80"
-      
-    labels:
-      - "traefik.http.routers.${APP_NAME}.priority=100"
 
+      
 # ==========================================================
 # External Networks
 #
