@@ -46,8 +46,11 @@ services:
 
 
     # 允许容器访问宿主机 PostgreSQL / Redis
-    extra_hosts:
-      - 1panel-network
+
+
+    networks:
+      1panel-network:
+        external: true
 
 
     command: /start
