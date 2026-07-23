@@ -142,7 +142,10 @@ services:
     #
     expose:
       - "80"
+    caddy:
 
+  labels:
+    - "traefik.http.routers.xcash.priority=100"
 
 # ==========================================================
 # External Networks
