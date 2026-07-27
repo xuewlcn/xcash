@@ -152,9 +152,9 @@ def reconcile_vault_slot_collect_balance_gaps_task() -> None:
     ignore_result=True,
     bind=True,
     max_retries=5,
-    time_limit=10,
+    time_limit=60,
 )
-@singleton_task(timeout=5, use_params=True)
+@singleton_task(timeout=65, use_params=True)
 def confirm_transfer(self, pk):
     try:
         transfer = Transfer.objects.get(pk=pk)
@@ -197,9 +197,21 @@ def confirm_transfer(self, pk):
             countdown=countdown,
         )
     elif result == TxCheckStatus.FAILED:
-        raise RuntimeError(
-            "失败交易不应存在 Transfer 记录；请检查扫描器与内部任务协调器语义"
+        # 扫描器只在交易成功时才落 Transfer，走到这里说明链上事实已经变了（同 hash
+        # 交易被重组后按失败重新打包）。此前无条件抛异常会让该转账永久停在
+        # CONFIRMING：block_number_updated 按 timestamp 升序切 16 条批次，它会恒占
+        # 批次头部；而 reap_stale_confirming_transfers 对 FAILED 只告警不清理，
+        # 该名额永不释放，累计满批即饿死该链全部 FULL 确认。
+        # 失败交易本就没有有效入账，按"链上无事实"丢弃并释放唯一约束；日后若再次被
+        # 成功打包，扫描器可自然重建（与 reap 的 MISSING 分支同语义）。
+        logger.error(
+            "Transfer 对应交易链上执行失败，丢弃该转账",
+            chain=transfer.chain.code,
+            transfer_id=transfer.pk,
+            tx_hash=transfer.hash,
+            block=transfer.block,
         )
+        transfer.drop()
 
 
 def _refresh_transfer_chain_position_from_receipt(

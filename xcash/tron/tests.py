@@ -994,6 +994,26 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         task.base_task.refresh_from_db()
         self.assertEqual(task.base_task.status, TxTaskStatus.SUBMITTED)
 
+    def test_persist_signed_payload_stops_when_parent_task_is_terminal(self):
+        task = self.make_task()
+        TxTask.objects.filter(pk=task.base_task_id).update(
+            status=TxTaskStatus.FAILED,
+        )
+        transaction = self.unsigned_transaction()
+        signed = self.signed_payload(transaction)
+
+        persisted = task.persist_signed_payload(
+            signed_payload=signed.raw_transaction,
+            tx_id=signed.tx_hash,
+        )
+
+        task.refresh_from_db()
+        task.base_task.refresh_from_db()
+        self.assertFalse(persisted)
+        self.assertEqual(task.signed_payload, {})
+        self.assertIsNone(task.tx_id)
+        self.assertFalse(task.base_task.tx_hashes.exists())
+
     @patch("tron.models.TronTxTask.execute_broadcast")
     def test_rebroadcast_expired_submitted_requires_expiration(self, execute_broadcast):
         task = self.make_task()
@@ -1024,7 +1044,7 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         execute_broadcast.assert_called_once()
 
     @patch("tron.models.TronTxTask.execute_broadcast")
-    def test_rebroadcast_expired_submitted_marks_failed_after_hash_limit(
+    def test_rebroadcast_expired_submitted_stops_without_failing_after_hash_limit(
         self,
         execute_broadcast,
     ):
@@ -1044,12 +1064,13 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
 
         execute_broadcast.assert_not_called()
         task.base_task.refresh_from_db()
-        self.assertEqual(task.base_task.status, TxTaskStatus.FAILED)
+        task.refresh_from_db()
+        self.assertEqual(task.base_task.status, TxTaskStatus.SUBMITTED)
+        self.assertIsNotNone(task.last_attempt_at)
 
     @patch("tron.models.TronTxTask.execute_broadcast")
-    def test_broadcast_marks_failed_after_hash_limit(self, execute_broadcast):
-        # QUEUED 阶段广播持续失败会每轮重签追加一条 TxHash；达到上限必须终局失败，
-        # 不再 execute_broadcast，防止 TxHash 无限增长并拖垮按全部历史 hash 查回执。
+    def test_broadcast_stops_without_failing_after_hash_limit(self, execute_broadcast):
+        # 达到上限仅停止继续生成 TxHash；广播次数不是链上失败证据，终局交给回执任务。
         task = self.make_task()
         for index in range(TRON_MAX_BROADCAST_HASHES):
             task.base_task.append_tx_hash(f"{index + 1:064x}")
@@ -1058,7 +1079,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
 
         execute_broadcast.assert_not_called()
         task.base_task.refresh_from_db()
-        self.assertEqual(task.base_task.status, TxTaskStatus.FAILED)
+        task.refresh_from_db()
+        self.assertEqual(task.base_task.status, TxTaskStatus.QUEUED)
+        self.assertIsNotNone(task.last_attempt_at)
 
     @patch("tron.models.TronTxTask.execute_broadcast")
     def test_broadcast_executes_below_hash_limit(self, execute_broadcast):
@@ -2812,6 +2835,17 @@ class TronReceiptConfirmTaskTests(TestCase):
         VaultSlot.objects.filter(pk=self.slot.pk).update(deploy_tx_task=base_task)
         return base_task
 
+    @staticmethod
+    def fill_hash_limit(*, base_task: TxTask, expires_at_ms: int) -> None:
+        base_task.tx_hashes.filter(hash=base_task.tx_hash).update(
+            expires_at_ms=expires_at_ms
+        )
+        for index in range(1, TRON_MAX_BROADCAST_HASHES):
+            base_task.append_tx_hash(
+                f"{index:064x}",
+                expires_at_ms=expires_at_ms,
+            )
+
     @patch("tron.saas_gas_billing.retry_vault_slot_collect_gas_fee.delay")
     @patch("tron.saas_gas_billing.build_tx_detail", side_effect=RuntimeError("rpc down"))
     def test_collect_gas_fee_build_failure_schedules_retry(
@@ -3049,7 +3083,7 @@ class TronReceiptConfirmTaskTests(TestCase):
     @patch("tron.tasks.notify_vault_slot_collect_gas_fee")
     @patch("tron.tasks.refresh_vault_slot_balance_for_collect_task")
     @patch("tron.tasks.AdapterFactory.get_adapter")
-    def test_confirm_failed_when_old_missing_hash_is_expired(
+    def test_confirm_does_not_fail_uncapped_expired_missing_hash(
         self,
         get_adapter,
         refresh_balance,
@@ -3080,13 +3114,170 @@ class TronReceiptConfirmTaskTests(TestCase):
         confirm_tron_receipt_tx_tasks()
 
         base_task.refresh_from_db()
-        self.assertEqual(base_task.status, TxTaskStatus.FAILED)
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
         self.assertEqual(
             [call.kwargs["tx_hash"] for call in adapter.tx_result.call_args_list],
             [new_hash, old_hash],
         )
         refresh_balance.assert_not_called()
         collect_gas_fee.assert_not_called()
+
+    @patch("tron.tasks.refresh_vault_slot_balance_for_collect_task")
+    @patch("tron.tasks.TronHttpClient")
+    @patch("tron.tasks.AdapterFactory.get_adapter")
+    def test_confirm_fails_capped_missing_hashes_after_solid_grace(
+        self,
+        get_adapter,
+        client_cls,
+        refresh_balance,
+    ):
+        base_task = self.create_collect_task()
+        expired_ms = int((timezone.now() - timedelta(minutes=10)).timestamp() * 1000)
+        self.fill_hash_limit(base_task=base_task, expires_at_ms=expired_ms)
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.MISSING
+        get_adapter.return_value = adapter
+        solid_timestamp_ms = int(timezone.now().timestamp() * 1000)
+        client_cls.return_value.get_latest_solid_block_number.return_value = 123
+        client_cls.return_value.get_solid_block.return_value = {
+            "block_header": {
+                "raw_data": {
+                    "number": 123,
+                    "timestamp": solid_timestamp_ms,
+                }
+            }
+        }
+
+        confirm_tron_receipt_tx_tasks()
+
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.FAILED)
+        self.assertEqual(adapter.tx_result.call_count, TRON_MAX_BROADCAST_HASHES)
+        refresh_balance.assert_not_called()
+
+    @patch("tron.tasks.TronHttpClient")
+    @patch("tron.tasks.AdapterFactory.get_adapter")
+    def test_confirm_keeps_capped_missing_hashes_when_solid_head_is_before_grace(
+        self,
+        get_adapter,
+        client_cls,
+    ):
+        base_task = self.create_collect_task()
+        expired_ms = int((timezone.now() - timedelta(minutes=10)).timestamp() * 1000)
+        self.fill_hash_limit(base_task=base_task, expires_at_ms=expired_ms)
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.MISSING
+        get_adapter.return_value = adapter
+        client_cls.return_value.get_latest_solid_block_number.return_value = 123
+        client_cls.return_value.get_solid_block.return_value = {
+            "block_header": {
+                "raw_data": {
+                    "number": 123,
+                    "timestamp": expired_ms + 5 * 60 * 1000 - 1,
+                }
+            }
+        }
+
+        confirm_tron_receipt_tx_tasks()
+
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
+
+    @patch("tron.tasks.TronHttpClient")
+    @patch("tron.tasks.AdapterFactory.get_adapter")
+    def test_confirm_keeps_capped_missing_hashes_during_local_grace(
+        self,
+        get_adapter,
+        client_cls,
+    ):
+        base_task = self.create_collect_task()
+        expired_ms = int((timezone.now() - timedelta(minutes=1)).timestamp() * 1000)
+        self.fill_hash_limit(base_task=base_task, expires_at_ms=expired_ms)
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.MISSING
+        get_adapter.return_value = adapter
+
+        confirm_tron_receipt_tx_tasks()
+
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
+        client_cls.assert_not_called()
+
+    @patch("tron.tasks.AdapterFactory.get_adapter")
+    def test_confirm_rechecks_hash_snapshot_before_failed_terminal(
+        self,
+        get_adapter,
+    ):
+        base_task = self.create_collect_task()
+        appended_hash = "9" * 64
+        adapter = Mock()
+
+        def tx_result(*, chain, tx_hash):
+            base_task.append_tx_hash(appended_hash)
+            return TxCheckResult(
+                status=TxCheckStatus.FAILED,
+                block_number=100,
+                block_hash="b" * 64,
+            )
+
+        adapter.tx_result.side_effect = tx_result
+        get_adapter.return_value = adapter
+
+        confirm_tron_receipt_tx_tasks()
+
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
+        self.assertEqual(base_task.tx_hash, appended_hash)
+
+    @patch("tron.tasks.AdapterFactory.get_adapter")
+    def test_confirm_rotates_active_missing_task(self, get_adapter):
+        base_task = self.create_collect_task()
+        stale_updated_at = timezone.now() - timedelta(hours=1)
+        TxTask.objects.filter(pk=base_task.pk).update(updated_at=stale_updated_at)
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.MISSING
+        get_adapter.return_value = adapter
+
+        confirm_tron_receipt_tx_tasks()
+
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
+        self.assertGreater(base_task.updated_at, stale_updated_at)
+
+    @patch("tron.tasks.AdapterFactory.get_adapter")
+    def test_confirm_rotates_oldest_missing_batch_and_reaches_later_task(
+        self,
+        get_adapter,
+    ):
+        tasks = []
+        for index in range(33):
+            task = TxTask.objects.create(
+                chain=self.chain,
+                sender=self.sender,
+                tx_type=TxTaskType.VaultSlotCollect,
+                status=TxTaskStatus.SUBMITTED,
+            )
+            task.append_tx_hash(f"{index + 100:064x}")
+            tasks.append(task)
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.MISSING
+        get_adapter.return_value = adapter
+
+        confirm_tron_receipt_tx_tasks()
+
+        first_batch_hashes = {
+            call.kwargs["tx_hash"] for call in adapter.tx_result.call_args_list
+        }
+        self.assertEqual(len(first_batch_hashes), 32)
+        self.assertNotIn(tasks[-1].tx_hash, first_batch_hashes)
+
+        adapter.tx_result.reset_mock()
+        confirm_tron_receipt_tx_tasks()
+
+        second_batch_hashes = {
+            call.kwargs["tx_hash"] for call in adapter.tx_result.call_args_list
+        }
+        self.assertIn(tasks[-1].tx_hash, second_batch_hashes)
 
 
 @patch.dict(

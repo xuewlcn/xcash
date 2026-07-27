@@ -6,7 +6,10 @@ from celery import shared_task
 from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.db.models import Q
+from django.utils import timezone
 from tron.client import TronClientError
+from tron.client import TronHttpClient
+from tron.models import TRON_MAX_BROADCAST_HASHES
 from tron.models import TronTxTask
 from tron.saas_gas_billing import notify_vault_slot_collect_gas_fee
 from tron.saas_gas_billing import notify_vault_slot_deploy_gas_fee
@@ -31,6 +34,7 @@ logger = structlog.get_logger()
 TRON_BROADCAST_LOCK_TIMEOUT_SECONDS = 180
 TRON_SENDER_BROADCAST_LOCK_TIMEOUT_SECONDS = TRON_BROADCAST_LOCK_TIMEOUT_SECONDS
 TRON_RECEIPT_TX_TASK_TYPES = (TxTaskType.VaultSlotDeploy, TxTaskType.VaultSlotCollect)
+TRON_MISSING_TX_FINALITY_GRACE_MS = 5 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -52,11 +56,6 @@ def has_required_confirmations(*, chain: Chain, result: TxCheckResult | None) ->
 
 def sender_broadcast_lock_key(*, chain_id: int, sender_id: int) -> str:
     return f"tron:broadcast:chain:{chain_id}:sender:{sender_id}"
-
-
-def known_tx_hashes_for_task(task: TxTask) -> list[str]:
-    """返回当前任务所有已知 tx_hash，按新版本优先查询。"""
-    return [record.hash for record in known_tx_hash_records_for_task(task)]
 
 
 def known_tx_hash_records_for_task(task: TxTask) -> list[KnownTronTxHash]:
@@ -86,27 +85,42 @@ def known_tx_hash_records_for_task(task: TxTask) -> list[KnownTronTxHash]:
     return records
 
 
-def is_known_tron_hash_expired(record: KnownTronTxHash, *, now_ms: int) -> bool:
-    return record.expires_at_ms is not None and now_ms >= int(record.expires_at_ms)
+def solid_head_reached_timestamp(*, chain: Chain, timestamp_ms: int) -> bool:
+    """仅当最新 solid block 的链上时间越过阈值才返回真，异常一律交给下轮重试。"""
+    client = TronHttpClient(chain=chain)
+    block_number = client.get_latest_solid_block_number()
+    payload = client.get_solid_block(block_number=block_number)
+    if not isinstance(payload, dict):
+        raise TronClientError(f"invalid latest solid block from {chain.code}")
+    try:
+        raw_data = (payload.get("block_header") or {}).get("raw_data") or {}
+        actual_block_number = int(raw_data.get("number") or 0)
+        solid_timestamp_ms = int(raw_data.get("timestamp") or 0)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise TronClientError(f"invalid latest solid block from {chain.code}") from exc
+    if actual_block_number != block_number or solid_timestamp_ms <= 0:
+        raise TronClientError(f"invalid latest solid block from {chain.code}")
+    return solid_timestamp_ms >= timestamp_ms
 
 
 def find_tron_receipt_across_hashes(
     *,
     adapter,
     task: TxTask,
+    records: tuple[KnownTronTxHash, ...],
 ) -> tuple[TxCheckStatus | TxCheckResult | Exception, str | None]:
     """按所有历史 hash 查询 Tron 主动交易结果。
 
     Tron 过期重签会产生多个 txID；任一历史 hash 成功都足以把幂等 deploy/collect
-    任务收口。只有所有已知 hash 均确定失败时才返回 FAILED；只要仍有 missing，
-    就继续等待/后续重播，避免把仍可能上链的新 hash 过早判失败。
+    任务收口。全部 hash 明确失败时直接返回 FAILED；含 missing 时仅在达到重签
+    上限且 expiration、本地宽限与 solid-head 链上时间均越过后返回 FAILED。
     """
     failed_result: TxCheckStatus | TxCheckResult | None = None
     failed_hash: str | None = None
-    saw_missing = False
+    missing_records: list[KnownTronTxHash] = []
     now_ms = int(time.time() * 1000)
 
-    for record in known_tx_hash_records_for_task(task):
+    for record in records:
         raw_result = adapter.tx_result(chain=task.chain, tx_hash=record.hash)
         if isinstance(raw_result, Exception):
             return raw_result, None
@@ -118,12 +132,35 @@ def find_tron_receipt_across_hashes(
                 failed_result = raw_result
                 failed_hash = record.hash
             continue
-        if not is_known_tron_hash_expired(record, now_ms=now_ms):
-            saw_missing = True
+        missing_records.append(record)
 
-    if failed_result is not None and not saw_missing:
+    if failed_result is not None and not missing_records:
         return failed_result, failed_hash
+
+    # 广播次数只是成本上限，不是失败证据。只有 capped 后所有仍 MISSING 的 hash
+    # 都越过 expiration + 固化宽限，且最新 solid block 的链上时间也越过同一阈值，
+    # 才能排除“截止前已打包、但当前 solid 节点暂不可见”的窗口并安全失败。
+    if len(records) >= TRON_MAX_BROADCAST_HASHES and missing_records:
+        deadlines = [
+            int(record.expires_at_ms) + TRON_MISSING_TX_FINALITY_GRACE_MS
+            for record in missing_records
+            if record.expires_at_ms is not None
+        ]
+        if len(deadlines) == len(missing_records) and now_ms >= max(deadlines):
+            try:
+                solid_head_past_deadline = solid_head_reached_timestamp(
+                    chain=task.chain,
+                    timestamp_ms=max(deadlines),
+                )
+            except TronClientError as exc:
+                return exc, None
+            if solid_head_past_deadline:
+                return failed_result or TxCheckStatus.FAILED, failed_hash
     return TxCheckStatus.MISSING, None
+
+
+def tron_hash_snapshot(task: TxTask) -> tuple[KnownTronTxHash, ...]:
+    return tuple(known_tx_hash_records_for_task(task))
 
 
 @shared_task(ignore_result=True)
@@ -198,12 +235,14 @@ def notify_gas_fee_for_receipt_task(task: TxTask) -> None:
 
 def process_tron_receipt_task(task: TxTask) -> bool:
     """按已有 tx hash 推进单个 Tron 主动任务，返回是否已处理到链上事实。"""
-    if not known_tx_hashes_for_task(task):
+    records = tron_hash_snapshot(task)
+    if not records:
         return False
     adapter = AdapterFactory.get_adapter(task.chain.type)
     raw_result, matched_tx_hash = find_tron_receipt_across_hashes(
         adapter=adapter,
         task=task,
+        records=records,
     )
     if isinstance(raw_result, Exception):
         logger.warning(
@@ -243,10 +282,21 @@ def process_tron_receipt_task(task: TxTask) -> bool:
         return False
 
     if status == TxCheckStatus.FAILED:
-        updated = TxTask.mark_finalized_failed(
-            task_id=task.pk,
-            expected_status=task.status,
-        )
+        # 查询 RPC 时不持有数据库锁；终局前锁住父任务并重核 hash 快照。
+        # persist_signed_payload/append_tx_hash 复用同一行锁，因此并发新签名要么先
+        # 进入快照、要么看到终局后停止广播，不会把刚追加的 hash 漏在失败判断之外。
+        with db_transaction.atomic():
+            locked_task = (
+                TxTask.objects.select_for_update()
+                .select_related("chain", "sender")
+                .get(pk=task.pk)
+            )
+            if tron_hash_snapshot(locked_task) != records:
+                return False
+            updated = TxTask.mark_finalized_failed(
+                task_id=locked_task.pk,
+                expected_status=locked_task.status,
+            )
         if updated:
             task.status = TxTaskStatus.FAILED
             if task.tx_type == TxTaskType.VaultSlotDeploy:
@@ -284,7 +334,15 @@ def confirm_tron_receipt_tx_tasks() -> None:
         .order_by("updated_at")[:32]
     )
     for task in tasks:
-        process_tron_receipt_task(task)
+        try:
+            process_tron_receipt_task(task)
+        finally:
+            # MISSING、确认数不足或 RPC 错误都要轮转到队尾，否则固定最老 32 条
+            # 会永久占住批次，使后续部署/归集任务永远得不到确认机会。
+            TxTask.objects.filter(
+                pk=task.pk,
+                status__in=(TxTaskStatus.QUEUED, TxTaskStatus.SUBMITTED),
+            ).update(updated_at=timezone.now())
 
 
 @shared_task(ignore_result=True)

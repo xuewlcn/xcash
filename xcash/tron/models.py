@@ -21,6 +21,7 @@ from tron.resources import require_energy_for_contract_call
 from web3 import Web3
 
 from chains.constants import ChainCode
+from chains.models import TERMINAL_TX_TASK_STATUSES
 from chains.models import TxHash
 from chains.models import TxTask
 from chains.models import TxTaskStatus
@@ -159,48 +160,39 @@ class TronTxTask(UndeletableModel):
         # QUEUED 阶段广播若持续失败（进不了内存池），每轮都会重新签名生成新 txID 并
         # 追加一条 TxHash。这里与 SUBMITTED 过期重播共用同一上限，防止 TxHash 无限
         # 增长、以及回执确认按全部历史 hash 逐一查询而线性膨胀拖垮确认链路。
-        if self.finalize_if_rebroadcast_limit_reached(
-            expected_status=TxTaskStatus.QUEUED
-        ):
+        if self.stop_if_rebroadcast_limit_reached():
             return
         self.execute_broadcast()
 
     def rebroadcast_expired_submitted(self) -> None:
         if not self.can_rebroadcast_expired_submitted:
             return
-        if self.finalize_if_rebroadcast_limit_reached(
-            expected_status=TxTaskStatus.SUBMITTED
-        ):
+        if self.stop_if_rebroadcast_limit_reached():
             return
         self.execute_broadcast()
 
-    def finalize_if_rebroadcast_limit_reached(
-        self, *, expected_status: TxTaskStatus
-    ) -> bool:
-        """重签累计的 TxHash 数达上限时把任务标记失败终局，返回是否已终局。
+    def stop_if_rebroadcast_limit_reached(self) -> bool:
+        """重签累计的 TxHash 数达上限时暂停重签，等待回执确认任务收口。
 
         Tron 无 nonce，每次广播/重播都会生成新 txID 并追加一条 TxHash。无论任务卡在
         QUEUED（广播环节持续失败、始终进不了内存池）还是 SUBMITTED（过期重播但迟迟
         不上链），都必须共享同一上限：否则 TxHash 无限增长，且回执确认要按全部历史
-        hash 逐一查询，RPC 成本随之线性膨胀。终局经受状态保护的统一入口推进，并发
-        收口已置终局态时此处自然落空，不会覆盖。
+        hash 逐一查询，RPC 成本随之线性膨胀。达到上限只停止继续重签，不能仅凭尝试
+        次数判定链上失败；最终状态统一由回执确认任务按所有历史 hash 的链上事实收口。
         """
         if not self.rebroadcast_hash_limit_reached():
             return False
-        updated = TxTask.mark_finalized_failed(
-            task_id=self.base_task_id,
-            expected_status=expected_status,
+        # dispatch 每次只取最老任务；暂停重签也要刷新尝试时间，避免 capped 任务
+        # 每轮都占据队首，饿死其他发送任务。
+        self.record_broadcast_attempt()
+        logger.warning(
+            "Tron 任务重签次数达到上限，暂停重签并等待回执终局",
+            tron_task_id=self.pk,
+            tx_task_id=self.base_task_id,
+            chain=self.chain.code,
+            sender=self.sender.address,
+            tx_hash_count=TRON_MAX_BROADCAST_HASHES,
         )
-        if updated:
-            logger.warning(
-                "Tron 任务重签次数达到上限，已标记失败",
-                tron_task_id=self.pk,
-                tx_task_id=self.base_task_id,
-                chain=self.chain.code,
-                sender=self.sender.address,
-                expected_status=expected_status,
-                tx_hash_count=TRON_MAX_BROADCAST_HASHES,
-            )
         return True
 
     def rebroadcast_hash_limit_reached(self) -> bool:
@@ -272,7 +264,11 @@ class TronTxTask(UndeletableModel):
                     available_bandwidth=resource_quote.available_bandwidth,
                     bandwidth_burn_fee_sun=resource_quote.bandwidth_burn_fee_sun,
                 )
-        self.persist_signed_payload(signed_payload=signed.raw_transaction, tx_id=signed.tx_hash)
+        if not self.persist_signed_payload(
+            signed_payload=signed.raw_transaction,
+            tx_id=signed.tx_hash,
+        ):
+            return
 
         response = client.broadcast_transaction(transaction=signed.raw_transaction)
         if response.get("result") is True:
@@ -446,7 +442,12 @@ class TronTxTask(UndeletableModel):
 
         return expected_tx_id
 
-    def persist_signed_payload(self, *, signed_payload: dict, tx_id: str) -> None:
+    @db_transaction.atomic
+    def persist_signed_payload(self, *, signed_payload: dict, tx_id: str) -> bool:
+        """锁住父任务后持久化签名载荷与 hash；任务已终局时停止后续广播。"""
+        locked_task = TxTask.objects.select_for_update().get(pk=self.base_task_id)
+        if locked_task.status in TERMINAL_TX_TASK_STATUSES:
+            return False
         raw_data = signed_payload.get("raw_data") or {}
         if not isinstance(raw_data, dict):
             raw_data = {}
@@ -464,7 +465,9 @@ class TronTxTask(UndeletableModel):
                 "ref_block_hash",
             ]
         )
-        self.base_task.append_tx_hash(tx_id, expires_at_ms=self.expiration)
+        locked_task.append_tx_hash(tx_id, expires_at_ms=self.expiration)
+        self.base_task.tx_hash = tx_id
+        return True
 
     def mark_submitted(self) -> None:
         TxTask.mark_submitted(

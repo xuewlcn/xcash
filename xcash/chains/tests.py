@@ -1447,6 +1447,70 @@ class VaultSlotReceivedFlagTests(TestCase):
             ).exists()
         )
 
+    def test_reconcile_error_rotation_prevents_starvation(self):
+        from chains.vault_slot_balances import reconcile_vault_slot_collect_balance_gaps
+
+        bad_balance = VaultSlotBalance.objects.create(
+            chain=self.chain,
+            vault_slot=self.slot,
+            crypto=self.crypto,
+            value=Decimal("1234567"),
+            amount=Decimal("1.234567"),
+            worth=Decimal("0"),
+            synced_at=timezone.now(),
+        )
+        updated_at_before = bad_balance.updated_at
+        good_slot = VaultSlot.objects.create(
+            chain=self.chain,
+            usage=VaultSlotUsage.INVOICE,
+            project=self.project,
+            invoice_index=4,
+            address=Web3.to_checksum_address("0x" + "bc" * 20),
+            salt=b"i" * 32,
+        )
+        VaultSlotBalance.objects.create(
+            chain=self.chain,
+            vault_slot=good_slot,
+            crypto=self.crypto,
+            value=Decimal("7654321"),
+            amount=Decimal("7.654321"),
+            worth=Decimal("0"),
+            synced_at=timezone.now(),
+        )
+        original_ensure_pending_due_now = (
+            VaultSlotCollectSchedule.ensure_pending_due_now
+        )
+
+        def ensure_pending_due_now_with_one_failure(*, chain, vault_slot, crypto):
+            if vault_slot.pk == self.slot.pk:
+                raise RuntimeError("bad schedule")
+            return original_ensure_pending_due_now(
+                chain=chain,
+                vault_slot=vault_slot,
+                crypto=crypto,
+            )
+
+        with patch.object(
+            VaultSlotCollectSchedule,
+            "ensure_pending_due_now",
+            side_effect=ensure_pending_due_now_with_one_failure,
+        ):
+            first = reconcile_vault_slot_collect_balance_gaps(limit=1)
+            second = reconcile_vault_slot_collect_balance_gaps(limit=1)
+
+        self.assertEqual(first["error_count"], 1)
+        self.assertEqual(second["created_count"], 1)
+        bad_balance.refresh_from_db()
+        self.assertGreater(bad_balance.updated_at, updated_at_before)
+        self.assertTrue(
+            VaultSlotCollectSchedule.objects.filter(
+                chain=self.chain,
+                vault_slot=good_slot,
+                crypto=self.crypto,
+                tx_task__isnull=True,
+            ).exists()
+        )
+
     def test_reconcile_does_not_auto_requeue_failed_collect_balance_gap(self):
         from chains.vault_slot_balances import reconcile_vault_slot_collect_balance_gaps
 
@@ -1656,6 +1720,26 @@ class ConfirmTransferMissingReceiptTests(TestCase):
 
         self.transfer.refresh_from_db()
         self.assertEqual(self.transfer.status, TransferStatus.CONFIRMING)
+
+    def test_failed_receipt_drops_transfer_instead_of_blocking_confirm_batch(self):
+        # 链上事实变为失败时必须丢弃：继续保留会让该转账永久停在 CONFIRMING，
+        # 恒占 block_number_updated 按 timestamp 升序的批次头部，且 reap 只告警不清理。
+        from chains.tasks import confirm_transfer
+
+        class FailedAdapter:
+            @staticmethod
+            def tx_result(*, chain, tx_hash):
+                return TxCheckStatus.FAILED
+
+        with patch(
+            "chains.tasks.AdapterFactory.get_adapter",
+            return_value=FailedAdapter(),
+        ):
+            confirm_transfer.run(self.transfer.pk)
+
+        # 记录被删除，(chain, hash, event_index) 唯一约束随之释放，
+        # 日后若该 tx 再次被成功打包，扫描器可自然重建。
+        self.assertFalse(Transfer.objects.filter(pk=self.transfer.pk).exists())
 
 
 class BlockNumberUpdatedCompensationTests(TestCase):

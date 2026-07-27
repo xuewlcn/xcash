@@ -332,6 +332,40 @@ class EvmTaskQueueTests(TestCase):
         )
 
     @patch("evm.tasks._broadcast_evm_task.delay")
+    def test_dispatch_due_evm_tx_tasks_skips_account_whose_head_was_just_attempted(
+        self, delay_mock
+    ):
+        # 队首在 4 分钟退避窗口内时，该账户本轮整体跳过，绝不能顺延放行更高 nonce
+        # ——否则会在前序缺口仍在的情况下把高 nonce 送进 mempool。
+        from evm.tasks import dispatch_evm_tx_tasks
+
+        head_task = self._create_evm_task(
+            tx_hash="0x" + "21" * 32,
+            status=TxTaskStatus.QUEUED,
+            nonce=1,
+        )
+        higher_task = self._create_evm_task(
+            tx_hash="0x" + "22" * 32,
+            status=TxTaskStatus.QUEUED,
+            nonce=2,
+        )
+
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        EvmTxTask.objects.filter(pk=head_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=timezone.now(),
+        )
+        EvmTxTask.objects.filter(pk=higher_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_evm_tx_tasks.run()
+
+        delay_mock.assert_not_called()
+
+    @patch("evm.tasks._broadcast_evm_task.delay")
     def test_dispatch_due_evm_tx_tasks_treats_submitted_as_nonce_consumed(
         self,
         delay_mock,

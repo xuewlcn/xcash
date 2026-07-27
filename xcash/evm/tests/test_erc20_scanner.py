@@ -529,51 +529,87 @@ class EvmErc20ScannerTests(TestCase):
             1,
         )
 
-    def test_erc20_scanner_skips_unlocatable_receipt_log_without_blocking_batch(self):
+    def test_erc20_scanner_aborts_round_when_receipt_not_visible(self):
+        # receipt 暂不可见时绝不能跳过该条日志：调用方随后会把游标推过整个批次，
+        # 跳过等于把一笔真实入账永久静默丢弃。必须上抛让本轮中断、游标停在原处。
         sender = Web3.to_checksum_address("0x" + "cc" * 20)
         missing_receipt_log = self._build_transfer_log(
             from_address=sender,
             to_address=self.vault_slot.address,
             log_index=5,
         )
+        rpc_client = Mock()
+        error = EvmScannerRpcError("wrapped missing receipt")
+        error.__cause__ = TransactionNotFound("receipt missing")
+        rpc_client.get_transaction_receipt.side_effect = error
+        rpc_client.get_block_timestamp.return_value = 1_700_000_000
+
+        with self.assertRaises(EvmScannerRpcError):
+            EvmLogScanner._process_logs(
+                chain=self.chain,
+                logs=[missing_receipt_log],
+                rpc_client=rpc_client,
+                token_registry={self.token_on_chain.address: self.token_on_chain},
+            )
+
+        self.assertFalse(Transfer.objects.exists())
+
+    def test_erc20_scanner_aborts_round_when_event_index_unlocatable(self):
+        # logIndex 在 receipt 中匹配不上同样不能跳过：event_index 是持久幂等键，
+        # 定位不到就无法安全落库，只能中断本轮由下一轮重扫。
+        sender = Web3.to_checksum_address("0x" + "cc" * 20)
         mismatch_log = self._build_transfer_log(
             from_address=sender,
             to_address=self.vault_slot.address,
             log_index=6,
         )
-        mismatch_log["transactionHash"] = bytes.fromhex("ac" * 32)
-        valid_log = self._build_transfer_log(
-            from_address=sender,
-            to_address=self.vault_slot.address,
-            log_index=7,
-        )
-        valid_log["transactionHash"] = bytes.fromhex("ad" * 32)
         rpc_client = Mock()
-
-        def get_receipt(*, tx_hash):
-            if tx_hash == "0x" + "ab" * 32:
-                error = EvmScannerRpcError("wrapped missing receipt")
-                error.__cause__ = TransactionNotFound("receipt missing")
-                raise error
-            if tx_hash == "0x" + "ac" * 32:
-                return self._build_receipt({**mismatch_log, "logIndex": 99})
-            if tx_hash == "0x" + "ad" * 32:
-                return self._build_receipt(valid_log)
-            raise AssertionError(f"unexpected tx_hash={tx_hash}")
-
-        rpc_client.get_transaction_receipt.side_effect = get_receipt
+        rpc_client.get_transaction_receipt.return_value = self._build_receipt(
+            {**mismatch_log, "logIndex": 99}
+        )
         rpc_client.get_block_timestamp.return_value = 1_700_000_000
 
-        EvmLogScanner._process_logs(
-            chain=self.chain,
-            logs=[missing_receipt_log, mismatch_log, valid_log],
-            rpc_client=rpc_client,
-            token_registry={self.token_on_chain.address: self.token_on_chain},
-        )
+        with self.assertRaises(EvmScannerRpcError):
+            EvmLogScanner._process_logs(
+                chain=self.chain,
+                logs=[mismatch_log],
+                rpc_client=rpc_client,
+                token_registry={self.token_on_chain.address: self.token_on_chain},
+            )
 
-        transfer = Transfer.objects.get()
-        self.assertEqual(transfer.hash, "0x" + "ad" * 32)
-        self.assertEqual(transfer.event_index, 0)
+        self.assertFalse(Transfer.objects.exists())
+
+    @patch("evm.scanner.logs.EvmScannerRpcClient.get_transaction_receipt")
+    @patch("evm.scanner.logs.EvmScannerRpcClient.get_block_timestamp")
+    @patch("evm.scanner.logs.EvmScannerRpcClient.get_logs")
+    @patch("evm.scanner.logs.EvmScannerRpcClient.get_latest_block_number")
+    def test_scan_chain_keeps_cursor_when_receipt_not_visible(
+        self,
+        get_latest_block_number_mock,
+        get_logs_mock,
+        get_block_timestamp_mock,
+        get_transaction_receipt_mock,
+    ):
+        # 端到端护栏：receipt 不可见时游标必须停在原处，下一轮才能重扫补回该入账。
+        EvmScanCursor.objects.create(chain=self.chain, last_scanned_block=90)
+        get_latest_block_number_mock.return_value = 100
+        get_block_timestamp_mock.return_value = 1_700_000_000
+        transfer_log = self._build_transfer_log(
+            from_address=Web3.to_checksum_address("0x" + "cc" * 20),
+            to_address=self.vault_slot.address,
+        )
+        get_logs_mock.side_effect = [[], [transfer_log], [], []]
+        error = EvmScannerRpcError("wrapped missing receipt")
+        error.__cause__ = TransactionNotFound("receipt missing")
+        get_transaction_receipt_mock.side_effect = error
+
+        with self.assertRaises(EvmScannerRpcError):
+            EvmLogScanner.scan_chain(chain=self.chain, batch_size=32)
+
+        cursor = EvmScanCursor.objects.get(chain=self.chain)
+        self.assertEqual(cursor.last_scanned_block, 90)
+        self.assertNotEqual(cursor.last_error, "")
+        self.assertFalse(Transfer.objects.exists())
 
     @patch("evm.scanner.observed_transfers.TransferService.create_observed_transfer")
     def test_erc20_scanner_skips_oversized_value_without_blocking_valid_event(

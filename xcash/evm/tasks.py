@@ -83,12 +83,28 @@ def dispatch_evm_tx_tasks() -> None:
     - 创建超过 1 秒的任务才放行，避开刚提交事务的短暂可见性抖动
     - 4 分钟内已尝试过的不重复投递
     - 每轮最多投递 8 笔
+
+    队首必须先用 DISTINCT ON 收敛再做过滤：全系统每种链类型只有一个热钱包地址，
+    每轮真正可能放行的就是每个 (sender, chain) 的最低 nonce 那一条，条数等于链数。
+    若直接对全部 QUEUED 行做 select_for_update()+select_related()，PG 会把
+    evm_evmtxtask 与 chains_txtask 两张表的命中行全部锁住，且循环内要逐行执行一次
+    has_lower_queued_nonce() 的 EXISTS 查询。正常态队列只有个位数无感，但热钱包断
+    gas / 队首卡死这类事故下 QUEUED 会按入账速率堆积，届时每 2 秒一轮的派发会锁住
+    整个队列约一秒、并发出与积压量同阶的查询，而广播路径的 append_tx_hash 恰好需要
+    同一批 TxTask 行锁——恢复期反被派发器自己拖住。
     """
+    head_pks = list(
+        EvmTxTask.objects.filter(base_task__status=TxTaskStatus.QUEUED)
+        .order_by("sender_id", "chain_id", "nonce")
+        .distinct("sender_id", "chain_id")
+        .values_list("pk", flat=True)
+    )
     tasks = (
         EvmTxTask.objects.select_for_update()
         .select_related("base_task")
         .filter(
             Q(last_attempt_at__isnull=True) | Q(last_attempt_at__lt=ago(minutes=4)),
+            pk__in=head_pks,
             created_at__lt=ago(seconds=EVM_QUEUED_DISPATCH_ELIGIBLE_AFTER_SECONDS),
             base_task__status=TxTaskStatus.QUEUED,
         )

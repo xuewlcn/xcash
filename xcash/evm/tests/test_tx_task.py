@@ -7,6 +7,7 @@ from web3 import Web3
 from web3.exceptions import ContractLogicError
 from web3.exceptions import TransactionNotFound
 
+from chains.adapters import TxCheckStatus
 from chains.constants import ChainCode
 from chains.models import Address
 from chains.models import AddressUsage
@@ -183,6 +184,9 @@ class EvmTxTaskTests(TestCase):
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
+                get_transaction_receipt=Mock(
+                    side_effect=TransactionNotFound("0x" + "d" * 64)
+                ),
                 get_balance=Mock(return_value=1),
                 estimate_gas=estimate_gas_mock,
                 send_raw_transaction=send_raw_mock,
@@ -833,6 +837,9 @@ class EvmTxTaskTests(TestCase):
                 gas_price=1,
                 get_balance=Mock(return_value=10**18),
                 estimate_gas=Mock(return_value=21_000),
+                get_transaction_receipt=Mock(
+                    side_effect=TransactionNotFound("0x" + "4" * 64)
+                ),
                 send_raw_transaction=Mock(side_effect=RuntimeError("already known")),
             )
         )
@@ -941,11 +948,18 @@ class EvmTxTaskTests(TestCase):
             ),
         )
         tx_hash = "0x" + "7" * 64
-        receipt = {"status": receipt_status, "blockNumber": block_number, "logs": []}
+        block_hash = "0x" + "77" * 32
+        receipt = {
+            "status": receipt_status,
+            "blockNumber": block_number,
+            "blockHash": block_hash,
+            "logs": [],
+        }
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
                 get_transaction_receipt=Mock(return_value=receipt),
+                get_block=Mock(return_value={"hash": block_hash}),
                 get_balance=Mock(return_value=0),
                 send_raw_transaction=Mock(),
             )
@@ -1001,6 +1015,86 @@ class EvmTxTaskTests(TestCase):
 
         base_task.refresh_from_db()
         self.assertEqual(base_task.status, TxTaskStatus.FAILED)
+
+    def test_queued_recovery_does_not_finalize_noncanonical_receipt(self):
+        """孤块 receipt 只能证明交易曾广播，不能作为成功或失败终局证据。"""
+        chain = make_evm_chain(code=ChainCode.Ethereum)
+        block = 100
+        chain.latest_block_number = block + chain.confirm_block_count
+        base_task, tx_task = self._make_recover_task(
+            chain=chain, receipt_status=1, block_number=block
+        )
+        chain.w3.eth.get_block.return_value = {"hash": "0x" + "88" * 32}
+
+        with patch(
+            "evm.poller.EvmTaskPoller.process_succeeded_receipt"
+        ) as process_mock:
+            tx_task.broadcast()
+
+        process_mock.assert_not_called()
+        chain.w3.eth.send_raw_transaction.assert_not_called()
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
+
+    def test_queued_recovery_canonical_rpc_error_keeps_submitted(self):
+        """无法读取 canonical block 时不终局，等待 SUBMITTED poller 重试。"""
+        chain = make_evm_chain(code=ChainCode.Ethereum)
+        block = 100
+        chain.latest_block_number = block + chain.confirm_block_count
+        base_task, tx_task = self._make_recover_task(
+            chain=chain, receipt_status=0, block_number=block
+        )
+        chain.w3.eth.get_block.side_effect = RuntimeError("rpc unavailable")
+
+        with self.assertRaisesMessage(RuntimeError, "rpc unavailable"):
+            tx_task.broadcast()
+
+        chain.w3.eth.send_raw_transaction.assert_not_called()
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.status, TxTaskStatus.SUBMITTED)
+
+    def test_receipt_lookup_skips_orphan_and_finds_canonical_historical_hash(self):
+        """新 hash 的孤块 receipt 不得遮蔽更早 hash 的 canonical receipt。"""
+        from evm.poller import EvmTaskPoller
+
+        chain = make_evm_chain(code=ChainCode.Ethereum)
+        chain.latest_block_number = 200
+        base_task, tx_task = self._make_recover_task(
+            chain=chain, receipt_status=1, block_number=100
+        )
+        historical_hash = "0x" + "8" * 64
+        TxHash.objects.create(
+            tx_task=base_task,
+            chain=chain,
+            hash=historical_hash,
+            version=1,
+        )
+        orphan_hash = base_task.tx_hash
+        receipts = {
+            orphan_hash: {
+                "status": 1,
+                "blockNumber": 100,
+                "blockHash": "0x" + "aa" * 32,
+            },
+            historical_hash: {
+                "status": 0,
+                "blockNumber": 101,
+                "blockHash": "0x" + "bb" * 32,
+            },
+        }
+        chain.w3.eth.get_transaction_receipt.side_effect = receipts.__getitem__
+        chain.w3.eth.get_block.side_effect = lambda number: {
+            "hash": "0x" + ("cc" if number == 100 else "bb") * 32
+        }
+
+        status, tx_hash, receipt, observed = (
+            EvmTaskPoller._find_receipt_across_hashes(evm_task=tx_task)
+        )
+
+        self.assertEqual(status, TxCheckStatus.FAILED)
+        self.assertEqual(tx_hash, historical_hash)
+        self.assertEqual(receipt, receipts[historical_hash])
+        self.assertTrue(observed)
 
     def test_nonce_too_low_checks_existing_hash_before_reraising(self):
         """nonce too low 时若历史 hash 已有 receipt，应自动恢复而不是继续卡 QUEUED。"""

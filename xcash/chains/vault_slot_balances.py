@@ -286,6 +286,11 @@ def reconcile_vault_slot_collect_balance_gaps(*, limit: int = 32) -> dict:
                 balance_value=str(balance.value),
                 error=str(exc),
             )
+            # 持续异常的单行也要轮转到队尾，避免占满 limit 批次后
+            # 饿死后续可正常补建的余额缺口。
+            VaultSlotBalance.objects.filter(pk=balance.pk).update(
+                updated_at=timezone.now()
+            )
             continue
 
         created_count += 1

@@ -267,9 +267,15 @@ class EvmObservedTransferProcessor:
         配置或 value 校验过滤集变化而漂移，从而保持 (chain, hash, event_index)
         这个持久幂等键稳定。
 
-        receipt 暂不可见或 logIndex 无法在 receipt 中匹配时，只跳过该条日志并记录
-        warning，避免一条坏日志卡死整条链；数据库层暂时性故障仍由落库入口上抛，
-        让本轮扫描中断且游标不推进。
+        receipt 暂不可见或 logIndex 无法在 receipt 中匹配时，绝不能跳过该条日志：
+        调用方会在本轮结束后把游标推进到 to_block（批次最多 100 块、只 replay 2 块），
+        跳过等于把一笔真实入账永久静默丢弃——链上钱已进 VaultSlot、会被归集扫走，
+        客户账上却没有 Deposit，且无任何自愈路径。故这里上抛 EvmScannerRpcError，
+        让本轮扫描中断、游标停在原处、错误落到 EvmScanCursor.last_error 供运维观察，
+        由下一轮重扫幂等恢复。若该 tx 确实已被重组丢弃，下一轮 eth_getLogs 自然不再
+        返回该日志，扫描随即继续推进，不会永久卡死。
+
+        数据库层暂时性故障同样由落库入口上抛，语义一致。
         """
         timestamp_cache: dict[int, int] = {}
         receipt_cache: dict[str, dict[str, Any] | None] = {}
@@ -281,25 +287,22 @@ class EvmObservedTransferProcessor:
                 receipt_cache=receipt_cache,
             )
             if receipt is None:
-                logger.warning(
-                    "EVM 入账日志 receipt 暂不可见，已跳过单条日志",
-                    chain=chain.code,
-                    tx_hash=log.tx_hash,
+                raise EvmScannerRpcError(
+                    "EVM 入账日志 receipt 暂不可见，中断本轮扫描以保住游标: "
+                    f"chain={chain.code} tx_hash={log.tx_hash}"
                 )
-                continue
 
             event_index = cls.receipt_event_index_for_log(
                 receipt=receipt,
                 block_log_index=log.block_log_index,
             )
             if event_index is None:
-                logger.warning(
-                    "EVM 入账日志无法在交易 receipt 中稳定定位 event_index，已跳过",
-                    chain=chain.code,
-                    tx_hash=log.tx_hash,
-                    block_log_index=log.block_log_index,
+                raise EvmScannerRpcError(
+                    "EVM 入账日志无法在交易 receipt 中定位 event_index，"
+                    "中断本轮扫描以保住游标: "
+                    f"chain={chain.code} tx_hash={log.tx_hash} "
+                    f"block_log_index={log.block_log_index}"
                 )
-                continue
 
             timestamp = timestamp_cache.get(log.block_number)
             if timestamp is None:

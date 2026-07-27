@@ -46,7 +46,7 @@ class EvmTaskPoller:
 
         for evm_task in queryset:
 
-            status, tx_hash, receipt = cls._find_receipt_across_hashes(
+            status, tx_hash, receipt, _ = cls._find_receipt_across_hashes(
                 evm_task=evm_task
             )
             if isinstance(status, Exception):
@@ -127,34 +127,97 @@ class EvmTaskPoller:
     @staticmethod
     def _find_receipt_across_hashes(
         *, evm_task: EvmTxTask
-    ) -> tuple[TxCheckStatus | Exception, str | None, dict | None]:
+    ) -> tuple[TxCheckStatus | Exception, str | None, dict | None, bool]:
         """遍历任务的所有历史 tx_hash 查找链上 receipt。
 
-        返回 (status, tx_hash, receipt):
-        - 找到成功 receipt -> (SUCCEEDED, 命中的 hash, receipt)
-        - 找到失败 receipt -> (FAILED, 命中的 hash, receipt)
-        - 全部未找到 -> (MISSING, None, None)
-        - RPC 异常 -> (Exception, None, None)
+        已达确认深度的 receipt 必须同时位于 canonical block；孤块 receipt 按未命中
+        继续查其他历史 hash。未达确认深度时不额外查询 block，避免轮询期无谓 RPC。
+
+        最后一位表示本轮是否观察到过 receipt，供 QUEUED 恢复路径决定是否先转为
+        SUBMITTED；即使唯一 receipt 已不在 canonical chain，也不能把该任务当成从未
+        广播过而继续走普通首播路径。
         """
+        unconfirmed: tuple[TxCheckStatus, str, dict] | None = None
+        receipt_observed = False
         for tx_hash in evm_task.known_tx_hashes():
             try:
                 receipt = evm_task.chain.w3.eth.get_transaction_receipt(tx_hash)
             except TransactionNotFound:
                 continue
             except Exception as exc:  # noqa: BLE001
-                return exc, None, None
+                return exc, None, None, receipt_observed
 
             if receipt is None:
                 continue
+            receipt_observed = True
+            normalized_receipt = dict(receipt)
 
             status = receipt.get("status")
             if status == 1:
-                return TxCheckStatus.SUCCEEDED, tx_hash, dict(receipt)
-            if status == 0:
-                return TxCheckStatus.FAILED, tx_hash, dict(receipt)
-            return RuntimeError("EVM receipt status missing or invalid"), None, None
+                check_status = TxCheckStatus.SUCCEEDED
+            elif status == 0:
+                check_status = TxCheckStatus.FAILED
+            else:
+                return (
+                    RuntimeError("EVM receipt status missing or invalid"),
+                    None,
+                    None,
+                    receipt_observed,
+                )
 
-        return TxCheckStatus.MISSING, None, None
+            if not EvmTaskPoller._has_required_confirmations(
+                chain=evm_task.chain,
+                receipt=normalized_receipt,
+            ):
+                unconfirmed = unconfirmed or (
+                    check_status,
+                    tx_hash,
+                    normalized_receipt,
+                )
+                continue
+
+            try:
+                is_canonical = EvmTaskPoller.receipt_is_canonical(
+                    chain=evm_task.chain,
+                    receipt=normalized_receipt,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return exc, None, None, receipt_observed
+            if not is_canonical:
+                logger.warning(
+                    "EVM 主动交易 receipt 已脱离 canonical chain，继续检查历史 hash",
+                    chain=evm_task.chain.code,
+                    tx_hash=tx_hash,
+                    block_number=normalized_receipt.get("blockNumber"),
+                    receipt_block_hash=normalized_receipt.get("blockHash"),
+                )
+                continue
+            return check_status, tx_hash, normalized_receipt, receipt_observed
+
+        if unconfirmed is not None:
+            status, tx_hash, receipt = unconfirmed
+            return status, tx_hash, receipt, receipt_observed
+        return TxCheckStatus.MISSING, None, None, receipt_observed
+
+    @staticmethod
+    def receipt_is_canonical(*, chain: Chain, receipt: dict) -> bool:
+        """确认 receipt.blockHash 仍是该高度的 canonical block hash。"""
+        block_number = receipt.get("blockNumber")
+        receipt_block_hash = receipt.get("blockHash")
+        if block_number is None or receipt_block_hash is None:
+            raise RuntimeError("EVM receipt blockNumber or blockHash missing")
+        canonical_block = chain.w3.eth.get_block(int(block_number))
+        canonical_block_hash = canonical_block.get("hash")
+        if canonical_block_hash is None:
+            raise RuntimeError("EVM canonical block hash missing")
+        return EvmTaskPoller.normalize_hash(
+            receipt_block_hash
+        ) == EvmTaskPoller.normalize_hash(canonical_block_hash)
+
+    @staticmethod
+    def normalize_hash(value: object) -> str:
+        raw = value.hex() if hasattr(value, "hex") else str(value)
+        return raw.removeprefix("0x").lower()
 
     @staticmethod
     def _has_required_confirmations(*, chain: Chain, receipt: dict) -> bool:

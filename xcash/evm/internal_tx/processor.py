@@ -57,19 +57,12 @@ def _finalize_failed(*, tx_task: TxTask) -> None:
             mark_deployed_if_on_chain_for_task(tx_task)
 
 
-def _deploy_slot_is_on_chain(*, tx_task: TxTask) -> bool | None:
+def _deploy_slot_is_on_chain(*, slot: VaultSlot, tx_task: TxTask) -> bool | None:
     """复核部署交易对应的 VaultSlot 是否已在链上有合约码。
 
-    返回 True/False 表示链上有码/无码；返回 None 表示无法判定（找不到 slot 或
-    链上检查 RPC 异常），此时沿用成功路径，不因瞬时 RPC 故障误伤真实部署。
+    返回 True/False 表示链上有码/无码；返回 None 表示链上检查 RPC 异常、无法判定，
+    调用方必须保持 SUBMITTED 等待下轮重试。
     """
-    slot = (
-        VaultSlot.objects.select_related("chain")
-        .filter(deploy_tx_task=tx_task)
-        .first()
-    )
-    if slot is None:
-        return None
     try:
         return get_backend(slot.chain).is_deployed_on_chain(
             chain=slot.chain,
@@ -77,7 +70,7 @@ def _deploy_slot_is_on_chain(*, tx_task: TxTask) -> bool | None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "EVM VaultSlot 部署成功收口前链上有码检查失败，按成功路径继续",
+            "EVM VaultSlot 部署成功收口前链上有码检查失败，保持待确认",
             chain=slot.chain.code,
             vault_slot_id=slot.pk,
             tx_task_id=tx_task.pk,
@@ -93,11 +86,34 @@ def _finalize_deploy_success(
     tx_task: TxTask,
     receipt: dict,
 ) -> bool:
+    slot = (
+        VaultSlot.objects.select_related("chain")
+        .filter(deploy_tx_task=tx_task)
+        .first()
+    )
+    if slot is None:
+        # 槽位已不存在（项目/客户/链级联删除，或 deploy_tx_task 已改指新任务）。
+        # 这与"RPC 查不动"必须区分：重试永远不可能让槽位回来，若同样按"待确认"处理，
+        # 任务会永久停在 SUBMITTED——poller 每轮重复拉 tx + receipt，并长期占住一个
+        # EVM_PIPELINE_DEPTH 名额。既无 is_deployed 需要维护、也无项目可计费，
+        # 直接成功终局收口，让管线名额和轮询开销都释放掉。
+        logger.error(
+            "EVM VaultSlot 部署收口找不到关联槽位，直接成功终局",
+            chain=chain.code,
+            tx_hash=tx_hash,
+            tx_task_id=tx_task.pk,
+        )
+        TxTask.mark_finalized_success(chain=chain, tx_hash=tx_hash)
+        return True
+
     # 部署交易 status=1 只代表调用未 revert，不代表槽位真的被部署：工厂地址本身
     # 无合约码时，deployVaultSlot 调用会"空成功"，槽位地址仍无码。若此时按成功
     # 收口会误标 is_deployed，之后 reconcile 见"有余额"反复重建归集任务空扫烧 gas。
     # 故先复核链上有码，确定无码则按失败收口，待工厂部署后重建部署任务恢复。
-    if _deploy_slot_is_on_chain(tx_task=tx_task) is False:
+    is_deployed = _deploy_slot_is_on_chain(slot=slot, tx_task=tx_task)
+    if is_deployed is None:
+        return False
+    if not is_deployed:
         logger.error(
             "EVM VaultSlot 部署交易成功但地址无合约码，按失败收口",
             chain=chain.code,

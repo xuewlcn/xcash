@@ -199,23 +199,6 @@ class EvmTxTask(UndeletableModel):
                 hashes.append(tx_hash)
         return hashes
 
-    def _find_receipt_for_known_hashes(self) -> tuple[str | None, dict | None]:
-        from web3.exceptions import TransactionNotFound  # noqa: PLC0415
-
-        for tx_hash in self.known_tx_hashes():
-            try:
-                receipt = self.chain.w3.eth.get_transaction_receipt(
-                    tx_hash
-                )  # noqa: SLF001
-            except TransactionNotFound:
-                continue
-            except AttributeError:
-                return None, None
-            if receipt is None:
-                continue
-            return tx_hash, dict(receipt)
-        return None, None
-
     def _recover_queued_receipt_if_any(self) -> bool:
         """QUEUED 任务若已有 tx_hash，先按链上 receipt 恢复状态。
 
@@ -227,33 +210,39 @@ class EvmTxTask(UndeletableModel):
         if base_task.status != TxTaskStatus.QUEUED:
             return False
 
-        tx_hash, receipt = self._find_receipt_for_known_hashes()
-        if receipt is None or tx_hash is None:
-            return False
-
+        from chains.adapters import TxCheckStatus  # noqa: PLC0415
         from evm.poller import EvmTaskPoller  # noqa: PLC0415
 
-        status = receipt.get("status")
-        if status == 1:
+        status, tx_hash, receipt, receipt_observed = (
+            EvmTaskPoller._find_receipt_across_hashes(evm_task=self)  # noqa: SLF001
+        )
+        if receipt_observed:
             self._mark_submitted()
+        if isinstance(status, Exception):
+            raise status
+        if not receipt_observed:
+            return False
+
+        if status == TxCheckStatus.SUCCEEDED:
+            assert tx_hash is not None
+            assert receipt is not None
             EvmTaskPoller.process_succeeded_receipt(
                 evm_task=self,
                 tx_hash=tx_hash,
                 receipt=receipt,
             )
             return True
-        if status == 0:
-            # 先转 SUBMITTED，让链上事实脱离 QUEUED 广播路径；失败终局与成功一样
-            # 必须等确认数达标，未达标时暂不终局，改由 poller 在确认后收口，避免
-            # reorg 回滚该交易后 nonce 缺口卡死后续任务。
-            self._mark_submitted()
+        if status == TxCheckStatus.FAILED:
+            assert receipt is not None
             if EvmTaskPoller._has_required_confirmations(  # noqa: SLF001
                 chain=self.chain,
                 receipt=receipt,
             ):
                 EvmTaskPoller.finalize_failed_task(evm_task=self)
             return True
-        raise RuntimeError("EVM receipt status missing or invalid")
+        # 只观察到已脱离 canonical chain 的 receipt：保持 SUBMITTED，由 poller
+        # 按重播阈值重新广播，不能按该孤块 receipt 成功或失败终局。
+        return True
 
     def _can_broadcast_queued(self) -> bool:
         """普通广播入口只允许 QUEUED 任务进入真实广播副作用。"""
