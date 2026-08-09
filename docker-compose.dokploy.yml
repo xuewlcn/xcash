@@ -34,10 +34,6 @@ services:
       - redis-server
       - --appendonly
       - "yes"
-      - --maxmemory
-      - "256mb"
-      - --maxmemory-policy
-      - volatile-lru
     volumes:
       - redis_data:/data
     networks:

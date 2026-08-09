@@ -34,9 +34,8 @@ REDIS_URL = env.str(
     "REDIS_URL", default=f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 )
 # 缓存与 broker 共用同一 Redis 实例但分逻辑库：broker 在 REDIS_DB（默认 0），
-# 缓存独占 REDIS_CACHE_DB（默认 1）。Redis 的 maxmemory 淘汰策略是实例级、无法按库隔离，
-# 实例侧统一配 volatile-lru：只淘汰带 TTL 的临时缓存键，broker 任务键（无 TTL）与
-# timeout=None 的配置型缓存（watch set / runtime settings / 权限）天然豁免，永不被淘汰。
+# 缓存独占 REDIS_CACHE_DB（默认 1）。逻辑库不隔离 Redis 实例级内存策略，因此
+# broker 所在实例不能依赖 maxmemory 淘汰兜底，否则内存超限后队列/锁写入会被拒。
 REDIS_CACHE_DB = env.int("REDIS_CACHE_DB", default=1)
 REDIS_CACHE_URL = env.str(
     "REDIS_CACHE_URL", default=f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CACHE_DB}"

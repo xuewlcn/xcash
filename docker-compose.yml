@@ -16,17 +16,12 @@ services:
     image: redis:8.2.1
     container_name: xcash_redis
     restart: unless-stopped
-    # maxmemory 给缓存 + broker 共用实例设上限，避免无限增长打爆主机；
-    # volatile-lru 只淘汰带 TTL 的临时缓存键，broker 任务键与 timeout=None 的
-    # 配置缓存（无 TTL）永不被淘汰，保证任务不丢、配置缓存常驻。
+    # broker 与缓存共用 Redis 实例时不设置 maxmemory：Redis 内存策略是实例级的，
+    # 内存超过上限后 broker 锁/队列写入也会被拒，导致 worker 无法启动。
     command:
       - redis-server
       - --appendonly
       - "yes"
-      - --maxmemory
-      - "256mb"
-      - --maxmemory-policy
-      - volatile-lru
     volumes:
       - redis_data:/data
 

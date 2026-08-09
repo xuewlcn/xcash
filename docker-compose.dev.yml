@@ -25,16 +25,12 @@ services:
     image: redis:8.2.1
     container_name: xcash_dev_redis
     restart: unless-stopped
-    # 与生产一致：maxmemory 上限 + volatile-lru（只淘汰带 TTL 的临时缓存，
-    # broker 任务键与 timeout=None 配置缓存豁免），让本地也能复现淘汰行为。
+    # 与生产一致：broker 与缓存共用实例时不设置 maxmemory，避免 worker 在
+    # Redis 超限后连启动锁都无法写入。
     command:
       - redis-server
       - --appendonly
       - "yes"
-      - --maxmemory
-      - "256mb"
-      - --maxmemory-policy
-      - volatile-lru
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
