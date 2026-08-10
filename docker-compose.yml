@@ -11,17 +11,60 @@ networks:
   xcash_public:
     name: xcash_public
 
+# 容器日志不受宿主 logrotate 管辖，json-file 驱动默认【不限量】：生产是 structlog
+# JSON + INFO 级别，长期运行会把宿主磁盘吃满，进而拖垮 Postgres 写入。全部服务统一
+# 挂这份上限（每服务最多 150MB）。需要长期留存与检索时，请在宿主侧接日志采集链路，
+# 而不是靠放大这里的上限。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+# django / worker / beat 三者共享的部分。抽成独立扩展字段而非挂在 django 服务上，
+# 是为了让「哪个服务有 container_name、有 healthcheck」由各服务自己声明，
+# 不必先继承再用 !reset 取消（那种写法既依赖较新的 Compose 版本，也难读）。
+x-django-base: &django-base
+  build:
+    context: .
+    dockerfile: ./compose/production/django/Dockerfile
+    target: python-run-stage
+  restart: unless-stopped
+  logging: *default-logging
+  # 依赖就绪后才启动，避免首次部署时 migrate 撞上尚未初始化完成的 Postgres。
+  # entrypoint 里的 wait-for-it 仍然保留：upgrade.sh 用 `run --no-deps` 跑一次性
+  # manage.py 命令，那条路径不经过 depends_on 门控，仍需自己等依赖。
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  # 主环境文件含 WALLET_MNEMONIC_ENCRYPTION_KEY（钱包助记词加密密钥）。
+  # 地址派生与 EVM 签名在主系统内部完成，worker/beat 经该基底继承同一份配置。
+  env_file:
+    - ${ENV_FILE:-.env}
+  # django/worker/beat 都需要按 DNS 别名解析 saas 侧 Caddy：
+  # django 同步校验 SaaS permission，worker 推送内部回调，beat 调度刷新任务。
+  networks: [default, xcash_public]
+
 services:
   redis:
     image: redis:8.2.1
     container_name: xcash_redis
     restart: unless-stopped
+    logging: *default-logging
     # broker 与缓存共用 Redis 实例时不设置 maxmemory：Redis 内存策略是实例级的，
     # 内存超过上限后 broker 锁/队列写入也会被拒，导致 worker 无法启动。
     command:
       - redis-server
       - --appendonly
       - "yes"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       - redis_data:/data
 
@@ -29,10 +72,22 @@ services:
     image: postgres:18.4-trixie
     container_name: xcash_db
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: xcash
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      # 就绪探测必须走 TCP（-h 127.0.0.1）而非 pg_isready 默认的 Unix socket：
+      # postgres 官方镜像首次初始化会先起一个【仅监听 socket】的临时实例跑建库脚本，
+      # socket 版探测会在临时实例阶段就报就绪，使依赖方撞上「临时实例→正式实例」
+      # 切换窗口而偶发连接失败。同 scripts/upgrade.sh 里 wait_for_postgres 的理由。
+      test:
+        ["CMD-SHELL", 'pg_isready -h 127.0.0.1 -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     volumes:
       - db_data:/var/lib/postgresql
 
@@ -40,41 +95,62 @@ services:
     image: postgres:18.4-trixie
     container_name: xcash_migration_rehearsal_db
     profiles: ["migration-rehearsal"]
+    logging: *default-logging
     environment:
       POSTGRES_DB: xcash
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -h 127.0.0.1 -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
 
-  django: &django
-    build:
-      context: .
-      dockerfile: ./compose/production/django/Dockerfile
-      target: python-run-stage
+  django:
+    <<: *django-base
     container_name: xcash_django
-    restart: unless-stopped
-    depends_on:
-      - db
-      - redis
-    # 主环境文件含 WALLET_MNEMONIC_ENCRYPTION_KEY（钱包助记词加密密钥）。
-    # 地址派生与 EVM 签名在主系统内部完成，worker/beat 经 anchor 继承同一份配置。
-    env_file:
-      - ${ENV_FILE:-.env}
-    # django/worker/beat 都需要按 DNS 别名解析 saas 侧 Caddy：
-    # django 同步校验 SaaS permission，worker 推送内部回调，beat 调度刷新任务。
-    networks: [default, xcash_public]
+    healthcheck:
+      # 运行镜像基于 python:3.13-slim，不含 curl/wget；直接用解释器自带的 urllib
+      # 探测，避免为健康检查往生产镜像里加装额外软件包。非 2xx 会抛异常→退出码非 0。
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # /start 先跑 migrate 与参考数据初始化才拉起 gunicorn，大库迁移可能数分钟；
+      # start_period 内的失败不计入 retries，避免首次部署被误判为不健康。
+      start_period: 180s
     command: /start
 
   worker:
-    <<: *django
-    container_name: xcash_worker
+    <<: *django-base
+    # 【有意不设 container_name】：固定容器名会让 `docker compose up -d --scale worker=N`
+    # 因名字冲突直接失败。worker 是本项目唯一需要横向扩容的无状态服务
+    # （PERFORMANCE=high 下单容器 8 并发未必够），必须保留 --scale 能力。
     environment:
       REMAP_SIGTERM: SIGQUIT
     stop_grace_period: 60s
+    healthcheck:
+      # 走 broker 往返、由 worker 主进程应答（prefork 子进程全忙时也能回），
+      # 因此能反映"还在消费队列"而不只是"进程还活着"。--destination 限定本容器
+      # 节点名，否则 --scale 出多个 worker 时，健康的兄弟节点会替挂掉的那个应答。
+      test:
+        - CMD-SHELL
+        - celery -A config.celery inspect ping --timeout 10 --destination "celery@$$HOSTNAME" > /dev/null
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
     command: /start-worker
 
   beat:
-    <<: *django
+    <<: *django-base
     container_name: xcash_beat
+    # beat 有意不配 healthcheck：Celery 没有给 beat 提供存活查询接口（inspect ping
+    # 只对 worker 有效），任何探测都只能验证「进程在」，与 restart 策略的保障重复。
     command: /start-beat
 
   caddy:
@@ -84,10 +160,28 @@ services:
       target: caddy-run-stage
     container_name: xcash_caddy
     restart: unless-stopped
+    logging: *default-logging
+    # 用 service_started 而非 service_healthy：django 起不来时让 caddy 照常提供
+    # 502，比整个入口拒连更容易定位问题。
     depends_on:
-      - django
+      django:
+        condition: service_started
+    environment:
+      # 受信代理网段，决定 Caddy 是否采信宿主反代转发的真实客户端 IP 与协议。
+      # 默认信任私有网段（宿主反代经 127.0.0.1:6688 接入时，对端是 Docker 网关）。
+      # 若把 6688 对外暴露（LISTEN_TO=0.0.0.0），务必收紧为反代机的具体 IP。
+      # 详见 compose/production/caddy/Caddyfile 顶部说明。
+      CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-private_ranges}
     ports:
       - "${LISTEN_TO:-127.0.0.1}:6688:80"
+    healthcheck:
+      # caddy:alpine 自带 busybox wget，无需额外安装。探 /health 而非 / ：
+      # 后者在未设 ADMIN_PATH 时是后台登录页，会被限流规则计数。
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
     # 对外（公网）走端口映射，对内（SaaS 同机调用）通过 xcash_public 网络按 DNS 别名直连。
     networks:
       default: {}

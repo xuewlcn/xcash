@@ -153,7 +153,17 @@ class TransferService:
         以统一幂等语义、唯一键冲突判定和后续扩展能力。
         """
         with transaction.atomic():
-            chain = Chain.objects.select_for_update().get(pk=observed.chain.pk)
+            # 这里不对 Chain 行加锁。需要串行化的只是同一笔链上事件的「查已存在 →
+            # reorg drop → 重建」，而 (chain, hash, event_index) 唯一约束加下方的
+            # IntegrityError 回查已经把并发完整收口：两个 worker 同时重建时必然只有
+            # 一个 INSERT 成功，另一个走回查分支拿到同一行。
+            # 反之链级排他锁的粒度远大于所需——这是所有链、所有扫描器落库的唯一入口，
+            # 每观察到一笔入账就独占该链的 Chain 行，会让本链全部外键插入（TxTask /
+            # TxHash / VaultSlotBalance / 归集计划）卡在 FK 的 FOR KEY SHARE 上；
+            # 被外层事务包裹时（EVM 内部交易收口）这把链锁还会一直持有到业务撮合与
+            # 确认走完，且与「先锁 VaultSlot 再读 Chain」的余额刷新路径构成反向加锁
+            # 顺序，周期性触发死锁。
+            chain = observed.chain
             existing = (
                 Transfer.objects.select_for_update()
                 .filter(

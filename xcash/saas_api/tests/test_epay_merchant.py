@@ -7,7 +7,6 @@
 - 不支持 DELETE（每个项目必须始终拥有 EpayMerchant）
 """
 
-
 import pytest
 from django.test import override_settings
 
@@ -63,7 +62,9 @@ class TestEpayMerchantLazyCreate:
 
     def test_get_returns_existing_merchant_without_mutation(self, client, project):
         existing = EpayMerchant.objects.create(
-            project=project, pid=9999, secret_key="preexisting-secret-32chars-abcdef",
+            project=project,
+            pid=9999,
+            secret_key="preexisting-secret-32chars-abcdef",
         )
         response = client.get(_url(project), HTTP_AUTHORIZATION=AUTH_HEADER)
         assert response.status_code == 200
@@ -71,10 +72,14 @@ class TestEpayMerchantLazyCreate:
         assert body["pid"] == 9999
         assert body["secret_key"] == existing.secret_key
 
-    def test_pid_increments_above_baseline_when_existing_max_above(self, client, project):
+    def test_pid_increments_above_baseline_when_existing_max_above(
+        self, client, project
+    ):
         # 模拟系统里已有大于 baseline 的商户：下一次分配应当为 max + 1。
         EpayMerchant.objects.create(
-            project=_other_project(), pid=5000, secret_key="seed-secret-32chars-padding00",
+            project=_other_project(),
+            pid=5000,
+            secret_key="seed-secret-32chars-padding00",
         )
 
         response = client.get(_url(project), HTTP_AUTHORIZATION=AUTH_HEADER)
@@ -85,7 +90,9 @@ class TestEpayMerchantLazyCreate:
     def test_pid_resets_to_baseline_when_existing_max_below(self, client, project):
         # 历史数据里有 pid=100 这类小于 baseline 的记录，新项目仍应跳到 baseline。
         EpayMerchant.objects.create(
-            project=_other_project(), pid=100, secret_key="legacy-secret-32chars-padding00",
+            project=_other_project(),
+            pid=100,
+            secret_key="legacy-secret-32chars-padding00",
         )
 
         response = client.get(_url(project), HTTP_AUTHORIZATION=AUTH_HEADER)
@@ -242,14 +249,18 @@ class TestEnsureForProject:
 
     def test_pid_resets_to_baseline_when_max_below(self, project):
         EpayMerchant.objects.create(
-            project=_other_project(), pid=99, secret_key="legacy-secret-32chars-padding00",
+            project=_other_project(),
+            pid=99,
+            secret_key="legacy-secret-32chars-padding00",
         )
         merchant = EpayMerchant.ensure_for_project(project)
         assert merchant.pid == EpayMerchant.PID_BASELINE
 
     def test_pid_increments_when_max_above_baseline(self, project):
         EpayMerchant.objects.create(
-            project=_other_project(), pid=3000, secret_key="seed-secret-32chars-padding00",
+            project=_other_project(),
+            pid=3000,
+            secret_key="seed-secret-32chars-padding00",
         )
         merchant = EpayMerchant.ensure_for_project(project)
         assert merchant.pid == 3001

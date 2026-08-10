@@ -10,7 +10,7 @@ function TokenSelector({ availableMethods, selectedCrypto, onCryptoChange, disab
 
   if (!availableMethods || Object.keys(availableMethods).length === 0) {
     return (
-      <div className="p-4 border border-dashed rounded-md text-center">
+      <div className="rounded-xl border border-dashed p-4 text-center">
         <p className="text-sm text-muted-foreground">{t("selector.noTokens")}</p>
       </div>
     )
@@ -19,7 +19,7 @@ function TokenSelector({ availableMethods, selectedCrypto, onCryptoChange, disab
   const tokenOptions = sortCryptoOptions(Object.keys(availableMethods))
 
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("selector.selectToken")}>
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2" role="radiogroup" aria-label={t("selector.selectToken")}>
       {tokenOptions.map((token) => {
         const selected = token === selectedCrypto
         const cryptoMeta = getCrypto(token)
@@ -33,33 +33,43 @@ function TokenSelector({ availableMethods, selectedCrypto, onCryptoChange, disab
             disabled={disabled}
             onClick={() => onCryptoChange(token)}
             className={cn(
-              "flex min-h-14 items-center justify-between gap-3 rounded-md border bg-background p-3 text-left shadow-xs transition-all",
-              "hover:border-primary/50 hover:bg-accent focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
-              selected && "border-primary bg-accent text-accent-foreground ring-1 ring-primary/20",
-              disabled && "cursor-not-allowed opacity-60"
+              "group flex min-h-16 items-center justify-between gap-3 rounded-xl border bg-card p-3.5 text-left shadow-xs transition-all duration-200",
+              "hover:-translate-y-px hover:border-brand/50 hover:shadow-md focus-visible:border-ring focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40",
+              selected && "border-brand bg-brand-soft/60 shadow-[0_0_18px_#72e8572e] ring-1 ring-brand/40 hover:shadow-[0_0_18px_#72e8572e]",
+              disabled && "cursor-not-allowed opacity-60 hover:translate-y-0 hover:shadow-xs"
             )}
           >
-            <span className="flex min-w-0 items-center gap-2.5">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
+            <span className="flex min-w-0 items-center gap-3">
+              <span
+                className={cn(
+                  "flex size-10 shrink-0 items-center justify-center rounded-full bg-muted ring-1 ring-border transition-colors",
+                  selected && "bg-card ring-brand/30"
+                )}
+              >
                 <img
                   src={cryptoMeta.icon || undefined}
                   alt=""
-                  className="size-6 rounded-full"
+                  className="size-7 rounded-full"
                   onError={(e) => { e.target.style.visibility = "hidden" }}
                 />
               </span>
               <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold">{token}</span>
+                <span className="block truncate text-sm font-semibold tracking-tight">{token}</span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {availableMethods[token].length} {t("selector.networks")}
                 </span>
               </span>
             </span>
-            {selected && (
-              <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                <Check className="size-3" />
-              </span>
-            )}
+            <span
+              className={cn(
+                "flex size-5 shrink-0 items-center justify-center rounded-full border transition-all",
+                selected
+                  ? "border-brand bg-brand text-brand-foreground"
+                  : "border-border bg-transparent text-transparent group-hover:border-brand/40"
+              )}
+            >
+              <Check className="size-3" />
+            </span>
           </button>
         )
       })}

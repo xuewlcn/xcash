@@ -1,8 +1,7 @@
 // src/components/StepCompleted.jsx
-import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { CheckCircle2 } from "lucide-react"
+import { Check } from "lucide-react"
 import { useI18n } from "@/hooks/useI18n"
 
 function StepCompleted({ invoice }) {
@@ -22,27 +21,45 @@ function StepCompleted({ invoice }) {
 
   return (
     <div className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
-      <Card>
-        <CardContent className="flex flex-col gap-4">
-          {/* Success header */}
-          <div className="text-center flex flex-col items-center gap-3">
-            <div className="size-16 bg-success-soft text-success rounded-full flex items-center justify-center animate-in zoom-in-50 duration-500">
-              <CheckCircle2 className="size-8" />
+      <div className="glow-card overflow-hidden rounded-2xl border bg-card shadow-md">
+        <div className="flex flex-col gap-6 px-6 py-10">
+          {/* Success hero */}
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="relative flex size-20 items-center justify-center">
+              <span className="absolute inset-0 animate-pulse-ring rounded-full bg-success/30" />
+              <span className="absolute inset-0 rounded-full bg-success-soft ring-1 ring-success-border" />
+              <span className="relative flex size-12 items-center justify-center rounded-full bg-success text-success-foreground shadow-[0_0_24px_#72e85773] animate-in zoom-in-50 duration-500">
+                <Check className="size-6" strokeWidth={3} />
+              </span>
             </div>
             <div>
-              <h2 className="text-xl font-bold">
+              <h2 className="text-xl font-bold tracking-tight">
                 {t("payment.paymentCompleted") || "支付成功！"}
               </h2>
-              <p className="text-sm text-muted-foreground mt-1">
+              <p className="mt-1 text-sm text-muted-foreground">
                 {t("confirmation.transactionConfirmed") || "区块链交易已确认"}
               </p>
             </div>
           </div>
 
+          {/* Amount summary */}
+          <div className="flex items-center justify-between rounded-xl border bg-muted/40 p-4">
+            <div>
+              <div className="mb-1 text-xs text-muted-foreground">{t("invoice.amountDue") || "实付金额"}</div>
+              <div className="font-mono text-lg font-bold tabular-nums">
+                {invoice?.pay_amount} {invoice?.crypto}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="mb-1 text-xs text-muted-foreground">{invoice?.currency}</div>
+              <div className="text-lg font-bold tabular-nums">{invoice?.amount}</div>
+            </div>
+          </div>
+
           {/* Basic invoice info */}
           {invoiceRows.length > 0 && (
-            <div className="bg-muted rounded-lg p-4">
-              <div className="mb-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="rounded-xl border p-4">
+              <div className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 {t("invoice.basicInfo")}
               </div>
               <dl className="grid gap-3">
@@ -50,8 +67,8 @@ function StepCompleted({ invoice }) {
                   <div key={row.label} className="grid min-h-5 grid-cols-[5rem_minmax(0,1fr)] items-center gap-3">
                     <dt className="text-xs font-medium leading-5 text-muted-foreground">{row.label}</dt>
                     <dd className={row.mono
-                      ? "text-right text-xs font-mono leading-5 break-all"
-                      : "text-right text-xs font-medium leading-5 break-words"}
+                      ? "break-all text-right font-mono text-xs leading-5"
+                      : "break-words text-right text-xs font-medium leading-5"}
                     >
                       {row.value}
                     </dd>
@@ -62,43 +79,33 @@ function StepCompleted({ invoice }) {
           )}
 
           {/* Block confirmation progress */}
-          <div className="bg-success-soft rounded-lg p-4 flex flex-col gap-2">
+          <div className="flex flex-col gap-2 rounded-xl border border-success-border bg-success-soft p-4">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium">
                 {t("confirmation.blockConfirmation") || "区块确认"}
               </span>
-              <span className="text-sm font-bold font-mono tabular-nums text-success">
+              <span className="font-mono text-sm font-bold tabular-nums text-success">
                 {progress}%
               </span>
             </div>
-            <Progress value={progress} />
+            <Progress
+              value={progress}
+              className="bg-[#e4e9ee] dark:bg-[#26313d]"
+              indicatorClassName="bg-gradient-to-r from-[#3dcf40] to-[#72e857] shadow-[0_0_10px_#72e85780]"
+            />
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>{t("confirmation.confirmed") || "已确认"} {hasConfirmedCount} {t("confirmation.blocks") || "区块"}</span>
               <span>{t("confirmation.needs") || "需要"} {needConfirmedCount} {t("confirmation.blocks") || "区块"}</span>
             </div>
           </div>
 
-          {/* Amount summary */}
-          <div className="bg-muted rounded-lg p-4 flex justify-between items-center">
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">{t("invoice.amountDue") || "实付金额"}</div>
-              <div className="font-mono font-bold tabular-nums text-lg">
-                {invoice?.pay_amount} {invoice?.crypto}
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="text-xs text-muted-foreground mb-1">{invoice?.currency}</div>
-              <div className="font-bold text-lg">{invoice?.amount}</div>
-            </div>
-          </div>
-
           {/* Transaction hash */}
           {invoice?.payment?.hash && (
             <div className="flex flex-col gap-2">
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 {t("payment.transactionHash") || "交易哈希"}
               </span>
-              <code className="block break-all bg-muted rounded-lg p-3 text-xs font-mono text-muted-foreground leading-relaxed">
+              <code className="block break-all rounded-xl bg-muted p-3.5 font-mono text-xs leading-relaxed text-muted-foreground">
                 {invoice.payment.hash}
               </code>
             </div>
@@ -110,8 +117,8 @@ function StepCompleted({ invoice }) {
               {t("payment.returnToMerchant") || "返回商户"}
             </Button>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   )
 }

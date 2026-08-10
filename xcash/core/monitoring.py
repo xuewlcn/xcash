@@ -12,7 +12,10 @@ from django.utils import timezone
 if TYPE_CHECKING:
     from datetime import timedelta
 
+from datetime import timedelta  # noqa: E402  运行期需要真实类型用于价格新鲜度计算
+
 from chains.models import TxTaskStatus
+from core.runtime_settings import get_crypto_price_max_age
 from core.runtime_settings import get_webhook_event_timeout
 from webhooks.models import WebhookEvent
 
@@ -76,7 +79,9 @@ class OperationalRiskService:
             if gas_price is None:
                 try:
                     if task.chain_id not in gas_price_cache:
-                        gas_price_cache[task.chain_id] = int(task.chain.w3.eth.gas_price)
+                        gas_price_cache[task.chain_id] = int(
+                            task.chain.w3.eth.gas_price
+                        )
                     gas_price = gas_price_cache[task.chain_id]
                 except Exception as exc:  # noqa: BLE001
                     key = (task.chain_id, task.sender_id)
@@ -226,7 +231,10 @@ class OperationalRiskService:
 
             current_energy = available_energy(resource)
             current_bandwidth = available_bandwidth(resource)
-            if current_energy < required_energy or current_bandwidth < required_bandwidth:
+            if (
+                current_energy < required_energy
+                or current_bandwidth < required_bandwidth
+            ):
                 alerts.append(
                     {
                         "chain": chain,
@@ -244,14 +252,20 @@ class OperationalRiskService:
         return alerts
 
     @classmethod
-    def build_summary(cls, *, limit: int = 4, include_resource_checks: bool = False) -> dict:
+    def build_summary(
+        cls, *, limit: int = 4, include_resource_checks: bool = False
+    ) -> dict:
         """返回后台展示与异步巡检共享的异常概览。"""
         stalled_webhook_events = cls.stalled_webhook_events()
         evm_low_native_balance_alerts = []
         tron_low_resource_alerts = []
         if include_resource_checks:
-            evm_low_native_balance_alerts = cls.evm_low_native_balance_alerts(limit=limit)
+            evm_low_native_balance_alerts = cls.evm_low_native_balance_alerts(
+                limit=limit
+            )
             tron_low_resource_alerts = cls.tron_low_resource_alerts(limit=limit)
+
+        stale_price_cryptos = cls.stale_price_cryptos(limit=limit)
 
         return {
             "stalled_webhook_event_count": stalled_webhook_events.count(),
@@ -262,7 +276,36 @@ class OperationalRiskService:
             "recent_evm_low_native_balance_alerts": evm_low_native_balance_alerts,
             "tron_low_resource_count": len(tron_low_resource_alerts),
             "recent_tron_low_resource_alerts": tron_low_resource_alerts,
+            "stale_price_crypto_count": len(stale_price_cryptos),
+            "recent_stale_price_cryptos": stale_price_cryptos,
         }
+
+    @classmethod
+    def stale_price_cryptos(cls, *, limit: int = 4) -> list[dict]:
+        """行情价格已过期的支付币种。
+
+        价格陈旧会让账单按错误汇率收款，且此前完全无告警——刷新任务失败只写日志，
+        巡检也不覆盖。这里只查库不打外部接口，成本可忽略。
+        """
+        from currencies.models import Crypto
+
+        max_age = get_crypto_price_max_age()
+        if max_age <= 0:
+            return []
+
+        deadline = timezone.now() - timedelta(seconds=max_age)
+        stale = Crypto.objects.filter(
+            active=True,
+            coingecko_id__isnull=False,
+            prices_updated_at__lt=deadline,
+        ).order_by("prices_updated_at")[:limit]
+        return [
+            {
+                "symbol": crypto.symbol,
+                "prices_updated_at": crypto.prices_updated_at,
+            }
+            for crypto in stale
+        ]
 
     @classmethod
     def cache_resource_risk_counts(
@@ -295,7 +338,5 @@ class OperationalRiskService:
             "evm_low_native_balance_count": int(
                 cached.get("evm_low_native_balance_count") or 0
             ),
-            "tron_low_resource_count": int(
-                cached.get("tron_low_resource_count") or 0
-            ),
+            "tron_low_resource_count": int(cached.get("tron_low_resource_count") or 0),
         }

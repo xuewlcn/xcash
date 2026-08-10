@@ -12,19 +12,8 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 child_pids=()
 
 # ── 环境变量 ──────────────────────────────────────────────────
-if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
-fi
-
-export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings.dev}"
-export POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
-export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
-export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
-export REDIS_PORT="${REDIS_PORT:-6379}"
-export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+# shellcheck source=scripts/dev-env.sh
+source "${SCRIPT_DIR}/dev-env.sh"
 
 # ── 并发数配置（可通过环境变量覆盖） ─────────────────────────
 GUNICORN_WORKERS="${GUNICORN_WORKERS:-4}"

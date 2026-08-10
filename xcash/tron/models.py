@@ -108,9 +108,15 @@ class TronTxTask(UndeletableModel):
     function_selector = models.CharField(_("函数签名"), max_length=128)
     parameter = models.TextField(_("ABI 参数"), blank=True, default="")
     fee_limit = models.PositiveBigIntegerField(_("Fee Limit"))
-    expiration = models.PositiveBigIntegerField(_("过期时间(ms)"), null=True, blank=True)
-    ref_block_bytes = models.CharField(_("Ref Block Bytes"), max_length=16, blank=True, default="")
-    ref_block_hash = models.CharField(_("Ref Block Hash"), max_length=32, blank=True, default="")
+    expiration = models.PositiveBigIntegerField(
+        _("过期时间(ms)"), null=True, blank=True
+    )
+    ref_block_bytes = models.CharField(
+        _("Ref Block Bytes"), max_length=16, blank=True, default=""
+    )
+    ref_block_hash = models.CharField(
+        _("Ref Block Hash"), max_length=32, blank=True, default=""
+    )
     signed_payload = models.JSONField(_("已签名链上载荷"), default=dict, blank=True)
     tx_id = HashField(unique=False, null=True, blank=True, verbose_name=_("当前 TxID"))
     # 广播前模拟 revert 的连续观测计数：达到次数与时间窗双阈值后任务失败终局。
@@ -388,7 +394,9 @@ class TronTxTask(UndeletableModel):
         try:
             expected_tx_id = sha256(bytes.fromhex(raw_data_hex)).hexdigest()
         except ValueError as exc:
-            raise TronClientError("tron unsigned transaction raw_data_hex invalid") from exc
+            raise TronClientError(
+                "tron unsigned transaction raw_data_hex invalid"
+            ) from exc
 
         tx_id = str(transaction.get("txID") or "").lower()
         if not tx_id or tx_id != expected_tx_id:
@@ -400,7 +408,9 @@ class TronTxTask(UndeletableModel):
         try:
             fee_limit = int(raw_data.get("fee_limit") or 0)
         except (TypeError, ValueError) as exc:
-            raise TronClientError("tron unsigned transaction fee_limit invalid") from exc
+            raise TronClientError(
+                "tron unsigned transaction fee_limit invalid"
+            ) from exc
         if fee_limit != int(self.fee_limit):
             raise TronClientError("tron unsigned transaction fee_limit mismatch")
 
@@ -408,7 +418,10 @@ class TronTxTask(UndeletableModel):
         if not isinstance(contracts, list) or len(contracts) != 1:
             raise TronClientError("tron unsigned transaction contract count mismatch")
         contract = contracts[0]
-        if not isinstance(contract, dict) or contract.get("type") != "TriggerSmartContract":
+        if (
+            not isinstance(contract, dict)
+            or contract.get("type") != "TriggerSmartContract"
+        ):
             raise TronClientError("tron unsigned transaction type mismatch")
 
         parameter = contract.get("parameter") or {}

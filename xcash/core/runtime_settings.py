@@ -9,6 +9,10 @@ from core.models import SYSTEM_SETTINGS_CACHE_KEY
 from core.models import SystemSettings
 
 _MISSING_SYSTEM_SETTINGS = "__missing_system_settings__"
+# 缓存有限 TTL 作为兜底：主失效路径是 SystemSettings.save() 的 on_commit 钩子，
+# 但任何绕过模型 save 的写入（bulk_update、数据迁移、直接 SQL）都不会触发它。
+# 永不过期的缓存在那种情况下会让新配置永远读不到，且没有任何自愈手段。
+SYSTEM_SETTINGS_CACHE_TTL = 60
 
 
 def get_system_settings() -> SystemSettings | None:
@@ -21,7 +25,7 @@ def get_system_settings() -> SystemSettings | None:
         cache.set(
             SYSTEM_SETTINGS_CACHE_KEY,
             system_settings or _MISSING_SYSTEM_SETTINGS,
-            timeout=None,
+            timeout=SYSTEM_SETTINGS_CACHE_TTL,
         )
         return system_settings
     if cached_value is None:
@@ -79,6 +83,15 @@ def get_vault_slot_collect_delay(chain_type: str) -> timedelta:
     else:
         minutes = SystemSettings._meta.get_field(field_name).get_default()
     return timedelta(minutes=minutes)
+
+
+def get_crypto_price_max_age() -> int:
+    # 行情价格的最长可用时长（秒）。默认 900：CoinGecko 免费接口被限流数小时是常态，
+    # 15 分钟窗口足以覆盖正常刷新抖动，又能在真正断供时及时停止按过期汇率计价。
+    system_settings = get_system_settings()
+    if system_settings is not None:
+        return int(system_settings.crypto_price_max_age_seconds)
+    return 900
 
 
 def get_vault_slot_collect_min_worth_usd() -> Decimal:

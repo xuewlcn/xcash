@@ -99,12 +99,18 @@ def _percentile_metrics(
         select_parts.extend(
             [
                 f"COUNT(*) FILTER (WHERE {valid}) AS cnt_{idx}",
-                f"PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {diff_secs}) "
-                f"FILTER (WHERE {valid}) AS p50_{idx}",
-                f"PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {diff_secs}) "
-                f"FILTER (WHERE {valid}) AS p95_{idx}",
-                f"PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY {diff_secs}) "
-                f"FILTER (WHERE {valid}) AS p99_{idx}",
+                (
+                    f"PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {diff_secs}) "
+                    f"FILTER (WHERE {valid}) AS p50_{idx}"
+                ),
+                (
+                    f"PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {diff_secs}) "
+                    f"FILTER (WHERE {valid}) AS p95_{idx}"
+                ),
+                (
+                    f"PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY {diff_secs}) "
+                    f"FILTER (WHERE {valid}) AS p99_{idx}"
+                ),
                 f"MAX({diff_secs}) FILTER (WHERE {valid}) AS max_{idx}",
             ]
         )

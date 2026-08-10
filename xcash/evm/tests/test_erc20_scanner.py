@@ -1081,6 +1081,42 @@ class EvmErc20ScannerTests(TestCase):
 
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_logs")
     @patch("evm.scanner.logs.EvmScannerRpcClient.get_latest_block_number")
+    def test_scan_chain_commits_progress_per_chunk_on_interrupt(
+        self,
+        get_latest_block_number_mock,
+        get_logs_mock,
+    ):
+        """扫描窗口按 chunk 提交游标，中断只损失当前这一段。
+
+        一个窗口会被拆成多次 eth_getLogs，总耗时可能越过 Celery 软超时；若等整窗口
+        扫完才提交，中断会把已扫完的区块一并回退，下一轮从同一起点重来，节点稍慢
+        就永远追不上链头。
+        """
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        # 走 queryset.update 绕开 Chain.full_clean 的 RPC 连通性校验（测试无真实节点）。
+        Chain.objects.filter(pk=self.chain.pk).update(evm_log_max_block_range=10)
+        self.chain.refresh_from_db(fields=["evm_log_max_block_range"])
+        EvmScanCursor.objects.filter(chain=self.chain).delete()
+        EvmScanCursor.objects.create(chain=self.chain, last_scanned_block=100)
+        get_latest_block_number_mock.return_value = 200
+
+        # 第三个 chunk（from_block=119 起）开始中断，前两段应已落盘。
+        def get_logs(*, from_block, **_kwargs):
+            if from_block >= 119:
+                raise SoftTimeLimitExceeded
+            return []
+
+        get_logs_mock.side_effect = get_logs
+
+        with self.assertRaises(SoftTimeLimitExceeded):
+            EvmLogScanner.scan_chain(chain=self.chain, batch_size=100)
+
+        cursor = EvmScanCursor.objects.get(chain=self.chain)
+        self.assertEqual(cursor.last_scanned_block, 118)
+
+    @patch("evm.scanner.logs.EvmScannerRpcClient.get_logs")
+    @patch("evm.scanner.logs.EvmScannerRpcClient.get_latest_block_number")
     def test_scan_chain_advances_cursor_when_no_tokens_configured(
         self,
         get_latest_block_number_mock,
@@ -1121,11 +1157,16 @@ class EvmErc20ScannerTests(TestCase):
 
     @patch("evm.tasks.EvmTaskPoller.poll_chain")
     @patch("evm.tasks.EvmScannerService.scan_chain")
-    def test_scan_evm_chain_task_dispatches_combined_scanner(
+    def test_scan_evm_chain_task_runs_scanner_without_polling_tx_tasks(
         self,
         scan_chain_mock,
         poll_chain_mock,
     ):
+        """扫描任务只负责扫描与确认派发，在途交易轮询已拆成独立 beat 任务。
+
+        二者曾串在同一个 try 里：扫描段一抛异常，轮询就整段跳过，部署/归集任务
+        永不终局、管线填满后该链主动交易全停。
+        """
         scan_chain_mock.return_value = Mock(
             from_block=1,
             to_block=2,
@@ -1134,7 +1175,49 @@ class EvmErc20ScannerTests(TestCase):
         _scan_evm_chain(self.chain.pk)
 
         scan_chain_mock.assert_called_once()
+        poll_chain_mock.assert_not_called()
+
+    @patch("evm.tasks.EvmTaskPoller.poll_chain")
+    def test_poll_evm_chain_tx_tasks_polls_active_chain(self, poll_chain_mock):
+        from evm.tasks import poll_evm_chain_tx_tasks
+
+        poll_evm_chain_tx_tasks(self.chain.pk)
+
         poll_chain_mock.assert_called_once()
+
+    @patch("chains.tasks.block_number_updated.delay")
+    @patch("evm.tasks.EvmScannerService.scan_chain")
+    def test_scan_failure_does_not_block_confirmation_dispatch(
+        self,
+        scan_chain_mock,
+        block_number_updated_delay_mock,
+    ):
+        """扫描段抛出非 RPC 异常时，本轮确认派发仍要照常执行。"""
+        Transfer.objects.create(
+            chain=self.chain,
+            block=10,
+            block_hash="0x" + "13" * 32,
+            hash="0x" + "14" * 32,
+            crypto=self.token,
+            from_address=self.addr.address,
+            to_address=self.vault_slot.address,
+            value=1,
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            processed_at=timezone.now(),
+        )
+
+        def advance_block_then_fail(chain):
+            # 模拟「扫描已推进部分链高后中途失败」：确认派发依据的是链高确实前进。
+            Chain.objects.filter(pk=chain.pk).update(latest_block_number=20)
+            raise RuntimeError("scanner exploded")
+
+        scan_chain_mock.side_effect = advance_block_then_fail
+
+        _scan_evm_chain(self.chain.pk)
+
+        block_number_updated_delay_mock.assert_called_once_with(self.chain.pk)
 
     @patch("chains.tasks.block_number_updated.delay")
     @patch("evm.tasks.EvmTaskPoller.poll_chain")
@@ -1170,7 +1253,6 @@ class EvmErc20ScannerTests(TestCase):
         _scan_evm_chain(self.chain.pk)
 
         block_number_updated_delay_mock.assert_called_once_with(self.chain.pk)
-        poll_chain_mock.assert_called_once()
 
     @patch("evm.tasks._scan_evm_chain.delay")
     def test_scan_active_evm_chains_dispatches_due_chain(

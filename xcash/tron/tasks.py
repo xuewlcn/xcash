@@ -163,10 +163,15 @@ def tron_hash_snapshot(task: TxTask) -> tuple[KnownTronTxHash, ...]:
     return tuple(known_tx_hash_records_for_task(task))
 
 
-@shared_task(ignore_result=True)
+# 广播的时间预算必须显式声明：Celery 全局默认是 30s 软 / 60s 硬，远小于本任务
+# 180s 的互斥锁存活时间。用默认值时任务会在 60s 被硬杀（不走 finally），锁只能等
+# TTL 过期，同一笔交易在这段时间内无法再广播。
+@shared_task(ignore_result=True, soft_time_limit=150, time_limit=170)
 @singleton_task(timeout=TRON_BROADCAST_LOCK_TIMEOUT_SECONDS, use_params=True)
 def broadcast_tron_task(pk: int) -> None:
-    tx_task = TronTxTask.objects.select_related("base_task", "chain", "sender").get(pk=pk)
+    tx_task = TronTxTask.objects.select_related("base_task", "chain", "sender").get(
+        pk=pk
+    )
     lock_key = sender_broadcast_lock_key(
         chain_id=tx_task.chain_id,
         sender_id=tx_task.sender_id,
@@ -185,9 +190,17 @@ def broadcast_tron_task(pk: int) -> None:
         )
         return
     try:
-        if tx_task.base_task.status == TxTaskStatus.QUEUED:
+        # 两条分支都必须先查链上回执再决定是否发交易。SUBMITTED 重播此前直接重签重播，
+        # 而 Tron 的 expiration 只有 60s、固化却要约 57s，confirm_tron_receipt_tx_tasks
+        # 每轮只取 32 条、按 updated_at 排序会把刚提交的任务排到队尾——在途任务一多，
+        # 交易往往已经上链、只是还没被确认任务看到，此时重播等于对同一笔业务再发一次：
+        # 白烧能量，且 gas 成本会按重播产生的新 hash 上报、首笔漏报。
+        if tx_task.base_task.status in (TxTaskStatus.QUEUED, TxTaskStatus.SUBMITTED):
             if process_tron_receipt_task(tx_task.base_task):
                 return
+            # 回执检查可能已推进状态（如失败终局但未收口成功），按最新状态决定后续动作。
+            tx_task.base_task.refresh_from_db(fields=["status"])
+        if tx_task.base_task.status == TxTaskStatus.QUEUED:
             tx_task.broadcast()
         elif tx_task.base_task.status == TxTaskStatus.SUBMITTED:
             tx_task.rebroadcast_expired_submitted()
@@ -202,7 +215,7 @@ def broadcast_tron_task(pk: int) -> None:
         cache.delete(lock_key)
 
 
-@shared_task(ignore_result=True)
+@shared_task(ignore_result=True, soft_time_limit=55, time_limit=60)
 @singleton_task(timeout=64)
 @db_transaction.atomic
 def dispatch_tron_tx_tasks() -> None:
@@ -286,8 +299,11 @@ def process_tron_receipt_task(task: TxTask) -> bool:
         # persist_signed_payload/append_tx_hash 复用同一行锁，因此并发新签名要么先
         # 进入快照、要么看到终局后停止广播，不会把刚追加的 hash 漏在失败判断之外。
         with db_transaction.atomic():
+            # of=("self",) 限定只锁任务行：select_related 会把 chains_chain 与热钱包
+            # chains_address join 进来，裸 FOR UPDATE 会把整条链和整个热钱包锁死，
+            # 阻塞该链全部交易创建与入账落库。
             locked_task = (
-                TxTask.objects.select_for_update()
+                TxTask.objects.select_for_update(of=("self",))
                 .select_related("chain", "sender")
                 .get(pk=task.pk)
             )
@@ -314,8 +330,8 @@ def process_tron_receipt_task(task: TxTask) -> bool:
     return False
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=55)
+@shared_task(ignore_result=True, soft_time_limit=45, time_limit=55)
+@singleton_task(timeout=58)
 def confirm_tron_receipt_tx_tasks() -> None:
     """按回执收口 Tron 主动发起的链上任务(部署 / 归集)。
 
@@ -345,8 +361,8 @@ def confirm_tron_receipt_tx_tasks() -> None:
             ).update(updated_at=timezone.now())
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=48, use_params=True)
+@shared_task(ignore_result=True, soft_time_limit=40, time_limit=50)
+@singleton_task(timeout=55, use_params=True)
 def scan_tron_chain(chain_pk: int) -> None:
     chain = Chain.objects.get(pk=chain_pk)
     if not chain.active:
@@ -378,9 +394,8 @@ def scan_tron_chain(chain_pk: int) -> None:
 @singleton_task(timeout=64)
 def scan_active_tron_chains() -> None:
     """每 2 秒巡检活跃 Tron 链，仅调度到期（now - last_scanned_at ≥ 扫描周期）的链。"""
-    chains = (
-        Chain.objects.filter(active=True, type=ChainType.TRON)
-        .exclude(tron_api_key="")
+    chains = Chain.objects.filter(active=True, type=ChainType.TRON).exclude(
+        tron_api_key=""
     )
     for chain in chains:
         if chain.is_due_for_scan:

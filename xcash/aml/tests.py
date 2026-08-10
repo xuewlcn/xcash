@@ -172,9 +172,7 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
                     "address_label": "Binance",
                 },
             },
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
         httpx_request.return_value = response
 
@@ -199,9 +197,7 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
         httpx_request.return_value = httpx.Response(
             200,
             json={"success": False, "msg": "InvalidApiKey"},
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
 
         with self.assertRaisesMessage(RuntimeError, "InvalidApiKey"):
@@ -244,16 +240,12 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
                     "score": 10,
                 },
             },
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
         fail = httpx.Response(
             502,
             text="Bad Gateway",
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
         httpx_request.side_effect = [fail, fail, ok]
 
@@ -278,16 +270,12 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
                     "score": 10,
                 },
             },
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
         rate_limited = httpx.Response(
             429,
             json={"success": False, "msg": "ExceededRateLimit", "retry_after": 2},
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
         httpx_request.side_effect = [rate_limited, ok]
 
@@ -305,9 +293,7 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
         rate_limited = httpx.Response(
             429,
             json={"success": False, "msg": "ExceededRateLimit", "retry_after": 1},
-            request=httpx.Request(
-                "GET", "https://openapi.misttrack.io/v3/risk_score"
-            ),
+            request=httpx.Request("GET", "https://openapi.misttrack.io/v3/risk_score"),
         )
         httpx_request.side_effect = [rate_limited, rate_limited, rate_limited]
 
@@ -320,9 +306,7 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
 
     @patch("aml.clients.time.sleep", return_value=None)
     @patch("aml.clients.httpx.request")
-    def test_network_error_message_does_not_leak_api_key(
-        self, httpx_request, _sleep
-    ):
+    def test_network_error_message_does_not_leak_api_key(self, httpx_request, _sleep):
         """网络异常重试耗尽后抛出的消息不得包含 api_key。"""
         httpx_request.side_effect = httpx.ConnectError(
             "connection refused for https://openapi.misttrack.io/v3/risk_score?api_key=leak-me"
@@ -349,7 +333,9 @@ class AmlChainMappingTests(SimpleTestCase):
         for chain_key, expected in cases.items():
             with self.subTest(chain_key=chain_key):
                 if isinstance(chain_key, int):
-                    chain = SimpleNamespace(type=ChainType.EVM, chain_id=chain_key, chain="mock")
+                    chain = SimpleNamespace(
+                        type=ChainType.EVM, chain_id=chain_key, chain="mock"
+                    )
                 else:
                     chain = SimpleNamespace(type=chain_key, chain="mock")
                 self.assertEqual(
@@ -386,7 +372,9 @@ class AmlChainMappingTests(SimpleTestCase):
 
         for (chain_id, symbol), expected in cases.items():
             with self.subTest(chain_id=chain_id, symbol=symbol):
-                chain = SimpleNamespace(type=ChainType.EVM, chain_id=chain_id, chain="mock")
+                chain = SimpleNamespace(
+                    type=ChainType.EVM, chain_id=chain_id, chain="mock"
+                )
                 crypto = Crypto(symbol=symbol)
                 self.assertEqual(
                     AmlScreeningService._misttrack_openapi_coin(
@@ -689,12 +677,13 @@ class AmlBusinessDispatchTests(AmlTestMixin, TestCase):
         invoice.refresh_from_db()
 
         delay.assert_not_called()
-        Transfer.objects.filter(pk=self.transfer.pk).update(status=TransferStatus.CONFIRMED)
+        Transfer.objects.filter(pk=self.transfer.pk).update(
+            status=TransferStatus.CONFIRMED
+        )
         with self.captureOnCommitCallbacks(execute=True):
             InvoiceService.confirm_invoice(invoice)
 
         delay.assert_called_once_with(invoice.pk)
-
 
     @patch("aml.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_success_updates_assessment_snapshot_and_cache(self, score):

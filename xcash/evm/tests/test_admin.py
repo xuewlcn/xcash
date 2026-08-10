@@ -80,9 +80,7 @@ class EvmTxTaskAdminActionTests(TestCase):
         submitted = self.create_task(status=TxTaskStatus.SUBMITTED, nonce=1)
         request = self.make_request()
 
-        with patch.object(
-            type(self.chain), "w3", new_callable=PropertyMock
-        ) as w3_mock:
+        with patch.object(type(self.chain), "w3", new_callable=PropertyMock) as w3_mock:
             # 链上 nonce 已越过 nonce=0，表示该 nonce 已被消费，护栏放行。
             w3_mock.return_value.eth.get_transaction_count.return_value = 1
             self.admin.mark_queued_failed_after_nonce_handled(
@@ -96,18 +94,14 @@ class EvmTxTaskAdminActionTests(TestCase):
         self.assertEqual(submitted.base_task.status, TxTaskStatus.SUBMITTED)
         self.admin.message_user.assert_called_once()
         # 标记失败必须留下可追溯的 admin 审计日志。
-        self.assertEqual(
-            LogEntry.objects.filter(object_id=str(queued.pk)).count(), 1
-        )
+        self.assertEqual(LogEntry.objects.filter(object_id=str(queued.pk)).count(), 1)
 
     def test_mark_queued_failed_blocks_when_chain_nonce_not_consumed(self):
         # 链上 nonce 尚未越过该任务：标记失败会造成永久 nonce 缺口，必须拦截。
         queued = self.create_task(status=TxTaskStatus.QUEUED, nonce=0)
         request = self.make_request()
 
-        with patch.object(
-            type(self.chain), "w3", new_callable=PropertyMock
-        ) as w3_mock:
+        with patch.object(type(self.chain), "w3", new_callable=PropertyMock) as w3_mock:
             w3_mock.return_value.eth.get_transaction_count.return_value = 0
             self.admin.mark_queued_failed_after_nonce_handled(
                 request=request,
@@ -123,9 +117,7 @@ class EvmTxTaskAdminActionTests(TestCase):
         queued = self.create_task(status=TxTaskStatus.QUEUED, nonce=0)
         request = self.make_request()
 
-        with patch.object(
-            type(self.chain), "w3", new_callable=PropertyMock
-        ) as w3_mock:
+        with patch.object(type(self.chain), "w3", new_callable=PropertyMock) as w3_mock:
             w3_mock.return_value.eth.get_transaction_count.side_effect = RuntimeError(
                 "rpc down"
             )
@@ -166,9 +158,7 @@ class EvmScanCursorAdminTests(SimpleTestCase):
         self.assertTrue(
             self.admin.has_sync_scan_cursor_permission(Mock(user=superuser))
         )
-        self.assertFalse(
-            self.admin.has_sync_scan_cursor_permission(Mock(user=auditor))
-        )
+        self.assertFalse(self.admin.has_sync_scan_cursor_permission(Mock(user=auditor)))
         for action_name in (
             "enable_selected_scanners",
             "disable_selected_scanners",

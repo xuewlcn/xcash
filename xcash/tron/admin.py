@@ -57,7 +57,9 @@ class TronTxTaskAdmin(ReadOnlyModelAdmin):
     @admin.display(description=_("执行时间"), ordering="last_attempt_at")
     def formatted_last_attempt_at(self, obj: TronTxTask):
         if obj.last_attempt_at:
-            return date_format(timezone.localtime(obj.last_attempt_at), "DATETIME_FORMAT")
+            return date_format(
+                timezone.localtime(obj.last_attempt_at), "DATETIME_FORMAT"
+            )
         return None
 
     @display(
@@ -158,7 +160,9 @@ class TronWatchCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin
         return ("yes", _("是")) if obj.enabled else ("no", _("否"))
 
     @admin.display(description=_("链上最新块"))
-    def display_chain_latest_block(self, obj: TronWatchCursor) -> int:  # pragma: no cover
+    def display_chain_latest_block(
+        self, obj: TronWatchCursor
+    ) -> int:  # pragma: no cover
         return obj.chain.latest_block_number
 
     @admin.display(description=_("落后区块"))

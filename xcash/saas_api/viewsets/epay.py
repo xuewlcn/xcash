@@ -39,7 +39,9 @@ class EpayMerchantView(APIView):
         project = self._get_project(project_appid)
         merchant = EpayMerchant.ensure_for_project(project)
         serializer = EpayMerchantUpdateSerializer(
-            instance=merchant, data=request.data, partial=True,
+            instance=merchant,
+            data=request.data,
+            partial=True,
         )
         serializer.is_valid(raise_exception=True)
         merchant = serializer.save()

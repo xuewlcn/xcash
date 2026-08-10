@@ -1,5 +1,6 @@
 import structlog
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from django.db import transaction as db_transaction
 from django.db.models import Exists
 from django.db.models import OuterRef
@@ -22,8 +23,8 @@ EVM_QUEUED_STUCK_ALERT_AFTER_MINUTES = 30
 EVM_QUEUED_DISPATCH_ELIGIBLE_AFTER_SECONDS = 1
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=30, use_params=True)
+@shared_task(ignore_result=True, soft_time_limit=25, time_limit=30)
+@singleton_task(timeout=35, use_params=True)
 def _broadcast_evm_task(pk: int) -> None:
     # 任务入口统一使用 TxTask 命名，避免继续暴露旧的广播载荷概念。
     tx_task = EvmTxTask.objects.select_related("base_task").get(pk=pk)
@@ -71,7 +72,7 @@ def _chain_dispatch_next(completed_task: EvmTxTask) -> None:
         _broadcast_evm_task.delay(next_task.pk)
 
 
-@shared_task(ignore_result=True)
+@shared_task(ignore_result=True, soft_time_limit=55, time_limit=60)
 @singleton_task(timeout=64)
 @db_transaction.atomic
 def dispatch_evm_tx_tasks() -> None:
@@ -126,8 +127,8 @@ def dispatch_evm_tx_tasks() -> None:
         db_transaction.on_commit(lambda pk=task_pk: _broadcast_evm_task.delay(pk))
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=30)
+@shared_task(ignore_result=True, soft_time_limit=25, time_limit=30)
+@singleton_task(timeout=35)
 def scan_stuck_queued_evm_tx_tasks(limit: int = 32) -> int:
     """告警长期卡在 QUEUED 队首的 EVM 任务，避免 nonce 队列无声停摆。"""
     lower_queued = EvmTxTask.objects.filter(
@@ -164,8 +165,8 @@ def scan_stuck_queued_evm_tx_tasks(limit: int = 32) -> int:
     return alerted
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=48, use_params=True)
+@shared_task(ignore_result=True, soft_time_limit=40, time_limit=50)
+@singleton_task(timeout=55, use_params=True)
 def _scan_evm_chain(chain_pk: int) -> None:
     """按链执行一次 EVM VaultSlot 充值日志统一扫描。"""
     chain = Chain.objects.get(pk=chain_pk)
@@ -176,17 +177,50 @@ def _scan_evm_chain(chain_pk: int) -> None:
             EvmScannerService.scan_chain(chain=chain)
         except EvmScannerRpcError:
             logger.warning("EVM 自扫描 RPC 失败", chain=chain.name)
+        except SoftTimeLimitExceeded:
+            # 软超时要求立刻收尾，不再做后续动作；游标已按 chunk 分段提交，进度不丢。
+            raise
+        except Exception:  # noqa: BLE001
+            # 扫描段的故障不能连带吞掉本轮确认调度：二者是相互独立的职责，
+            # 此前共用一个 try 导致扫描一异常就整段跳过。
+            logger.exception("EVM 自扫描失败", chain=chain.code)
 
-        dispatch_block_confirmation_checks_if_needed(
-            chain=chain,
-            previous_latest_block=previous_latest_block,
-        )
-        EvmTaskPoller.poll_chain(chain=chain)
+        try:
+            dispatch_block_confirmation_checks_if_needed(
+                chain=chain,
+                previous_latest_block=previous_latest_block,
+            )
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("EVM 确认调度派发失败", chain=chain.code)
         logger.info("EVM 自扫描完成", chain=chain.name)
     finally:
         # 无论本轮是否命中 RPC 异常都推进 last_scanned_at，按固定周期重试，
         # 避免对不健康的节点每 2 秒一次连环重扫。
         chain.mark_scanned()
+
+
+@shared_task(ignore_result=True, soft_time_limit=110, time_limit=120)
+@singleton_task(timeout=125, use_params=True)
+def poll_evm_chain_tx_tasks(chain_pk: int) -> None:
+    """轮询单条 EVM 链在途主动交易的链上终局。
+
+    从扫描任务里拆出来独立调度：此前它挂在扫描之后，扫描段一旦抛异常就整段跳过，
+    部署/归集任务会永不终局，管线（EVM_PIPELINE_DEPTH）填满后该链全部主动交易停摆。
+    Tron 侧一直有独立的 confirm_tron_receipt_tx_tasks，这里补齐对称能力。
+    """
+    chain = Chain.objects.get(pk=chain_pk)
+    if not chain.active:
+        return
+    EvmTaskPoller.poll_chain(chain=chain)
+
+
+@shared_task(ignore_result=True)
+def poll_active_evm_chains() -> None:
+    """按固定周期为每条活跃 EVM 链派发一次在途交易终局轮询。"""
+    for chain in Chain.objects.filter(active=True, type=ChainType.EVM):
+        poll_evm_chain_tx_tasks.delay(chain.pk)
 
 
 @shared_task(ignore_result=True)

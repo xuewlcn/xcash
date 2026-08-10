@@ -83,10 +83,7 @@ class VaultSlotCodecTests(SimpleTestCase):
             vault=vault,
         )
         expected_digest = keccak(
-            b"\x41"
-            + tron_address_to_20_bytes(factory)
-            + salt
-            + keccak(init_code)
+            b"\x41" + tron_address_to_20_bytes(factory) + salt + keccak(init_code)
         )
         expected = TronAddressCodec.hex41_to_base58(f"41{expected_digest[-20:].hex()}")
 
@@ -99,10 +96,7 @@ class VaultSlotCodecTests(SimpleTestCase):
 
         self.assertEqual(predicted, expected)
         evm_digest = keccak(
-            b"\xff"
-            + tron_address_to_20_bytes(factory)
-            + salt
-            + keccak(init_code)
+            b"\xff" + tron_address_to_20_bytes(factory) + salt + keccak(init_code)
         )
         evm_style = TronAddressCodec.hex41_to_base58(f"41{evm_digest[-20:].hex()}")
         self.assertNotEqual(predicted, evm_style)
@@ -111,7 +105,9 @@ class VaultSlotCodecTests(SimpleTestCase):
         from chains.keys import sign_tron_transaction
 
         unsigned = {"raw_data_hex": "0a02abcd", "raw_data": {"expiration": 123}}
-        signed = sign_tron_transaction(private_key="1" * 64, unsigned_transaction=unsigned)
+        signed = sign_tron_transaction(
+            private_key="1" * 64, unsigned_transaction=unsigned
+        )
 
         self.assertEqual(signed.tx_hash, sha256(bytes.fromhex("0a02abcd")).hexdigest())
         self.assertEqual(len(signed.raw_transaction["signature"][0]), 130)
@@ -335,9 +331,7 @@ class TronAdapterTests(SimpleTestCase):
             self.trc20_get_balance_with({"result": {"result": True}})
 
     @patch("tron.adapter.TronHttpClient")
-    def test_get_balance_native_rejects_error_payload_instead_of_zero(
-        self, client_cls
-    ):
+    def test_get_balance_native_rejects_error_payload_instead_of_zero(self, client_cls):
         from tron.adapter import TronAdapter
 
         client_cls.return_value.get_account.return_value = {
@@ -375,9 +369,7 @@ class TronAdapterTests(SimpleTestCase):
 
 class TronTransferConfirmationTests(TestCase):
     @patch("tron.adapter.TronHttpClient")
-    def test_confirm_transfer_accepts_native_receipt_without_result(
-        self, client_cls
-    ):
+    def test_confirm_transfer_accepts_native_receipt_without_result(self, client_cls):
         from chains.tasks import confirm_transfer
 
         chain = Chain.objects.create(
@@ -853,7 +845,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         sign_transaction.return_value = self.signed_payload(transaction)
         client.get_account.return_value = {"balance": 0}
 
-        with self.assertRaisesMessage(TronClientError, "tron bandwidth trx insufficient"):
+        with self.assertRaisesMessage(
+            TronClientError, "tron bandwidth trx insufficient"
+        ):
             task.broadcast()
 
         client.broadcast_transaction.assert_not_called()
@@ -1020,7 +1014,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         TxTask.objects.filter(pk=task.base_task_id).update(
             status=TxTaskStatus.SUBMITTED,
         )
-        task.expiration = int((timezone.now() + timedelta(minutes=1)).timestamp() * 1000)
+        task.expiration = int(
+            (timezone.now() + timedelta(minutes=1)).timestamp() * 1000
+        )
         task.save(update_fields=["expiration"])
 
         task.rebroadcast_expired_submitted()
@@ -1036,7 +1032,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         TxTask.objects.filter(pk=task.base_task_id).update(
             status=TxTaskStatus.SUBMITTED,
         )
-        task.expiration = int((timezone.now() - timedelta(minutes=1)).timestamp() * 1000)
+        task.expiration = int(
+            (timezone.now() - timedelta(minutes=1)).timestamp() * 1000
+        )
         task.save(update_fields=["expiration"])
 
         task.rebroadcast_expired_submitted()
@@ -1052,7 +1050,9 @@ class TronTxTaskBroadcastResourceGuardTests(TestCase):
         TxTask.objects.filter(pk=task.base_task_id).update(
             status=TxTaskStatus.SUBMITTED,
         )
-        task.expiration = int((timezone.now() - timedelta(minutes=1)).timestamp() * 1000)
+        task.expiration = int(
+            (timezone.now() - timedelta(minutes=1)).timestamp() * 1000
+        )
         task.save(update_fields=["expiration"])
         for index in range(TRON_MAX_BROADCAST_HASHES):
             task.base_task.append_tx_hash(
@@ -1917,6 +1917,44 @@ class TronScannerTests(TestCase):
 
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")
+    def test_scan_chain_keeps_progress_when_interrupted_by_soft_time_limit(
+        self,
+        client_cls,
+        _enqueue_processing_mock,
+    ):
+        """被 Celery 软超时打断时，已扫完的块必须落到游标。
+
+        单轮最多 32 块、每块要读整块交易，总耗时很容易越过软超时。若中断路径不落盘，
+        本轮已扫的块会连带回退、下一轮从同一起点重来——节点持续偏慢时游标再也推不动，
+        Tron 充值全面滞留。
+        """
+        from celery.exceptions import SoftTimeLimitExceeded
+        from tron.scanner import TronScanner
+
+        start_cursor = 300_000
+        interrupt_at_block = start_cursor + 3
+
+        self._set_cursor_block(last_scanned_block=start_cursor)
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.return_value = start_cursor + 32
+        client.get_solid_block_id.return_value = "0" * 64
+
+        def infos_by_block(*, block_number, **_kwargs):
+            if block_number >= interrupt_at_block:
+                raise SoftTimeLimitExceeded
+            return []
+
+        client.get_transaction_infos_by_block.side_effect = infos_by_block
+
+        with self.assertRaises(SoftTimeLimitExceeded):
+            TronScanner.scan_chain(chain=self.chain)
+
+        cursor = TronWatchCursor.objects.get(chain=self.chain)
+        # 中断块之前的两块已扫完，游标必须停在最后一个成功块上。
+        self.assertEqual(cursor.last_scanned_block, interrupt_at_block - 1)
+
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("tron.scanner.TronHttpClient")
     def test_scan_chain_caps_single_tick_advance_at_batch_size(
         self,
         client_cls,
@@ -2232,7 +2270,9 @@ class TronScannerTests(TestCase):
         transfers = list(Transfer.objects.filter(hash="1" * 64).order_by("event_index"))
         self.assertEqual(len(transfers), 2)
         self.assertEqual([transfer.event_index for transfer in transfers], [0, 1])
-        self.assertEqual([transfer.amount for transfer in transfers], [Decimal("1"), Decimal("2")])
+        self.assertEqual(
+            [transfer.amount for transfer in transfers], [Decimal("1"), Decimal("2")]
+        )
         self.assertEqual(enqueue_processing_mock.call_count, 2)
 
     @patch("chains.service.TransferService.enqueue_processing")
@@ -2588,7 +2628,10 @@ class TronScannerTests(TestCase):
                     "ret": [{"contractRet": "SUCCESS"}, {"contractRet": "SUCCESS"}],
                     "raw_data": {
                         "contract": [
-                            {"type": "FreezeBalanceV2Contract", "parameter": {"value": {}}},
+                            {
+                                "type": "FreezeBalanceV2Contract",
+                                "parameter": {"value": {}},
+                            },
                             {
                                 "type": "TransferContract",
                                 "parameter": {
@@ -2847,7 +2890,9 @@ class TronReceiptConfirmTaskTests(TestCase):
             )
 
     @patch("tron.saas_gas_billing.retry_vault_slot_collect_gas_fee.delay")
-    @patch("tron.saas_gas_billing.build_tx_detail", side_effect=RuntimeError("rpc down"))
+    @patch(
+        "tron.saas_gas_billing.build_tx_detail", side_effect=RuntimeError("rpc down")
+    )
     def test_collect_gas_fee_build_failure_schedules_retry(
         self,
         _build_tx_detail_mock,
@@ -2870,6 +2915,8 @@ class TronReceiptConfirmTaskTests(TestCase):
         trx.prices = {"USD": "0.1"}
         trx.save(update_fields=["prices"])
         client_cls.return_value.get_transaction_info_by_id.return_value = {
+            # 真实 gettransactioninfobyid 必带 id；build_tx_detail 用它确认回执归属。
+            "id": "c" * 64,
             "fee": 1_000_000,
             "receipt": {
                 "energy_usage_total": 65_000,
@@ -2884,6 +2931,24 @@ class TronReceiptConfirmTaskTests(TestCase):
         self.assertEqual(detail.net_usage, 300)
         self.assertEqual(detail.native_price, "0.1")
         self.assertEqual(detail.gas_cost, "0.4")
+
+    @patch("tron.saas_gas_billing.TronHttpClient")
+    def test_build_tx_detail_rejects_receipt_not_matching_tx_hash(self, client_cls):
+        """回执不属于本交易时必须抛错，不能按 fee=0 计价。
+
+        gettransactioninfobyid 走 walletsolidity，负载均衡到固化头略落后的后端会返回
+        空对象。若按 0 成本上报，SaaS 侧的 sys_no 幂等会让这笔成本永远无法补正。
+        """
+        from tron.client import TronClientError
+        from tron.saas_gas_billing import build_tx_detail
+
+        for payload in ({}, {"id": "d" * 64, "fee": 1_000_000}):
+            with self.subTest(payload=payload):
+                client_cls.return_value.get_transaction_info_by_id.return_value = (
+                    payload
+                )
+                with self.assertRaises(TronClientError):
+                    build_tx_detail(chain=self.chain, tx_hash="c" * 64)
 
     @patch("tron.saas_gas_billing.send_saas_callback")
     @patch("tron.saas_gas_billing.build_tx_detail")
@@ -2945,9 +3010,7 @@ class TronReceiptConfirmTaskTests(TestCase):
         refresh_balance.assert_called_once()
         self.assertEqual(refresh_balance.call_args.args[0].pk, base_task.pk)
         collect_gas_fee.assert_called_once()
-        self.assertEqual(
-            collect_gas_fee.call_args.kwargs["tx_task"].pk, base_task.pk
-        )
+        self.assertEqual(collect_gas_fee.call_args.kwargs["tx_task"].pk, base_task.pk)
         deploy_gas_fee.assert_not_called()
 
     @patch("tron.tasks.notify_vault_slot_deploy_gas_fee")
@@ -3490,6 +3553,53 @@ class TronCollectScheduleExecuteTests(TestCase):
         )
 
     @patch("tron.vault_slots.TronAdapter.is_contract", return_value=True)
+    def test_execute_due_isolates_broken_schedule_and_continues_batch(
+        self, is_contract
+    ):
+        # execute_due 是所有链共享的唯一归集派发入口且按 due_at 升序取批：
+        # 单条计划抛出非预期异常（此处走真实缺口路径——价格数据形态损坏，
+        # Decimal(None) 抛 TypeError 而非 PriceUnavailableError）时必须退避
+        # 该计划并继续消费批次，否则它每轮都在批次头部中断，饿死其后所有
+        # 链的归集调度。
+        VaultSlot.objects.filter(pk=self.slot.pk).update(is_deployed=True)
+        self.slot.is_deployed = True
+        broken_crypto = Crypto.objects.create(
+            name="Broken Price Coin",
+            symbol="BRK",
+            prices={"USD": None},
+            coingecko_id="broken-price-coin",
+        )
+        broken_schedule = VaultSlotCollectSchedule.objects.create(
+            chain=self.chain,
+            vault_slot=self.slot,
+            crypto=broken_crypto,
+            due_at=timezone.now() - timedelta(seconds=2),
+        )
+        healthy_schedule = self.make_pending_schedule()
+
+        with (
+            patch(
+                "core.runtime_settings.get_vault_slot_collect_min_worth_usd",
+                return_value=Decimal("1"),
+            ),
+            patch(
+                "chains.vault_slot_balances.refresh_vault_slot_balance_safely",
+                return_value=SimpleNamespace(value=1, amount=Decimal("100")),
+            ),
+            patch("tron.vault_slots.SystemWallet.get_current") as get_current,
+        ):
+            get_current.return_value.wallet.get_address.return_value = self.sender
+            created = VaultSlotCollectSchedule.execute_due()
+
+        # 损坏计划被退避而非中断整批：健康计划照常建任务。
+        self.assertEqual(created, 1)
+        broken_schedule.refresh_from_db()
+        self.assertIsNone(broken_schedule.tx_task_id)
+        self.assertGreater(broken_schedule.due_at, timezone.now())
+        healthy_schedule.refresh_from_db()
+        self.assertIsNotNone(healthy_schedule.tx_task_id)
+
+    @patch("tron.vault_slots.TronAdapter.is_contract", return_value=True)
     def test_two_schedules_same_slot_get_independent_tasks(self, is_contract):
         # 回归:移除「复用在途任务」去重后,同 slot+token 的两个计划各建独立任务,
         # 不再撞 VaultSlotCollectSchedule.tx_task 的 OneToOne 唯一约束、毒化整批调度。
@@ -3518,7 +3628,9 @@ class TronCollectScheduleExecuteTests(TestCase):
         self.assertNotEqual(first.tx_task_id, second.tx_task_id)
 
     @patch("tron.vault_slots.TronAdapter.is_contract", return_value=True)
-    def test_execute_due_deletes_pending_schedule_when_balance_is_zero(self, is_contract):
+    def test_execute_due_deletes_pending_schedule_when_balance_is_zero(
+        self, is_contract
+    ):
         schedule = self.make_pending_schedule()
 
         with (
@@ -3532,5 +3644,9 @@ class TronCollectScheduleExecuteTests(TestCase):
             created = VaultSlotCollectSchedule.execute_due()
 
         self.assertEqual(created, 0)
-        self.assertFalse(VaultSlotCollectSchedule.objects.filter(pk=schedule.pk).exists())
-        self.assertFalse(TxTask.objects.filter(tx_type=TxTaskType.VaultSlotCollect).exists())
+        self.assertFalse(
+            VaultSlotCollectSchedule.objects.filter(pk=schedule.pk).exists()
+        )
+        self.assertFalse(
+            TxTask.objects.filter(tx_type=TxTaskType.VaultSlotCollect).exists()
+        )

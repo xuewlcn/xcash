@@ -107,7 +107,9 @@ def estimate_collect_gas(*, chain: Chain, crypto, slot: VaultSlot) -> int | None
     buffered = estimated * VAULT_SLOT_COLLECT_GAS_ESTIMATE_BUFFER_BPS // BPS_DENOMINATOR
     # max(静态默认) 防止低估回退（L1 常规链 estimate 低于默认时仍用默认）；
     # 上限防止异常报价把 gas limit 放大到烧穿热钱包 gas 预检。
-    return min(max(DEFAULT_VAULT_SLOT_COLLECT_GAS, buffered), VAULT_SLOT_COLLECT_GAS_CEILING)
+    return min(
+        max(DEFAULT_VAULT_SLOT_COLLECT_GAS, buffered), VAULT_SLOT_COLLECT_GAS_CEILING
+    )
 
 
 def create_collect_tx_task(

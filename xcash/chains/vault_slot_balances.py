@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import structlog
+from celery.exceptions import SoftTimeLimitExceeded
 from django.db import transaction
 from django.db.models import Exists
 from django.db.models import OuterRef
@@ -38,8 +39,15 @@ def refresh_vault_slot_balance(
     worth = crypto.usd_amount(amount)
     synced_at = timezone.now()
     with transaction.atomic():
-        locked_slot = VaultSlot.objects.select_related("chain").select_for_update().get(
-            pk=slot.pk
+        # of=("self",) 把行锁限定在 chains_vaultslot：select_related("chain") 会把
+        # chains_chain join 进来，裸 FOR UPDATE 在 PostgreSQL 下会连该链的 Chain 行
+        # 一并锁死，使本链所有引用 chain 的插入（TxTask/TxHash/Transfer/余额快照）都卡在
+        # FK 的 FOR KEY SHARE 上；且与「先锁 Chain 再更新 VaultSlot」的入账路径构成
+        # 反向加锁顺序，会周期性触发死锁。chain 在此只用于读 latest_block_number，无需上锁。
+        locked_slot = (
+            VaultSlot.objects.select_related("chain")
+            .select_for_update(of=("self",))
+            .get(pk=slot.pk)
         )
         synced_block_number = (
             block_number
@@ -112,6 +120,12 @@ def refresh_vault_slot_balance_safely(
             trigger_tx_hash=trigger_tx_hash,
             block_number=block_number,
         )
+    except SoftTimeLimitExceeded:
+        # SoftTimeLimitExceeded 继承自 Exception，会被下面的宽泛 except 吞掉。一旦吞掉，
+        # 任务不会收尾而是继续跑下一条计划，直到撞上硬超时被 SIGKILL——那时 singleton
+        # 锁不会走 finally 释放、只能等 TTL 过期，worker 子进程也被连带杀掉。
+        # 软超时是「请尽快收尾」的控制信号，不是业务异常，必须原样上抛。
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "VaultSlot 余额刷新失败",
@@ -144,7 +158,9 @@ def refresh_vault_slot_balance_for_transfer(transfer: Transfer) -> None:
     )
 
 
-def refresh_vault_slot_balance_for_collect_task(tx_task: TxTask) -> VaultSlotBalance | None:
+def refresh_vault_slot_balance_for_collect_task(
+    tx_task: TxTask,
+) -> VaultSlotBalance | None:
     """不生成 Transfer 的归集任务确认后刷新余额。"""
     schedule = (
         VaultSlotCollectSchedule.objects.select_related(
@@ -268,6 +284,9 @@ def reconcile_vault_slot_collect_balance_gaps(*, limit: int = 32) -> dict:
                 vault_slot=balance.vault_slot,
                 crypto=balance.crypto,
             )
+        except SoftTimeLimitExceeded:
+            # 同上：软超时不能被逐行的容错 except 吞掉，否则整批会一直跑到硬超时被杀。
+            raise
         except Exception as exc:  # noqa: BLE001
             errors.append(
                 {

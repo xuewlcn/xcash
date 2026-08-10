@@ -91,9 +91,7 @@ class AdminPathConfigTests(SimpleTestCase):
 
         self.assertEqual(str(patterns[0].pattern), "secure-admin")
         self.assertEqual(str(patterns[1].pattern), "secure-admin/")
-        self.assertEqual(
-            str(patterns[2].pattern), "secure-admin/operations/inspection"
-        )
+        self.assertEqual(str(patterns[2].pattern), "secure-admin/operations/inspection")
         self.assertEqual(str(patterns[-1].pattern), "secure-admin/")
 
     def test_admin_session_timeout_middleware_detects_root_admin_route(self):
@@ -129,6 +127,42 @@ class SystemSettingsRuntimeTests(TestCase):
 
         self.assertEqual(get_webhook_delivery_max_retries(), 9)
         self.assertEqual(get_webhook_delivery_max_backoff_seconds(), 45)
+
+    def test_cache_invalidation_is_deferred_to_commit(self):
+        """缓存失效必须挂在事务提交后。
+
+        全局 ATOMIC_REQUESTS=True 下，admin 保存请求的事务要到响应阶段才提交。
+        若在事务内删除缓存，删除与 COMMIT 之间任何并发读者都会 cache miss、从库里
+        读到未提交前的旧行再写回——新配置提交后永远读不到，且没有 TTL 能自愈。
+        """
+        settings_row = SystemSettings.objects.create(webhook_delivery_max_retries=3)
+        self.assertEqual(get_webhook_delivery_max_retries(), 3)
+
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            settings_row.webhook_delivery_max_retries = 7
+            settings_row.save()
+            # 事务尚未提交：失效动作应仍在待执行队列里，缓存保持旧值。
+            self.assertEqual(cache.get(SYSTEM_SETTINGS_CACHE_KEY).pk, settings_row.pk)
+
+        self.assertTrue(callbacks)
+
+    def test_cache_reflects_new_value_after_commit(self):
+        settings_row = SystemSettings.objects.create(webhook_delivery_max_retries=3)
+        self.assertEqual(get_webhook_delivery_max_retries(), 3)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            settings_row.webhook_delivery_max_retries = 7
+            settings_row.save()
+
+        self.assertEqual(get_webhook_delivery_max_retries(), 7)
+
+    def test_cache_entry_has_finite_ttl(self):
+        """缓存必须带 TTL 兜底：绕过模型 save 的写入不会触发 on_commit 失效。"""
+        SystemSettings.objects.create(webhook_delivery_max_retries=3)
+        get_webhook_delivery_max_retries()
+
+        self.assertIsNotNone(cache.ttl(SYSTEM_SETTINGS_CACHE_KEY))
+        self.assertGreater(cache.ttl(SYSTEM_SETTINGS_CACHE_KEY), 0)
 
 
 class SystemWalletTests(TestCase):
@@ -322,7 +356,9 @@ class OperationalInspectionPayloadTests(TestCase):
         payload = _build_operational_inspection_payload(self.empty_metrics())
 
         self.assertEqual(len(payload["attention_items"]), 1)
-        self.assertEqual(str(payload["inspection_sections"][0]["title"]), "后台安全配置")
+        self.assertEqual(
+            str(payload["inspection_sections"][0]["title"]), "后台安全配置"
+        )
         self.assertEqual(payload["inspection_sections"][0]["count"], 1)
         self.assertEqual(
             str(payload["inspection_sections"][0]["rows"][0]["title"]),
@@ -684,6 +720,24 @@ class InitEnvScriptTests(SimpleTestCase):
             self.assertRegex(env["DJANGO_SECRET_KEY"], r"^[A-Za-z0-9]+$")
             # 助记词加密密钥随主应用 .env 加载
             self.assertEqual(len(env["WALLET_MNEMONIC_ENCRYPTION_KEY"]), 64)
+            # 超管口令必须随机：固定默认值在开源仓库里等同公开常量，而后台在未设
+            # ADMIN_PATH 时就挂在站点根路径，扫到即可直接登录。
+            superuser_password = env["DJANGO_DEFAULT_SUPERUSER_PASSWORD"]
+            self.assertNotEqual(superuser_password, "Admin@123456")
+            self.assertEqual(len(superuser_password), 24)
+            self.assertRegex(superuser_password, r"^[A-Za-z0-9]+$")
+
+    def test_generated_superuser_password_differs_between_runs(self):
+        passwords = set()
+        for _ in range(2):
+            with TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                result = self.run_init_env(tmp_path)
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                env = self.parse_env(tmp_path / ".env")
+                passwords.add(env["DJANGO_DEFAULT_SUPERUSER_PASSWORD"])
+
+        self.assertEqual(len(passwords), 2)
 
     def test_does_not_overwrite_existing_env(self):
         # 已有 .env 必须触发门禁失败，避免脚本静默覆盖助记词加密密钥。
@@ -730,11 +784,6 @@ class LocalChainIntegrationMixin:
             )
             w3.eth.wait_for_transaction_receipt(mint_hash)
         return token
-
-
-
-
-
 
 
 class LocalEvmContractCompatibilityTests(LocalChainIntegrationMixin, TestCase):

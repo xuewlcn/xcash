@@ -4,4 +4,9 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+# schedule 落在容器内 /tmp，随容器重建丢失，属【有意选择】：本项目 beat_schedule
+# 全部由代码定义（config/celery.py），没有 DatabaseScheduler 那种运行期动态改调度的
+# 需求，落盘状态只用于记住「上次执行时刻」。代价是容器重建后间隔型任务会立即齐发一次；
+# 这些任务本身都是幂等的（扫链按游标、投递按状态机），可以接受。
+# 换成持久卷反而有害：陈旧的 last_run 会让重建后的 beat 按旧调度补跑。
 exec celery -A config.celery beat -l WARNING -s /tmp/celerybeat-schedule

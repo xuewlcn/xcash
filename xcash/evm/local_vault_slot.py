@@ -103,7 +103,9 @@ def ensure_local_vault_slot_contracts(*, w3: Web3) -> None:
     )
 
     # 2. 工厂：构造参数引用上面部署的实现合约地址。
-    factory_init = build_factory_init_code(implementation_address=implementation_address)
+    factory_init = build_factory_init_code(
+        implementation_address=implementation_address
+    )
     factory_address = predict_create2_address(factory_init)
     _assert_no_address_drift(
         predicted=factory_address,

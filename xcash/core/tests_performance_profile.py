@@ -22,7 +22,9 @@ class PerformanceProfileTests(SimpleTestCase):
             {"PERFORMANCE": "medium", "CELERY_WORKER_CONCURRENCY": "9"},
             clear=True,
         ):
-            self.assertEqual(get_int("CELERY_WORKER_CONCURRENCY", "celery_worker_concurrency"), 9)
+            self.assertEqual(
+                get_int("CELERY_WORKER_CONCURRENCY", "celery_worker_concurrency"), 9
+            )
 
     def test_invalid_profile_fails_fast(self):
         with (
@@ -39,7 +41,9 @@ class PerformanceProfileTests(SimpleTestCase):
             "GUNICORN_THREADS": "5",
             "DJANGO_SETTINGS_MODULE": "config.settings.test",
         }
-        performance_script = Path(__file__).resolve().parents[2] / "config" / "performance.py"
+        performance_script = (
+            Path(__file__).resolve().parents[2] / "config" / "performance.py"
+        )
         completed = subprocess.run(
             [sys.executable, str(performance_script), "shell-env", "web"],
             check=True,

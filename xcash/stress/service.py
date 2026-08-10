@@ -37,9 +37,7 @@ logger = structlog.get_logger()
 STRESS_FIXED_METHODS = {
     "USDT": ["anvil"],
 }
-STRESS_FIXED_METHOD_CHOICES = (
-    ("USDT", "anvil"),
-)
+STRESS_FIXED_METHOD_CHOICES = (("USDT", "anvil"),)
 STRESS_SAAS_PERMISSION_CACHE_TTL = 24 * 60 * 60
 
 
@@ -283,6 +281,7 @@ class StressService:
             raise RuntimeError(f"获取充值地址 API {resp.status_code}: {detail}")
         return resp.json()["deposit_address"]
 
+
 # 压测用的法币价格兜底值，仅在 prices 为空时回填，避免依赖外部行情源。
 _STRESS_FALLBACK_PRICES = {
     "ETH": {"USD": 3000},
@@ -473,7 +472,9 @@ def _build_deposit_cases(stress: StressRun) -> list[DepositStressCase]:
     cases = []
     for i, uid in enumerate(customer_deposits, 1):
         offset = max(0.0, min(total_seconds, random.gauss(mu, sigma)))
-        crypto_symbol, chain_code = random.choice(STRESS_DEPOSIT_METHOD_CHOICES)  # noqa: S311
+        crypto_symbol, chain_code = random.choice(  # noqa: S311
+            STRESS_DEPOSIT_METHOD_CHOICES
+        )
         lo, hi = _DEPOSIT_AMOUNT_RANGES[crypto_symbol]
         amount = _sample_decimal_amount(lo=lo, hi=hi, decimal_places=8)
 

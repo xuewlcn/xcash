@@ -34,13 +34,24 @@ def process_transfer(pk):
     transfer.process()
 
 
-@shared_task
+# 单轮兜底派发上限。兜底任务每 20 秒跑一次，正常情况下待处理量是个位数；一旦上游
+# 积压（扫描补扫、worker 停摆后恢复），无上限的全表扫描会把成千上万条 Transfer 反复
+# 投递进队列，挤占广播与确认。按 created_at 升序取批，最老的先处理，不会饿死。
+FALLBACK_PROCESS_TRANSFER_BATCH_SIZE = 256
+
+
+@shared_task(ignore_result=True, soft_time_limit=25, time_limit=30)
 def fallback_process_transfer():
-    for transfer in Transfer.objects.filter(
-        processed_at__isnull=True,
-        created_at__lte=ago(seconds=30),
-    ):
-        process_transfer.delay(transfer.pk)
+    transfer_pks = (
+        Transfer.objects.filter(
+            processed_at__isnull=True,
+            created_at__lte=ago(seconds=30),
+        )
+        .order_by("created_at")
+        .values_list("pk", flat=True)[:FALLBACK_PROCESS_TRANSFER_BATCH_SIZE]
+    )
+    for pk in transfer_pks:
+        process_transfer.delay(pk)
 
 
 # CONFIRMING 转账的最大观察时限。各链确认深度最多分钟级，超过该时限仍未确认，
@@ -48,7 +59,10 @@ def fallback_process_transfer():
 STALE_CONFIRMING_TRANSFER_MAX_AGE_HOURS = 24
 
 
-@shared_task(ignore_result=True)
+# 每条超龄转账都要打一次链上终验 RPC，limit=200 时单轮可达数分钟，必须显式声明
+# 时间预算：用 Celery 默认的 30s 软超时会让每天一轮只清理十几条，而这个任务正是
+# 「确认批次被链上已消失的转账占满」的唯一自愈手段，清理速度跟不上就等于失效。
+@shared_task(ignore_result=True, soft_time_limit=280, time_limit=290)
 @singleton_task(timeout=300)
 def reap_stale_confirming_transfers(limit: int = 200) -> int:
     """清理超龄且链上已无事实的 CONFIRMING 转账，返回清理条数。
@@ -99,6 +113,13 @@ def reap_stale_confirming_transfers(limit: int = 200) -> int:
             reaped_count += 1
         elif result == TxCheckStatus.SUCCEEDED:
             # 链上事实仍在，说明只是确认管线曾中断；主动补派确认，不等链高推进。
+            # 业务归类未完成（processed_at 为空）时不能直接确认：type 仍为 Unmatched，
+            # confirm 的业务分发会空转，之后补上的匹配再也等不到确认动作，
+            # 造成链上有钱、账上无单。此时先补处理，确认交回正常调度
+            # （block_number_updated 过滤 processed_at，QUICK 由 process 内部派发）。
+            if transfer.processed_at is None:
+                process_transfer.delay(transfer.pk)
+                continue
             confirm_transfer.delay(transfer.pk)
         else:
             logger.warning(
@@ -111,8 +132,41 @@ def reap_stale_confirming_transfers(limit: int = 200) -> int:
     return reaped_count
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=55)
+@shared_task(
+    ignore_result=True,
+    bind=True,
+    max_retries=5,
+    soft_time_limit=25,
+    time_limit=30,
+)
+@singleton_task(timeout=35, use_params=True)
+def schedule_vault_slot_deploy(self, slot_pk: int) -> None:
+    """异步触发 VaultSlot 预部署调度。
+
+    只有 EVM 原生币需要在暴露地址前预部署（receive() 的事件是入账识别的唯一依据）。
+    此前这一步同步跑在请求线程的 on_commit 回调里，RPC 抖动会把已经落库的下单请求
+    打成 500；挪到这里后请求不再内联链上调用，失败按指数退避重试，最终一致。
+    """
+    from chains.models import VaultSlot  # noqa: PLC0415
+
+    try:
+        VaultSlot.schedule_deploy(slot_pk)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "VaultSlot 预部署调度失败，退避重试",
+            vault_slot_id=slot_pk,
+            retries=self.request.retries,  # noqa
+            error=str(exc),
+        )
+        # 8s → 16s → 32s → 64s → 128s，覆盖节点短时抖动；仍失败则由归集前的
+        # ensure_deployed_before_collect 兜底，不会丢部署。
+        raise self.retry(
+            exc=exc, countdown=8 * (2**self.request.retries)
+        ) from exc  # noqa
+
+
+@shared_task(ignore_result=True, soft_time_limit=45, time_limit=55)
+@singleton_task(timeout=58)
 def execute_due_vault_slot_collect_schedules() -> None:
     created_count = VaultSlotCollectSchedule.execute_due()
     if created_count:
@@ -122,8 +176,8 @@ def execute_due_vault_slot_collect_schedules() -> None:
         )
 
 
-@shared_task(ignore_result=True)
-@singleton_task(timeout=55)
+@shared_task(ignore_result=True, soft_time_limit=100, time_limit=110)
+@singleton_task(timeout=115)
 def reconcile_vault_slot_collect_balance_gaps_task() -> None:
     summary = reconcile_vault_slot_collect_balance_gaps()
     if summary["created_count"]:
@@ -152,6 +206,7 @@ def reconcile_vault_slot_collect_balance_gaps_task() -> None:
     ignore_result=True,
     bind=True,
     max_retries=5,
+    soft_time_limit=50,
     time_limit=60,
 )
 @singleton_task(timeout=65, use_params=True)

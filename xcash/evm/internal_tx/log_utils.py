@@ -53,4 +53,3 @@ def _hex_lower(value: Any) -> str:
     """提取去掉 0x 前缀的小写十六进制串。"""
     raw = value.hex() if hasattr(value, "hex") else str(value)
     return raw.removeprefix("0x").lower()
-

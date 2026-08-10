@@ -1,7 +1,10 @@
+import socket
+import time
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
@@ -12,8 +15,14 @@ from projects.models import Project
 from webhooks.models import DeliveryAttempt
 from webhooks.models import WebhookEvent
 from webhooks.service import WebhookService
+from webhooks.tasks import DeliveryTargetResolutionError
+from webhooks.tasks import _claim_event_for_delivery
 from webhooks.tasks import deliver_event
 from webhooks.tasks import next_backoff
+from webhooks.tasks import pin_request_to_ip
+from webhooks.tasks import reap_stalled_events
+from webhooks.tasks import resolve_addresses
+from webhooks.tasks import safe_delivery_target
 from webhooks.tasks import schedule_events
 
 
@@ -229,7 +238,27 @@ class DeliverEventTests(TestCase):
     # ── webhook 未配置 ──
 
     @patch("webhooks.tasks._execute_http_delivery")
-    def test_no_webhook_url_marks_failed(self, mock_http):
+    def test_no_webhook_url_suspends_instead_of_failing(self, mock_http):
+        """地址未配置是可恢复状态，必须挂起等待补齐而非一次判终局。
+
+        商户改回调地址（清空保存再填新值）中间有几秒空窗，一次终局会让这期间
+        确认的所有支付通知永久丢失。
+        """
+        project = _make_project(webhook="")
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNotNone(event.schedule_locked_until)
+        self.assertIn("not configured", event.last_error)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_no_webhook_url_fails_after_retry_budget_exhausted(self, mock_http):
+        """挂起不是无限的：重试预算用尽仍未配置好，才判终局。"""
+        SystemSettings.objects.create(webhook_delivery_max_retries=1)
         project = _make_project(webhook="")
         event = self._create_event(project=project)
 
@@ -237,7 +266,6 @@ class DeliverEventTests(TestCase):
 
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.FAILED)
-        self.assertIn("not configured", event.last_error)
         mock_http.assert_not_called()
 
     @patch("webhooks.tasks._execute_http_delivery")
@@ -272,6 +300,50 @@ class DeliverEventTests(TestCase):
         self.assertIn("Unsafe webhook URL", event.last_error)
         mock_http.assert_not_called()
 
+    @patch("webhooks.tasks.socket.getaddrinfo")
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_dns_failure_suspends_instead_of_failing(
+        self,
+        mock_http,
+        getaddrinfo_mock,
+    ):
+        """DNS 瞬时解析失败必须挂起重试，不得当作 Unsafe URL 一次终局。
+
+        解析器抖动、NS 短暂不可达都是分钟级可恢复的故障，商户域名偶发解析慢
+        一次就 FAILED 会永久丢掉支付成功通知。
+        """
+        getaddrinfo_mock.side_effect = socket.gaierror("Name resolution failed")
+        project = _make_project(webhook="https://merchant.example.com/hook")
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNotNone(event.schedule_locked_until)
+        self.assertGreater(event.schedule_locked_until, timezone.now())
+        self.assertIn("DNS resolution failed", event.last_error)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks.socket.getaddrinfo")
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_dns_failure_fails_after_retry_budget_exhausted(
+        self,
+        mock_http,
+        getaddrinfo_mock,
+    ):
+        """挂起不是无限的：域名持续解析不出来，预算用尽照样终局。"""
+        SystemSettings.objects.create(webhook_delivery_max_retries=1)
+        getaddrinfo_mock.side_effect = socket.gaierror("Name resolution failed")
+        project = _make_project(webhook="https://merchant.example.com/hook")
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        mock_http.assert_not_called()
+
     @override_settings(WEBHOOK_ALLOW_INTERNAL_TARGETS=True)
     @patch("webhooks.tasks._execute_http_delivery")
     def test_internal_target_allowed_when_switch_on(self, mock_http):
@@ -290,14 +362,16 @@ class DeliverEventTests(TestCase):
     # ── webhook_open=False ──
 
     @patch("webhooks.tasks._execute_http_delivery")
-    def test_webhook_closed_marks_failed(self, mock_http):
+    def test_webhook_closed_suspends_instead_of_failing(self, mock_http):
+        """通知开关关闭同样是可恢复状态，重新打开后事件应还能投递。"""
         project = _make_project(webhook_open=False)
         event = self._create_event(project=project)
 
         deliver_event(event.pk)
 
         event.refresh_from_db()
-        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNotNone(event.schedule_locked_until)
         self.assertIn("not open", event.last_error)
         mock_http.assert_not_called()
 
@@ -334,7 +408,9 @@ class WebhookDeliveryPolicyTests(TestCase):
         super().tearDown()
 
     @patch("webhooks.tasks._execute_http_delivery")
-    def test_get_query_delivery_uses_event_delivery_url_and_success_text(self, mock_http):
+    def test_get_query_delivery_uses_event_delivery_url_and_success_text(
+        self, mock_http
+    ):
         mock_http.return_value = (True, 200, {}, "success", "", 30)
         project = _make_project(webhook="https://93.184.216.35/hook")
         event = WebhookEvent.objects.create(
@@ -352,7 +428,9 @@ class WebhookDeliveryPolicyTests(TestCase):
         call_kwargs = mock_http.call_args.kwargs
         self.assertEqual(call_kwargs["request_url"], "https://93.184.216.34/notify")
         self.assertEqual(call_kwargs["method"], "GET")
-        self.assertEqual(call_kwargs["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"})
+        self.assertEqual(
+            call_kwargs["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"}
+        )
         self.assertEqual(call_kwargs["expected_response_body"], "success")
         # 默认未配置出口代理，请求 header 中不应出现代理转发字段
         self.assertNotIn("CF-Worker-Destination", call_kwargs["headers"])
@@ -395,7 +473,9 @@ class WebhookDeliveryPolicyTests(TestCase):
         self.assertEqual(captured["headers"]["CF-Worker-Key"], "proxy-key-secret")
         # GET 方法和 query payload 不变，签名校验交给商户端的 EPay MD5
         self.assertEqual(captured["method"], "GET")
-        self.assertEqual(captured["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"})
+        self.assertEqual(
+            captured["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"}
+        )
 
     @patch("webhooks.tasks._egress_proxy_url", None)
     @patch("webhooks.tasks._execute_http_delivery")
@@ -607,3 +687,243 @@ class ProjectWebhookOpenTests(TestCase):
 
         project.refresh_from_db()
         self.assertTrue(project.webhook_open)
+
+
+class DeliveryAttemptCountingTests(TestCase):
+    """重试计数必须由认领时的原子自增承担，不能依赖 DeliveryAttempt 行数。"""
+
+    def tearDown(self):
+        cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
+        cache.clear()
+        super().tearDown()
+
+    def test_claim_increments_attempt_count_atomically(self):
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+
+        self.assertTrue(_claim_event_for_delivery(event.pk))
+
+        event.refresh_from_db()
+        self.assertEqual(event.attempt_count, 1)
+
+    def test_crash_before_writing_attempt_still_consumes_retry_budget(self):
+        """任务在写 DeliveryAttempt 之前被杀，重试预算也必须被扣减。
+
+        这是"永不终结黑洞"的根因回归：旧实现按 attempts.count()+1 推算次数，
+        任务在写 attempt 前被杀时计数永远停在 1，max_retries 永不触发，事件
+        无限重投并因 created_at 最老长期霸占调度批次头部。
+        """
+        SystemSettings.objects.create(webhook_delivery_max_retries=3)
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+
+        # 模拟连续三次「认领成功后进程即被杀」：没有任何 DeliveryAttempt 落库。
+        for expected in (1, 2, 3):
+            WebhookEvent.objects.filter(pk=event.pk).update(delivery_locked_until=None)
+            self.assertTrue(_claim_event_for_delivery(event.pk))
+            event.refresh_from_db()
+            self.assertEqual(event.attempt_count, expected)
+
+        self.assertEqual(event.attempts.count(), 0)
+        # 计数已达上限，下一次投递失败会走终局分支而不是无限重试。
+        self.assertGreaterEqual(event.attempt_count, 3)
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_attempt_try_number_follows_event_counter(self, mock_http):
+        mock_http.return_value = (True, 200, {}, "ok", "", 50)
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}, attempt_count=4
+        )
+
+        deliver_event(event.pk)
+
+        attempt = event.attempts.get()
+        self.assertEqual(attempt.try_number, 5)
+
+
+class RetryableStatusTests(TestCase):
+    """「稍后再试」语义的 4xx 不能被判为终局。"""
+
+    def tearDown(self):
+        cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
+        cache.clear()
+        super().tearDown()
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_429_is_retryable(self, mock_http):
+        """商户端限流期间返回 429，一次终局会让该期间的支付通知永久丢失。"""
+        mock_http.return_value = (False, 429, {}, "slow down", "", 50)
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNotNone(event.schedule_locked_until)
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_408_is_retryable(self, mock_http):
+        mock_http.return_value = (False, 408, {}, "timeout", "", 50)
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_403_remains_terminal(self, mock_http):
+        """明确拒绝的 4xx 仍应终局，避免无意义重试。"""
+        mock_http.return_value = (False, 403, {}, "forbidden", "", 50)
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+
+
+class DeliveryTargetPinningTests(TestCase):
+    """校验与连接必须使用同一个 IP，杜绝 DNS rebinding。"""
+
+    @override_settings(WEBHOOK_ALLOW_INTERNAL_TARGETS=False)
+    def test_safe_target_returns_validated_public_ip(self):
+        self.assertEqual(
+            safe_delivery_target("https://93.184.216.34/hook"), "93.184.216.34"
+        )
+
+    @override_settings(WEBHOOK_ALLOW_INTERNAL_TARGETS=False)
+    def test_private_and_plain_http_targets_are_rejected(self):
+        for url in (
+            "https://127.0.0.1/hook",
+            "https://10.0.0.5/hook",
+            "https://169.254.169.254/latest/meta-data",
+            "http://93.184.216.34/hook",
+            "https://localhost/hook",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(safe_delivery_target(url))
+
+    def test_pinned_url_keeps_hostname_for_sni(self):
+        """连接目标换成 IP，但 TLS 仍须以原主机名做 SNI 与证书校验。"""
+        pinned_url, extensions = pin_request_to_ip(
+            "https://merchant.example.com/hook", "93.184.216.34"
+        )
+
+        self.assertEqual(pinned_url, "https://93.184.216.34/hook")
+        self.assertEqual(extensions, {"sni_hostname": "merchant.example.com"})
+
+    def test_pinned_url_preserves_port_and_path(self):
+        pinned_url, extensions = pin_request_to_ip(
+            "https://merchant.example.com:8443/a/b?c=d", "93.184.216.34"
+        )
+
+        self.assertEqual(pinned_url, "https://93.184.216.34:8443/a/b?c=d")
+        self.assertEqual(extensions["sni_hostname"], "merchant.example.com")
+
+    def test_ipv6_literal_is_bracketed(self):
+        pinned_url, _extensions = pin_request_to_ip(
+            "https://merchant.example.com/hook", "2606:2800:220:1:248:1893:25c8:1946"
+        )
+
+        self.assertEqual(
+            pinned_url, "https://[2606:2800:220:1:248:1893:25c8:1946]/hook"
+        )
+
+    @patch("webhooks.tasks.socket.getaddrinfo")
+    def test_rebinding_between_validation_and_connect_is_blocked(
+        self, mock_getaddrinfo
+    ):
+        """DNS 在校验后翻转为元数据地址，连接仍会打到校验通过的那个 IP。"""
+        mock_getaddrinfo.return_value = [
+            (None, None, None, None, ("93.184.216.34", 443))
+        ]
+        pinned = safe_delivery_target("https://rebind.example.com/hook")
+
+        # 校验之后攻击者把解析结果换成内网地址，但我们已不再解析主机名。
+        mock_getaddrinfo.return_value = [
+            (None, None, None, None, ("169.254.169.254", 443))
+        ]
+        pinned_url, _extensions = pin_request_to_ip(
+            "https://rebind.example.com/hook", pinned
+        )
+
+        self.assertEqual(pinned_url, "https://93.184.216.34/hook")
+
+
+class DnsResolutionTimeoutTests(SimpleTestCase):
+    """DNS 解析超时必须真正生效，不能被隐式线程 join 拖回阻塞。"""
+
+    @patch("webhooks.tasks.DNS_RESOLVE_TIMEOUT", 0.2)
+    @patch("webhooks.tasks.socket.getaddrinfo")
+    def test_timeout_returns_promptly_without_joining_blocked_thread(
+        self, getaddrinfo_mock
+    ):
+        """解析线程仍阻塞时函数必须按预算及时抛出。
+
+        曾用 `with ThreadPoolExecutor` 包超时：with 退出隐式 shutdown(wait=True)
+        会 join 阻塞在 getaddrinfo 里的线程，NS 黑洞时超时形同虚设、worker 照旧
+        被卡满一整批。
+        """
+
+        def blocked_resolve(*args, **kwargs):
+            time.sleep(1.5)
+            return [(None, None, None, None, ("93.184.216.34", 443))]
+
+        getaddrinfo_mock.side_effect = blocked_resolve
+
+        start = time.perf_counter()
+        with self.assertRaises(DeliveryTargetResolutionError):
+            resolve_addresses("blackhole.example.com", 443)
+        elapsed = time.perf_counter() - start
+
+        # 预算 0.2s、线程阻塞 1.5s：耗时接近前者才说明没有等待阻塞线程。
+        self.assertLess(elapsed, 1.0)
+
+    @patch("webhooks.tasks.socket.getaddrinfo")
+    def test_resolution_error_raises_instead_of_returning_empty(self, getaddrinfo_mock):
+        """解析失败抛领域异常，与「解析成功但目标不安全」严格区分。"""
+        getaddrinfo_mock.side_effect = socket.gaierror("NXDOMAIN")
+
+        with self.assertRaises(DeliveryTargetResolutionError):
+            resolve_addresses("missing.example.com", 443)
+
+
+class ReapStalledEventsTests(TestCase):
+    """超龄未送达事件必须被强制终结，否则会持续占据调度批次头部。"""
+
+    def tearDown(self):
+        cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
+        cache.clear()
+        super().tearDown()
+
+    def test_stalled_pending_event_is_failed(self):
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+        WebhookEvent.objects.filter(pk=event.pk).update(
+            created_at=timezone.now() - timezone.timedelta(days=3)
+        )
+
+        reap_stalled_events()
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+
+    def test_recent_pending_event_is_untouched(self):
+        event = WebhookEvent.objects.create(
+            project=_make_project(), payload={"type": "test"}
+        )
+
+        reap_stalled_events()
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)

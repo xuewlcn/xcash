@@ -5,6 +5,7 @@ import structlog
 from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
+from django.db import transaction as db_transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework import viewsets
@@ -20,6 +21,7 @@ from common.permission_check import check_saas_permission
 from common.permissions import RejectAll
 from common.throttles import InvoiceRetrieveThrottle
 from common.throttles import InvoiceSelectMethodThrottle
+from currencies.models import PriceUnavailableError
 from currencies.service import CryptoService
 from projects.models import Project
 
@@ -103,11 +105,6 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return Response(data)
 
     def create(self, request, *args, **kwargs):
-        # 不使用 @db_transaction.atomic：让 Invoice INSERT 立即提交，
-        # 释放 Project 行上的 FOR KEY SHARE FK 锁，避免高并发下
-        # 多事务争夺同一 Project tuple 的 MultiXact 锁元数据导致死锁。
-        # IntegrityError（重复 out_no）在 autocommit 模式下仍可正常捕获。
-
         # SaaS 模式：Invoice 收款这里只校验账号状态。
         check_saas_permission(
             appid=request.headers.get(APPID_HEADER),  # noqa
@@ -132,18 +129,24 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             )
 
         try:
-            invoice = Invoice.objects.create(
-                project=project,
-                out_no=validated_data["out_no"],
-                title=validated_data["title"],
-                currency_id=validated_data["currency"],
-                amount=validated_data["amount"],
-                methods=validated_data["methods"],
-                notify_url=validated_data.get("notify_url", ""),
-                return_url=validated_data.get("return_url", ""),
-                expires_at=timezone.now()
-                + timedelta(minutes=validated_data["duration"]),
-            )
+            # 内层 atomic 建立保存点，与 epay 建单路径一致。
+            # 全局 ATOMIC_REQUESTS=True 让整个请求跑在一个事务里：不套保存点的话，
+            # INSERT 撞唯一约束会把连接置为 needs_rollback，下面兜底分支的重查会抛
+            # TransactionManagementError，商户并发重试同一 out_no 时拿到的是 500
+            # 而不是设计好的幂等响应。
+            with db_transaction.atomic():
+                invoice = Invoice.objects.create(
+                    project=project,
+                    out_no=validated_data["out_no"],
+                    title=validated_data["title"],
+                    currency_id=validated_data["currency"],
+                    amount=validated_data["amount"],
+                    methods=validated_data["methods"],
+                    notify_url=validated_data.get("notify_url", ""),
+                    return_url=validated_data.get("return_url", ""),
+                    expires_at=timezone.now()
+                    + timedelta(minutes=validated_data["duration"]),
+                )
         except IntegrityError as exc:
             # 与并发创建撞唯一约束：重查后按同一幂等口径处理，避免商户
             # 并发重试时一个 201 一个 4xx 的不稳定语义。
@@ -242,9 +245,11 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             # 不透传异常内部信息给 API 调用方，避免泄露 project/crypto/chain 等内部标识。
             logger.warning("select_method allocation failed", detail=str(exc))
             raise APIError(ErrorCode.NO_RECIPIENT_ADDRESS) from exc
-        except (KeyError, ValueError) as exc:
-            # 价格数据缺失（KeyError）或精度溢出（ValueError）导致法币换算失败，
-            # 属于系统配置问题而非调用方参数错误，记录 error 级别日志便于排查。
+        except (PriceUnavailableError, KeyError, ValueError) as exc:
+            # 价格源缺该币/该法币的报价（PriceUnavailableError）或精度溢出（ValueError）
+            # 导致法币换算失败，属于系统配置问题而非调用方参数错误，记录 error 级别日志。
+            # PriceUnavailableError 必须显式列出：它直接继承 Exception，不是 KeyError
+            # 的子类，漏掉会让买家在切换支付方式时收到 500 而不是可识别的错误码。
             logger.exception(
                 "select_method price conversion failed",
                 invoice=invoice.sys_no,

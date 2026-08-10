@@ -486,13 +486,10 @@ def _finalize_collection_verification(
         hash_variants = (
             [h, f"0x{h}"] if not h.startswith("0x") else [h, h.removeprefix("0x")]
         )
-        deposit = (
-            Deposit.objects.filter(
-                transfer__hash__in=hash_variants,
-                customer__project=stress.project,
-            )
-            .first()
-        )
+        deposit = Deposit.objects.filter(
+            transfer__hash__in=hash_variants,
+            customer__project=stress.project,
+        ).first()
 
         update_fields = [
             "collection_verified",
@@ -560,10 +557,7 @@ def _finalize_invoice_collection_verification(
     )
 
     for case in webhook_ok_cases:
-        invoice = (
-            Invoice.objects.filter(sys_no=case.invoice_sys_no)
-            .first()
-        )
+        invoice = Invoice.objects.filter(sys_no=case.invoice_sys_no).first()
         update_fields = [
             "collection_verified",
             "collection_hash",

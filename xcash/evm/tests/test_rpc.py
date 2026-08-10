@@ -44,7 +44,9 @@ class EvmScannerRpcErrorMessageTests(SimpleTestCase):
                         "0x00000000000000000000000000000000000000aa"
                     )
                 ],
-                topic0=Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)")),
+                topic0=Web3.to_hex(
+                    Web3.keccak(text="Transfer(address,address,uint256)")
+                ),
                 summary="获取 EVM 日志失败",
             )
 
@@ -108,7 +110,9 @@ class EvmScannerRpcErrorMessageTests(SimpleTestCase):
                         "0x00000000000000000000000000000000000000aa"
                     )
                 ],
-                topic0=Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)")),
+                topic0=Web3.to_hex(
+                    Web3.keccak(text="Transfer(address,address,uint256)")
+                ),
                 summary="获取 EVM 日志失败",
             )
 
@@ -221,7 +225,9 @@ class EvmScannerRpcClientTests(TestCase):
                         "0x00000000000000000000000000000000000000aa"
                     )
                 ],
-                topic0=Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)")),
+                topic0=Web3.to_hex(
+                    Web3.keccak(text="Transfer(address,address,uint256)")
+                ),
             )
 
     def test_get_logs_accepts_multiple_topic0_values(self):
@@ -267,7 +273,9 @@ class EvmScannerRpcClientTests(TestCase):
             from_block=100,
             to_block=100,
             addresses=None,
-            topic0=Web3.to_hex(Web3.keccak(text="XcashNativeReceived(address,uint256)")),
+            topic0=Web3.to_hex(
+                Web3.keccak(text="XcashNativeReceived(address,uint256)")
+            ),
         )
 
         self.assertNotIn("address", captured_filters[0])
@@ -289,7 +297,9 @@ class EvmScannerRpcClientTests(TestCase):
             )
         )
         retry_w3 = SimpleNamespace(
-            eth=SimpleNamespace(get_block=Mock(return_value={"timestamp": 1_776_734_136}))
+            eth=SimpleNamespace(
+                get_block=Mock(return_value={"timestamp": 1_776_734_136})
+            )
         )
         self.chain.__dict__["w3"] = failing_w3
         build_poa_retry_w3_mock.return_value = retry_w3
@@ -366,9 +376,7 @@ class EvmScannerRpcClientTests(TestCase):
         )
         retry_w3 = SimpleNamespace(
             eth=SimpleNamespace(
-                get_block=Mock(
-                    return_value={"number": 93_739_122, "transactions": []}
-                )
+                get_block=Mock(return_value={"number": 93_739_122, "transactions": []})
             )
         )
         self.chain.__dict__["w3"] = failing_w3

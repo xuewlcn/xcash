@@ -298,6 +298,19 @@ class VaultSlotAddressSchedulingTests(TestCase):
             side_effect=fake_get_address,
         )
 
+    @staticmethod
+    def patch_deploy_task_delay():
+        """把预部署的 Celery 投递就地执行，同时保留"确实投递了任务"的可断言性。
+
+        预部署已从 on_commit 回调改为投递 Celery 任务（回调跑在请求线程里，内联
+        RPC 会把已落库的下单请求打成 500）。测试环境 ALWAYS_EAGER=False，故用
+        side_effect 同步跑任务体，让断言仍能覆盖到部署 intent 的构造。
+        """
+        return patch(
+            "chains.tasks.schedule_vault_slot_deploy.delay",
+            side_effect=VaultSlot.schedule_deploy,
+        )
+
     def test_first_ensure_deposit_address_delays_deploy_for_token(self):
         self.project.evm_vault = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000f01"
@@ -320,7 +333,9 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(address, slot.address)
         schedule.assert_not_called()
 
-    def test_first_ensure_deposit_address_schedules_deploy_for_native_after_commit(self):
+    def test_first_ensure_deposit_address_schedules_deploy_for_native_after_commit(
+        self,
+    ):
         self.project.evm_vault = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000f01"
         )
@@ -330,6 +345,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         with (
             address_patch,
             patch.object(EvmTxTask, "schedule") as schedule,
+            self.patch_deploy_task_delay() as deploy_delay,
             self.captureOnCommitCallbacks(execute=True),
         ):
             address = VaultSlot.ensure_deposit_address(
@@ -340,6 +356,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
 
         slot = VaultSlot.objects.get(chain=self.chain, customer=self.customer)
         self.assertEqual(address, slot.address)
+        deploy_delay.assert_called_once_with(slot.pk)
         self.assertEqual(schedule.call_count, 1)
 
         intent = schedule.call_args.args[0]
@@ -689,9 +706,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=100)
         self.chain.refresh_from_db()
 
-        with patch.object(
-            type(self.chain), "w3", new_callable=PropertyMock
-        ) as w3_mock:
+        with patch.object(type(self.chain), "w3", new_callable=PropertyMock) as w3_mock:
             w3_mock.return_value.eth.get_transaction.return_value = {
                 "hash": tx_hash,
                 "from": self.system_sender.address,
@@ -1138,7 +1153,9 @@ class VaultSlotAddressSchedulingTests(TestCase):
         self.assertEqual(tx_detail["native_price"], "2000")
 
     @patch("evm.saas_gas_billing.retry_vault_slot_deploy_gas_fee.delay")
-    @patch("evm.saas_gas_billing._build_tx_detail", side_effect=RuntimeError("rpc down"))
+    @patch(
+        "evm.saas_gas_billing._build_tx_detail", side_effect=RuntimeError("rpc down")
+    )
     def test_deploy_gas_fee_build_failure_schedules_retry(
         self,
         _build_tx_detail_mock,
@@ -1224,6 +1241,7 @@ class VaultSlotAddressSchedulingTests(TestCase):
         with (
             address_patch,
             patch.object(EvmTxTask, "schedule") as schedule,
+            self.patch_deploy_task_delay(),
             self.captureOnCommitCallbacks(execute=True),
         ):
             address = VaultSlot.ensure_deposit_address(
@@ -1684,7 +1702,9 @@ class VaultSlotAddressSchedulingTests(TestCase):
             created_count = VaultSlotCollectSchedule.execute_due()
 
         self.assertEqual(created_count, 0)
-        self.assertFalse(VaultSlotCollectSchedule.objects.filter(pk=schedule.pk).exists())
+        self.assertFalse(
+            VaultSlotCollectSchedule.objects.filter(pk=schedule.pk).exists()
+        )
         self.assertFalse(
             EvmTxTask.objects.filter(
                 base_task__tx_type=TxTaskType.VaultSlotCollect
@@ -2318,9 +2338,7 @@ class EvmEstimateCollectGasTests(TestCase):
         )
 
     def patch_hot_wallet(self):
-        sender = SimpleNamespace(
-            address=Web3.to_checksum_address("0x" + "11" * 20)
-        )
+        sender = SimpleNamespace(address=Web3.to_checksum_address("0x" + "11" * 20))
         wallet = SimpleNamespace(get_address=Mock(return_value=sender))
         return patch(
             "evm.vault_slots.SystemWallet.get_current",

@@ -51,7 +51,9 @@ class MetadataView(APIView):
                     "icon": crypto.icon,
                     "is_native": crypto.is_native,
                 }
-                for crypto in CryptoService.list_all(active_only=True).order_by("symbol")
+                for crypto in CryptoService.list_all(active_only=True).order_by(
+                    "symbol"
+                )
             ],
         }
         cache.set(METADATA_CACHE_KEY, data, timeout=METADATA_CACHE_TTL)

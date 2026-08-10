@@ -137,10 +137,16 @@ class InvoiceStressCase(models.Model):
     collection_done_at = models.DateTimeField(_("归集完成时间"), null=True, blank=True)
 
     started_at = models.DateTimeField(_("开始时间"), null=True, blank=True)
-    invoice_created_at = models.DateTimeField(_("账单收款创建完成时间"), null=True, blank=True)
-    api_done_at = models.DateTimeField(_("选择账单收款方式完成时间"), null=True, blank=True)
+    invoice_created_at = models.DateTimeField(
+        _("账单收款创建完成时间"), null=True, blank=True
+    )
+    api_done_at = models.DateTimeField(
+        _("选择账单收款方式完成时间"), null=True, blank=True
+    )
     chain_paid_at = models.DateTimeField(_("链上广播完成时间"), null=True, blank=True)
-    webhook_received_at = models.DateTimeField(_("Webhook 处理完成时间"), null=True, blank=True)
+    webhook_received_at = models.DateTimeField(
+        _("Webhook 处理完成时间"), null=True, blank=True
+    )
     finished_at = models.DateTimeField(_("完成时间"), null=True, blank=True)
 
     class Meta:
@@ -203,9 +209,15 @@ class DepositStressCase(models.Model):
     error = models.TextField(_("错误信息"), blank=True)
 
     started_at = models.DateTimeField(_("开始时间"), null=True, blank=True)
-    api_done_at = models.DateTimeField(_("获取充值收款地址完成时间"), null=True, blank=True)
-    chain_paid_at = models.DateTimeField(_("链上充值收款完成时间"), null=True, blank=True)
-    webhook_received_at = models.DateTimeField(_("Webhook 处理完成时间"), null=True, blank=True)
+    api_done_at = models.DateTimeField(
+        _("获取充值收款地址完成时间"), null=True, blank=True
+    )
+    chain_paid_at = models.DateTimeField(
+        _("链上充值收款完成时间"), null=True, blank=True
+    )
+    webhook_received_at = models.DateTimeField(
+        _("Webhook 处理完成时间"), null=True, blank=True
+    )
     collection_done_at = models.DateTimeField(_("归集完成时间"), null=True, blank=True)
     finished_at = models.DateTimeField(_("完成时间"), null=True, blank=True)
 

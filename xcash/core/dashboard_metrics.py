@@ -104,7 +104,9 @@ def build_dashboard_metrics() -> dict:
             filter=Q(status=InvoiceStatus.WAITING, transfer__isnull=False),
         ),
         confirming_worth=Coalesce(
-            Sum("worth", filter=Q(status=InvoiceStatus.WAITING, transfer__isnull=False)),
+            Sum(
+                "worth", filter=Q(status=InvoiceStatus.WAITING, transfer__isnull=False)
+            ),
             ZERO_DECIMAL,
         ),
     )
@@ -170,9 +172,7 @@ def build_dashboard_metrics() -> dict:
                 "created_count": int(created_row.get("created_count") or 0),
                 "completed_count": int(completed_row.get("completed_count") or 0),
                 "expired_count": int(expired_row.get("expired_count") or 0),
-                "completed_worth": Decimal(
-                    completed_row.get("completed_worth") or 0
-                ),
+                "completed_worth": Decimal(completed_row.get("completed_worth") or 0),
             }
         )
 
@@ -228,9 +228,7 @@ def build_dashboard_metrics() -> dict:
                     created_metrics.get("conversion_completed_orders") or 0
                 ),
                 "waiting_orders": int(active_metrics.get("waiting_orders") or 0),
-                "confirming_orders": int(
-                    active_metrics.get("confirming_orders") or 0
-                ),
+                "confirming_orders": int(active_metrics.get("confirming_orders") or 0),
             }
         )
 

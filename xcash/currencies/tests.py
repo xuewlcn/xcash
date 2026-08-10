@@ -1,8 +1,12 @@
+from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIRequestFactory
 from web3 import Web3
 
@@ -10,9 +14,12 @@ from chains.capabilities import ChainProductCapabilityService
 from chains.constants import ChainCode
 from chains.models import Chain
 from chains.tests_fixtures import make_evm_chain
+from core.models import SystemSettings
 from currencies.models import Crypto
 from currencies.models import CryptoOnChain
+from currencies.models import Fiat
 from currencies.models import PriceUnavailableError
+from currencies.tasks import refresh_crypto_prices
 from currencies.views import MetadataView
 
 
@@ -350,3 +357,120 @@ class MetadataEndpointTests(TestCase):
             item for item in response.data["cryptos"] if item["symbol"] == "USDT"
         )
         self.assertEqual(set(crypto), {"symbol", "name", "icon", "is_native"})
+
+
+class StalePriceTests(TestCase):
+    """陈旧行情必须停止计价，而不是被无限期沿用。
+
+    CoinGecko 免费公共接口被限流数小时是常态，刷新任务失败只写日志后返回。
+    若没有新鲜度校验，这期间所有账单都会按过期汇率换算 pay_amount，买家实付的
+    法币价值随行情漂移而系统性偏离。
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.crypto = Crypto.objects.create(
+            name="Ethereum",
+            symbol="ETH",
+            prices={"USD": "3000"},
+            coingecko_id="ethereum-stale-test",
+            prices_updated_at=timezone.now(),
+        )
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    def test_fresh_price_is_usable(self):
+        self.assertEqual(self.crypto.price("USD"), Decimal("3000"))
+
+    def test_stale_price_raises_instead_of_being_used(self):
+        Crypto.objects.filter(pk=self.crypto.pk).update(
+            prices_updated_at=timezone.now() - timedelta(hours=6)
+        )
+        self.crypto.refresh_from_db()
+
+        with self.assertRaises(PriceUnavailableError):
+            self.crypto.price("USD")
+
+    def test_missing_timestamp_does_not_break_existing_rows(self):
+        """存量数据尚未回填时间戳时不判过期，避免升级瞬间所有币停摆。"""
+        Crypto.objects.filter(pk=self.crypto.pk).update(prices_updated_at=None)
+        self.crypto.refresh_from_db()
+
+        self.assertEqual(self.crypto.price("USD"), Decimal("3000"))
+
+    def test_zero_threshold_disables_staleness_check(self):
+        """阈值 0 是行情源长期不可用时的应急开关。"""
+        SystemSettings.objects.create(crypto_price_max_age_seconds=0)
+        Crypto.objects.filter(pk=self.crypto.pk).update(
+            prices_updated_at=timezone.now() - timedelta(days=30)
+        )
+        self.crypto.refresh_from_db()
+
+        self.assertEqual(self.crypto.price("USD"), Decimal("3000"))
+
+    def test_usd_pegged_stablecoin_unaffected_by_staleness(self):
+        """稳定币对 USD 恒按 1 锚定，不依赖行情，不能被新鲜度校验误伤。"""
+        usdt = Crypto.objects.create(
+            name="Tether",
+            symbol="USDT",
+            prices={},
+            coingecko_id="tether-stale-test",
+            prices_updated_at=timezone.now() - timedelta(days=30),
+        )
+
+        self.assertEqual(usdt.price("USD"), Decimal("1"))
+
+
+class PriceRefreshTimestampTests(TestCase):
+    """刷新任务必须让时间戳与价格同批推进，且不能给空结果盖新时间戳。"""
+
+    def setUp(self):
+        cache.clear()
+        Fiat.objects.get_or_create(code="USD")
+        self.crypto = Crypto.objects.create(
+            name="Ethereum",
+            symbol="ETH",
+            prices={},
+            coingecko_id="ethereum",
+        )
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    @patch("currencies.tasks.httpx.get")
+    def test_successful_refresh_records_timestamp(self, mock_get):
+        mock_get.return_value = Mock(
+            raise_for_status=Mock(),
+            json=Mock(return_value={"ethereum": {"usd": 3200}}),
+        )
+
+        refresh_crypto_prices()
+
+        self.crypto.refresh_from_db()
+        self.assertEqual(self.crypto.prices["USD"], 3200)
+        self.assertIsNotNone(self.crypto.prices_updated_at)
+
+    @patch("currencies.tasks.httpx.get")
+    def test_empty_result_does_not_refresh_timestamp(self, mock_get):
+        """行情源没返回该币报价时不能推进时间戳，否则陈旧价被伪装成刚刷新过。"""
+        stale_moment = timezone.now() - timedelta(hours=6)
+        Crypto.objects.filter(pk=self.crypto.pk).update(
+            prices={"USD": "3000"}, prices_updated_at=stale_moment
+        )
+        mock_get.return_value = Mock(
+            raise_for_status=Mock(),
+            json=Mock(return_value={}),
+        )
+
+        refresh_crypto_prices()
+
+        self.crypto.refresh_from_db()
+        self.assertEqual(
+            self.crypto.prices_updated_at.replace(microsecond=0),
+            stale_moment.replace(microsecond=0),
+        )
+        # 时间戳没被推进，因此该价格仍然会被判为陈旧。
+        self.assertTrue(self.crypto.price_is_stale())

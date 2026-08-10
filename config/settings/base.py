@@ -59,9 +59,12 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = ["https://xca.sh"]
 
 DEFAULT_SUPERUSER_USERNAME = "admin"
+# 该默认值只服务于本地开发。生产（DEBUG=False）下 ensure_default_superuser 会拒绝
+# 用它建号：后台默认挂在站点根路径，固定口令又是开源仓库里的公开常量。
+INSECURE_DEFAULT_SUPERUSER_PASSWORD = "Admin@123456"  # noqa: S105
 DEFAULT_SUPERUSER_PASSWORD = env.str(
     "DJANGO_DEFAULT_SUPERUSER_PASSWORD",
-    default="Admin@123456",
+    default=INSECURE_DEFAULT_SUPERUSER_PASSWORD,
 )
 
 # 钱包助记词静态加密
@@ -98,6 +101,12 @@ RATELIMIT_REDIS = {
     "port": REDIS_PORT,
     "db": REDIS_DB,
 }
+# django-smart-ratelimit 的取 IP 策略必须与 TRUSTED_PROXY_IPS 对齐，否则它会退回
+# "信任 CF-Connecting-IP / X-Forwarded-For 最左项" 的兼容分支，登录等 IP 限流可被
+# 任意伪造请求头绕过。TRUSTED_PROXY_IPS 为空列表时该库判定为未配置，因此还需要
+# 显式关闭转发头信任，让其直接使用 REMOTE_ADDR。
+RATELIMIT_TRUSTED_PROXIES = TRUSTED_PROXY_IPS
+RATELIMIT_TRUST_FORWARDED_HEADERS = False
 # EPay V1 /epay/submit.php 入口的 IP 维度限流。
 # 该入口未经鉴权即触发 EpayMerchant.objects.get + serializer + 签名计算，
 # 攻击者可用有效 pid + 错误 sign 大量探测形成 DB 查询型 DoS。
@@ -316,10 +325,10 @@ SESSION_COOKIE_HTTPONLY = True
 ADMIN_PATH = normalize_admin_path(env.str("ADMIN_PATH", default=""))
 ADMIN_ROUTE_PREFIX = admin_route_prefix(ADMIN_PATH)
 ADMIN_PATH_CONFIGURED = bool(ADMIN_PATH)
-ADMINS = [("""Hawking""", "hawking@xca.sh")]
-# https://docs.djangoproject.com/en/dev/ref/settings/#managers
-MANAGERS = ADMINS
-# https://cookiecutter-django.readthedocs.io/en/latest/settings.html#other-environment-settings
+# 不配置 ADMINS / MANAGERS：本项目没有任何 EMAIL_BACKEND，Django 的 mail_admins 与
+# AdminEmailHandler 均未启用，配了也发不出去；且开源仓库里写死某个私人邮箱，会让
+# 每个自托管部署的错误报告都默认指向该地址。错误统一走 structlog JSON 打到 stdout，
+# 由部署方的日志采集链路接管。
 
 # CACHES
 # ------------------------------------------------------------------------------
@@ -329,6 +338,11 @@ CACHES = {
         "LOCATION": REDIS_CACHE_URL,
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            # django-redis 默认【不设任何 socket 超时】：Redis 进程假死或网络黑洞时，
+            # 缓存调用会永久阻塞在 recv 上，把 gunicorn 的 gthread 线程逐个耗尽，
+            # 表现为整站挂起而非快速失败。缓存操作本身是亚毫秒级的，5s 已极宽裕。
+            "SOCKET_CONNECT_TIMEOUT": 5,
+            "SOCKET_TIMEOUT": 5,
         },
     },
 }
@@ -445,7 +459,9 @@ CELERY_TASK_ROUTES = {
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.AnonRateThrottle",
+        # 不用 DRF 内置的 AnonRateThrottle：其默认取 IP 逻辑会把整条
+        # X-Forwarded-For 当作限流身份，调用方换个头即换一个桶。
+        "common.throttles.TrustedProxyAnonRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "256/minute",

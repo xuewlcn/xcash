@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.core.cache import cache
 from django.test import TestCase
 from django.test import override_settings
@@ -12,6 +14,7 @@ from chains.models import VaultSlotUsage
 from chains.models import Wallet
 from currencies.models import Crypto
 from currencies.models import CryptoOnChain
+from evm.scanner.watchers import ADDRESS_LOOKUP_CHUNK_SIZE
 from evm.scanner.watchers import clear_token_registry_cache
 from evm.scanner.watchers import load_owned_addresses_for_candidates
 from evm.scanner.watchers import load_token_registry
@@ -202,6 +205,99 @@ class EvmTokenRegistryCacheTests(TestCase):
 
         token_registry = load_token_registry(chain=self.chain)
         self.assertNotIn(self.token_on_chain.address, token_registry)
+
+    def test_crypto_price_only_save_keeps_cached_token_set(self):
+        # 价格刷新每 60 秒对每个币执行 save(update_fields=["prices"])，扫描链路并不读取
+        # crypto.prices，不得因此清空重建代币表缓存。
+        # 用 queryset.update 绕开信号把 DB 改脏：缓存一旦被重建就会看到新内容，
+        # 断言缓存仍是旧内容即证明本次保存没有触发失效。
+        load_token_registry(chain=self.chain, refresh=True)
+        Crypto.objects.filter(pk=self.token.pk).update(active=False)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.token.prices = {"USD": "1.0001"}
+            self.token.save(update_fields=["prices"])
+
+        token_registry = load_token_registry(chain=self.chain)
+        self.assertIn(self.token_on_chain.address, token_registry)
+
+    def test_crypto_full_save_refreshes_cached_token_set_after_commit(self):
+        # 全量 save 拿不到 update_fields，无法判断改了什么，必须按“可能相关”照常失效，
+        # 否则扫描器会长期拿着过期的 Crypto。
+        load_token_registry(chain=self.chain, refresh=True)
+        Crypto.objects.filter(pk=self.token.pk).update(active=False)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.token.refresh_from_db()
+            self.token.save()
+
+        token_registry = load_token_registry(chain=self.chain)
+        self.assertNotIn(self.token_on_chain.address, token_registry)
+
+    def test_candidate_lookup_matches_owned_addresses_across_chunks(self):
+        # 候选集跨多个分片时，各来源（VaultSlot / DifferRecipientAddress）的命中结果
+        # 必须完整合并，不能只剩某一片的结果。
+        vault_slot_addresses = set()
+        for index in range(3):
+            customer = Customer.objects.create(
+                project=self.project,
+                uid=f"watcher-chunk-customer-{index}",
+            )
+            address = Web3.to_checksum_address(f"0x{0x3000 + index:040x}")
+            VaultSlot.objects.create(
+                customer=customer,
+                usage=VaultSlotUsage.DEPOSIT,
+                chain=self.chain,
+                address=address,
+                salt=bytes([index + 1]) * 32,
+            )
+            vault_slot_addresses.add(address)
+
+        differ_addresses = set()
+        for index in range(2):
+            address = Web3.to_checksum_address(f"0x{0x3100 + index:040x}")
+            DifferRecipientAddress.objects.create(
+                project=self.project,
+                chain_type=ChainType.EVM,
+                address=address,
+            )
+            differ_addresses.add(address)
+
+        unknown_addresses = {
+            Web3.to_checksum_address(f"0x{0x3200 + index:040x}") for index in range(4)
+        }
+        candidates = vault_slot_addresses | differ_addresses | unknown_addresses
+
+        unchunked = load_owned_addresses_for_candidates(
+            chain=self.chain,
+            addresses=candidates,
+        )
+        # 分片尺寸压到 2，强制切成多片，结果必须与一次性查询完全一致。
+        with patch("evm.scanner.watchers.ADDRESS_LOOKUP_CHUNK_SIZE", 2):
+            chunked = load_owned_addresses_for_candidates(
+                chain=self.chain,
+                addresses=candidates,
+            )
+
+        expected = frozenset(vault_slot_addresses | differ_addresses)
+        self.assertEqual(unchunked, expected)
+        self.assertEqual(chunked, expected)
+
+    def test_candidate_lookup_handles_candidate_set_larger_than_chunk_size(self):
+        # 单个日志窗口可抽出上万个候选地址，超过分片尺寸时必须照常返回正确结果，
+        # 而不是把超大 address__in 直接下发给 DB。
+        candidates = {
+            Web3.to_checksum_address(f"0x{0x4000 + index:040x}")
+            for index in range(ADDRESS_LOOKUP_CHUNK_SIZE * 2 + 1)
+        }
+        candidates.add(self.vault_slot.address)
+
+        owned_addresses = load_owned_addresses_for_candidates(
+            chain=self.chain,
+            addresses=candidates,
+        )
+
+        self.assertEqual(owned_addresses, frozenset({self.vault_slot.address}))
 
     def _create_project(self) -> Project:
         suffix = Project.objects.count()

@@ -69,7 +69,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                         data="0xdeadbeef",
                         gas=120_000,
                         tx_type=TxTaskType.VaultSlotCollect,
-                        )
+                    )
                 )
                 results.append(task.nonce)
             except Exception as exc:
@@ -91,9 +91,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         self.assertEqual(sorted(results), list(range(self.THREAD_COUNT)))
 
         self.assertEqual(
-            EvmTxTask.objects.filter(
-                sender=self.address, chain=self.chain
-            ).count(),
+            EvmTxTask.objects.filter(sender=self.address, chain=self.chain).count(),
             self.THREAD_COUNT,
         )
 
@@ -132,7 +130,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                         data="0xdeadbeef",
                         gas=120_000,
                         tx_type=TxTaskType.VaultSlotCollect,
-                        )
+                    )
                 )
                 results.append((str(addr.address), task.nonce))
             except Exception as exc:
@@ -141,8 +139,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                 connections.close_all()
 
         threads = [
-            threading.Thread(target=schedule, args=(addr,))
-            for addr in addresses
+            threading.Thread(target=schedule, args=(addr,)) for addr in addresses
         ]
         for t in threads:
             t.start()
@@ -182,7 +179,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
                         data="0xdeadbeef",
                         gas=120_000,
                         tx_type=TxTaskType.VaultSlotCollect,
-                        )
+                    )
                 )
                 with lock:
                     results.append(task.nonce)

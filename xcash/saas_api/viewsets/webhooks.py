@@ -27,6 +27,10 @@ class DeliveryAttemptViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
     serializer_class = DeliveryAttemptSerializer
 
     def get_queryset(self):
-        return DeliveryAttempt.objects.filter(
-            event__project__appid=self.kwargs["project_appid"]
-        ).select_related("event").order_by("-created_at")
+        return (
+            DeliveryAttempt.objects.filter(
+                event__project__appid=self.kwargs["project_appid"]
+            )
+            .select_related("event")
+            .order_by("-created_at")
+        )

@@ -1,5 +1,4 @@
 from django.contrib import admin
-from django.db.models import Count
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from unfold.decorators import display
@@ -94,13 +93,11 @@ class WebhookEventAdmin(ReadOnlyModelAdmin):
     list_filter = ("status", EventAttentionFilter)
     search_fields = ("nonce", "project__name")
 
-    def get_queryset(self, request):
-        # 事件页会频繁查看重试次数，直接注入 attempt_count，避免列表页 N+1 查询 attempts。
-        return super().get_queryset(request).annotate(attempt_count=Count("attempts"))
-
     @display(description=_("尝试次数"))
     def display_attempt_count(self, instance: WebhookEvent):
-        return getattr(instance, "attempt_count", instance.attempts.count())
+        # 直接读模型字段：它在认领投递时原子自增，比 attempts 关联表计数更准
+        # （任务在写 attempt 前被杀时，关联表不会增长）。
+        return instance.attempt_count
 
     @display(
         description=_("巡检"),
@@ -123,8 +120,11 @@ class WebhookEventAdmin(ReadOnlyModelAdmin):
         queryset = queryset.filter(status=WebhookEvent.Status.FAILED)
         # 重新投递只影响选中的事件；Project.webhook_open 是商户/管理员开关。
         # 清除调度/投递锁，避免事件在退避窗口或旧 worker claim 内仍被跳过。
+        # attempt_count 必须归零：失败事件的计数已经到达上限，不重置的话第一次
+        # 投递不成功就会立刻再次终局，人工重投等于只换来一次机会。
         queryset.update(
             status=WebhookEvent.Status.PENDING,
+            attempt_count=0,
             schedule_locked_until=None,
             delivery_locked_until=None,
         )

@@ -331,9 +331,12 @@ class AddressIdentityTests(TestCase):
         def fake_get_or_create(**_kwargs):
             raise IntegrityError("unrelated unique constraint")
 
-        with patch.object(
-            Address.objects, "get_or_create", side_effect=fake_get_or_create
-        ), self.assertRaises(IntegrityError):
+        with (
+            patch.object(
+                Address.objects, "get_or_create", side_effect=fake_get_or_create
+            ),
+            self.assertRaises(IntegrityError),
+        ):
             wallet.get_address(
                 chain_type=ChainType.EVM,
                 usage=AddressUsage.HotWallet,
@@ -351,9 +354,7 @@ class WalletGenerationTests(TestCase):
 
         self.assertTrue(wallet_a.encrypted_mnemonic)
         self.assertTrue(wallet_b.encrypted_mnemonic)
-        self.assertNotEqual(
-            wallet_a.encrypted_mnemonic, wallet_b.encrypted_mnemonic
-        )
+        self.assertNotEqual(wallet_a.encrypted_mnemonic, wallet_b.encrypted_mnemonic)
         mnemonic_a = wallet_a.decrypt_mnemonic()
         self.assertEqual(len(mnemonic_a.split()), 24)
         self.assertNotEqual(mnemonic_a, wallet_b.decrypt_mnemonic())
@@ -462,17 +463,31 @@ class TransferServiceCreateObservedTests(TestCase):
     def test_first_create_returns_created_true(self, enqueue_mock):
         from chains.service import TransferService
 
-        with patch(
-            "chains.service.Chain.objects.select_for_update",
-            wraps=Chain.objects.select_for_update,
-        ) as lock_mock:
-            result = TransferService.create_observed_transfer(observed=self.payload)
+        result = TransferService.create_observed_transfer(observed=self.payload)
 
         self.assertTrue(result.created)
         self.assertFalse(result.conflict)
         self.assertIsNotNone(result.transfer)
-        lock_mock.assert_called_once()
         enqueue_mock.assert_called_once()
+
+    @patch("chains.service.TransferService.enqueue_processing")
+    def test_create_does_not_lock_chain_row(self, enqueue_mock):
+        """落库不得对 Chain 行加锁。
+
+        这是所有链、所有扫描器落库的唯一入口，链级排他锁会让本链全部外键插入
+        （TxTask / TxHash / 余额快照）卡在 FK 的 FOR KEY SHARE 上，并与余额刷新
+        路径构成反向加锁顺序。并发安全由 (chain, hash, event_index) 唯一约束加
+        IntegrityError 回查保证，见 test_idempotent_replay_returns_created_false_no_conflict。
+        """
+        from chains.service import TransferService
+
+        with patch(
+            "chains.service.Chain.objects.select_for_update",
+            wraps=Chain.objects.select_for_update,
+        ) as lock_mock:
+            TransferService.create_observed_transfer(observed=self.payload)
+
+        lock_mock.assert_not_called()
 
     @patch("chains.service.TransferService.enqueue_processing")
     def test_idempotent_replay_returns_created_false_no_conflict(self, enqueue_mock):
@@ -522,9 +537,7 @@ class TransferServiceCreateObservedTests(TestCase):
         from chains.service import ObservedTransferPayload
         from chains.service import TransferService
 
-        first = ObservedTransferPayload(
-            **{**self.payload.__dict__, "event_index": 0}
-        )
+        first = ObservedTransferPayload(**{**self.payload.__dict__, "event_index": 0})
         second = ObservedTransferPayload(
             **{
                 **self.payload.__dict__,
@@ -542,7 +555,9 @@ class TransferServiceCreateObservedTests(TestCase):
         self.assertTrue(second_result.created)
         self.assertNotEqual(first_result.transfer.pk, second_result.transfer.pk)
         self.assertEqual(
-            Transfer.objects.filter(chain=self.chain, hash=self.payload.tx_hash).count(),
+            Transfer.objects.filter(
+                chain=self.chain, hash=self.payload.tx_hash
+            ).count(),
             2,
         )
         self.assertEqual(enqueue_mock.call_count, 2)
@@ -1111,7 +1126,9 @@ class VaultSlotReceivedFlagTests(TestCase):
         self.assertEqual(balance.synced_block_number, transfer.block)
         self.assertEqual(balance.last_tx_hash, transfer.hash)
 
-    def test_transfer_confirm_sets_vault_slot_balance_worth_zero_without_usd_price(self):
+    def test_transfer_confirm_sets_vault_slot_balance_worth_zero_without_usd_price(
+        self,
+    ):
         transfer = Transfer.objects.create(
             chain=self.chain,
             block=100,
@@ -1708,7 +1725,9 @@ class ConfirmTransferMissingReceiptTests(TestCase):
                 return TxCheckStatus.MISSING
 
         with (
-            patch("chains.tasks.AdapterFactory.get_adapter", return_value=MissingAdapter()),
+            patch(
+                "chains.tasks.AdapterFactory.get_adapter", return_value=MissingAdapter()
+            ),
             patch.object(
                 confirm_transfer.request,
                 "retries",
@@ -1751,9 +1770,7 @@ class BlockNumberUpdatedCompensationTests(TestCase):
             symbol="ETH-BN",
             coingecko_id="ether-bn",
         )
-        self.chain = make_evm_chain(
-            code=ChainCode.Ethereum, latest_block_number=200
-        )
+        self.chain = make_evm_chain(code=ChainCode.Ethereum, latest_block_number=200)
         self.wallet = Wallet.objects.create()
         self.addr = Address.objects.create(
             wallet=self.wallet,
@@ -1856,7 +1873,8 @@ class ProcessTransferAutoretryTests(SimpleTestCase):
             "以覆盖 PG deadlock detected",
         )
         self.assertGreaterEqual(
-            process_transfer.max_retries, 1,
+            process_transfer.max_retries,
+            1,
             "max_retries 必须 >= 1 才能真正触发重试",
         )
         self.assertTrue(
@@ -1925,6 +1943,8 @@ class ReapStaleConfirmingTransfersTests(TestCase):
 
     def test_keeps_stale_transfer_and_redispatches_confirm_when_succeeded(self):
         transfer = self.make_confirming_transfer(suffix="2a")
+        # 已完成业务归类的转账才允许直接补派确认。
+        Transfer.objects.filter(pk=transfer.pk).update(processed_at=timezone.now())
 
         with patch("chains.tasks.confirm_transfer.delay") as confirm_delay:
             reaped = self.reap_with_tx_result(TxCheckStatus.SUCCEEDED)
@@ -1932,6 +1952,23 @@ class ReapStaleConfirmingTransfersTests(TestCase):
         self.assertEqual(reaped, 0)
         self.assertTrue(Transfer.objects.filter(pk=transfer.pk).exists())
         confirm_delay.assert_called_once_with(transfer.pk)
+
+    def test_succeeded_unprocessed_transfer_redispatches_process_not_confirm(self):
+        # 业务归类未完成（processed_at 为空、type 仍 Unmatched）时绝不能直接确认：
+        # confirm 会把状态推成 CONFIRMED 但业务分发空转，之后补上的匹配再也等不到
+        # 确认动作，造成链上有钱、账上无单。必须改派 process，确认交回正常调度。
+        transfer = self.make_confirming_transfer(suffix="7a")
+
+        with (
+            patch("chains.tasks.confirm_transfer.delay") as confirm_delay,
+            patch("chains.tasks.process_transfer.delay") as process_delay,
+        ):
+            reaped = self.reap_with_tx_result(TxCheckStatus.SUCCEEDED)
+
+        self.assertEqual(reaped, 0)
+        self.assertTrue(Transfer.objects.filter(pk=transfer.pk).exists())
+        confirm_delay.assert_not_called()
+        process_delay.assert_called_once_with(transfer.pk)
 
     def test_keeps_stale_transfer_when_chain_query_fails(self):
         transfer = self.make_confirming_transfer(suffix="3a")
@@ -1966,9 +2003,7 @@ class ReapStaleConfirmingTransfersTests(TestCase):
 
     def test_ignores_confirmed_transfer_regardless_of_age(self):
         transfer = self.make_confirming_transfer(suffix="6a")
-        Transfer.objects.filter(pk=transfer.pk).update(
-            status=TransferStatus.CONFIRMED
-        )
+        Transfer.objects.filter(pk=transfer.pk).update(status=TransferStatus.CONFIRMED)
 
         reaped = self.reap_with_tx_result(TxCheckStatus.MISSING)
 

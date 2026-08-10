@@ -1,5 +1,27 @@
 import ipaddress
 
+from django.conf import settings
+
+
+def client_ip(request) -> str | None:
+    """解析请求的真实客户端 IP。
+
+    只有 TCP 对端本身属于受信代理时，才接受其转发的 X-Real-IP；否则一律退回
+    REMOTE_ADDR。源站直连或代理未列入 TRUSTED_PROXY_IPS 时，伪造的转发头不生效。
+
+    IP 白名单与所有 IP 维度限流必须共用本函数：任何自行读取 X-Forwarded-For /
+    X-Real-IP 的旁路实现都等于把身份判定交给调用方，可被随意伪造。
+    """
+    remote_addr = request.META.get("REMOTE_ADDR")
+    x_real_ip = request.headers.get("x-real-ip")
+    if (
+        x_real_ip
+        and remote_addr
+        and is_ip_in_whitelist(settings.TRUSTED_PROXY_IPS, remote_addr)
+    ):
+        return x_real_ip.strip()
+    return remote_addr
+
 
 def is_ip_in_whitelist(whitelist: str | list, ip: str) -> bool:
     """

@@ -8,12 +8,12 @@ function ErrorState({ error, onRetry }) {
   const { t } = useI18n()
 
   return (
-    <div className="min-h-svh bg-background flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md flex flex-col gap-6">
+    <div className="checkout-backdrop flex min-h-svh flex-col items-center justify-center bg-background p-4">
+      <div className="flex w-full max-w-md flex-col gap-6">
         <div className="flex justify-center">
           <BrandHeading size={36} />
         </div>
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="rounded-xl shadow-sm">
           <AlertCircle />
           <AlertTitle>{t("error.title")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>

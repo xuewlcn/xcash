@@ -180,7 +180,8 @@ class EvmScannerRpcClient:
         """
         msg = str(exc).lower()
         return (
-            "returned more than" in msg  # Geth/Infura: query returned more than N results
+            "returned more than"
+            in msg  # Geth/Infura: query returned more than N results
             or "logs matched by the query exceeds" in msg
             or "response size exceed" in msg  # Alchemy: response size exceeded
             or "response is too large" in msg

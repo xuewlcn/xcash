@@ -27,6 +27,7 @@ from common.saas_callback import CallbackEvent
 from common.saas_callback import SaasCallback
 from common.saas_callback import send_saas_callback
 from common.utils.math import format_decimal_stripped
+from currencies.models import PriceUnavailableError
 from currencies.service import CryptoService
 from webhooks.service import WebhookService
 
@@ -168,7 +169,18 @@ class InvoiceService:
         """在账单创建后立即固化基础 worth，避免继续依赖隐式 post_save signal。"""
         # worth 表达账单计价法币面额的 USD 价值；支付币种只决定链上支付指引，
         # 不再让 pay_amount 的实时加密货币报价反向改变账单基础价值。
-        worth = invoice.calculate_worth_usd()
+        try:
+            worth = invoice.calculate_worth_usd()
+        except PriceUnavailableError:
+            # 非 USD 计价需要 USDT 对该法币的报价（epay 协议默认 CNY）。价格源尚未
+            # 刷新、或该法币不在行情源覆盖范围时，worth 暂缺不能让整个建单请求 500：
+            # worth 只用于风控阈值与统计，账单本身的收款能力不依赖它。
+            logger.warning(
+                "invoice worth unavailable, keep default",
+                invoice=invoice.sys_no,
+                currency=invoice.currency_id,
+            )
+            return
 
         # worth 只更新自身字段，直接 update 可避免把整行实例再次写回。
         Invoice.objects.filter(pk=invoice.pk).update(
@@ -204,6 +216,14 @@ class InvoiceService:
             # 创建即初始化的账单理论上必为 WAITING 且未绑定付款；此分支仅防御
             # select_method 锁内状态复查的意外抛出，避免账单创建请求被打成 500。
             logger.warning("initialize_invoice status recheck failed", detail=str(exc))
+        except PriceUnavailableError as exc:
+            # 缺该币报价时跳过自动选币即可：账单仍以 WAITING 建成，买家之后可在
+            # 价格恢复后自行选择支付方式。让它冒泡会使整个建单请求 500。
+            logger.warning(
+                "initialize_invoice price unavailable",
+                symbol=symbol,
+                detail=str(exc),
+            )
 
     @staticmethod
     def schedule_expiration_check(invoice: Invoice) -> None:
@@ -623,7 +643,10 @@ class InvoiceService:
             return False
         if invoice.transfer_id is not None and invoice.transfer_id != transfer.pk:
             return False
-        if invoice.crypto_id != transfer.crypto_id or invoice.chain_id != transfer.chain_id:
+        if (
+            invoice.crypto_id != transfer.crypto_id
+            or invoice.chain_id != transfer.chain_id
+        ):
             return False
         if invoice.pay_address != transfer.to_address:
             return False
@@ -658,7 +681,9 @@ class InvoiceService:
             invoice.protocol == InvoiceProtocol.NATIVE
             and invoice.transfer.status != TransferStatus.CONFIRMED
         ):
-            raise InvoiceStatusError(f"Invoice transfer must be confirmed, {invoice.sys_no}")
+            raise InvoiceStatusError(
+                f"Invoice transfer must be confirmed, {invoice.sys_no}"
+            )
 
         # 账单确认不依赖 save() 信号，直接 update 可减少并发覆盖面。
         Invoice.objects.filter(pk=invoice.pk).update(

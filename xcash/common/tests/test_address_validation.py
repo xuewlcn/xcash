@@ -20,12 +20,8 @@ class TronAddressValidationTests(SimpleTestCase):
         field = AddressField()
         field.set_attributes_from_name("address")
 
-        valid_instance = SimpleNamespace(
-            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-        )
-        invalid_instance = SimpleNamespace(
-            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u"
-        )
+        valid_instance = SimpleNamespace(address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
+        invalid_instance = SimpleNamespace(address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u")
 
         self.assertEqual(
             field.pre_save(valid_instance, add=True),

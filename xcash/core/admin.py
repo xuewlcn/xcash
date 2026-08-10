@@ -197,9 +197,9 @@ class SystemWalletAdmin(ModelAdmin):
         )
         balance_rows = [
             self.build_balance_row(chain, evm_address, evm_error)
-            for chain in Chain.objects.filter(
-                type=ChainType.EVM, active=True
-            ).order_by("code")
+            for chain in Chain.objects.filter(type=ChainType.EVM, active=True).order_by(
+                "code"
+            )
         ]
         return {
             "address_cards": address_cards,
@@ -234,7 +234,11 @@ class SystemWalletAdmin(ModelAdmin):
         except NotImplementedError:
             return {**row, "status": "unsupported", "note": _("暂不支持查询")}
         except Exception as exc:  # noqa: BLE001
-            return {**row, "status": "error", "note": _("查询失败：%(err)s") % {"err": exc}}
+            return {
+                **row,
+                "status": "error",
+                "note": _("查询失败：%(err)s") % {"err": exc},
+            }
 
         decimals = self.resolve_native_decimals(chain)
         amount = Decimal(raw_balance).scaleb(-decimals)

@@ -1,38 +1,43 @@
 ENV_FILE ?= .env
 DC = docker compose --env-file $(ENV_FILE) -f docker-compose.dev.yml
 
-.PHONY: help init-env up down upgrade dev-sync dev-up dev-up-pro dev-up-deps dev-up-chain dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test pytest dev-local-init dev-bootstrap
+.PHONY: help init-env up down upgrade dev-sync lint fmt typecheck clean dev-up dev-up-pro dev-up-deps dev-up-chain dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test pytest dev-local-init dev-bootstrap
 
 help:
 	@echo "可用命令："
-	@echo "  make init-env        生成生产 .env（自动填充随机密钥）"
-	@echo "  make up              启动生产 Docker Compose 服务"
-	@echo "  make down            停止生产 Docker Compose 服务"
-	@echo "  make upgrade         升级到 main 最新版"
-	@echo "  开发环境准备：cp .env.example .env 后按需改成开发值"
-	@echo "  make dev-sync         同步本地开发依赖（uv dev group）"
-	@echo "  make dev-up           前台运行 Django + Celery（开发模式）"
-	@echo "  make dev-up-pro       生产级方式运行（gunicorn + 高并发 worker，适合压测）"
-	@echo "  make dev-up-deps      仅启动 db/redis"
-	@echo "  make dev-up-chain     启动 db/redis/anvil"
-	@echo "  make dev-down         停止开发依赖容器"
-	@echo "  make dev-logs         查看依赖容器日志"
-	@echo "  make dev-chain-logs   查看本地区块链容器日志"
-	@echo "  make dev-ps           查看依赖容器状态"
-	@echo "  make dev-web          宿主机启动 Django"
-	@echo "  make dev-worker       宿主机启动业务 Celery worker"
-	@echo "  make dev-worker-stress 宿主机启动 stress Celery worker"
-	@echo "  make dev-worker-scan  宿主机启动 scan Celery worker"
-	@echo "  make dev-beat         宿主机启动 Celery beat"
+	@echo "  make init-env              生成生产 .env（自动填充随机密钥）"
+	@echo "  make up                    启动生产 Docker Compose 服务"
+	@echo "  make down                  停止生产 Docker Compose 服务"
+	@echo "  make upgrade               升级到 main 最新版"
+	@echo "  开发环境准备：无需 .env，dev 脚本自带本地默认值（127.0.0.1 + postgres/postgres）；"
+	@echo "                需要覆盖时再手写 .env（生产 .env 由 make init-env 生成）"
+	@echo "  make dev-sync              同步本地开发依赖（uv dev group）"
+	@echo "  make lint                  ruff + black 检查（不改文件）"
+	@echo "  make fmt                   black 格式化"
+	@echo "  make typecheck             mypy 增量类型排查（存量错误多，非门禁）"
+	@echo "  make clean                 清理本地缓存产物（pycache / mypy / ruff / pytest / staticfiles）"
+	@echo "  make dev-up                前台运行 Django + Celery（开发模式）"
+	@echo "  make dev-up-pro            生产级方式运行（gunicorn + 高并发 worker，适合压测）"
+	@echo "  make dev-up-deps           仅启动 db/redis"
+	@echo "  make dev-up-chain          启动 db/redis/anvil"
+	@echo "  make dev-down              停止开发依赖容器"
+	@echo "  make dev-logs              查看依赖容器日志"
+	@echo "  make dev-chain-logs        查看本地区块链容器日志"
+	@echo "  make dev-ps                查看依赖容器状态"
+	@echo "  make dev-web               宿主机启动 Django"
+	@echo "  make dev-worker            宿主机启动业务 Celery worker"
+	@echo "  make dev-worker-stress     宿主机启动 stress Celery worker"
+	@echo "  make dev-worker-scan       宿主机启动 scan Celery worker"
+	@echo "  make dev-beat              宿主机启动 Celery beat"
 	@echo "  make dev-manage ARGS='check'"
-	@echo "  make dev-mm           宿主机执行 Django makemigrations"
-	@echo "  make dev-migrate      宿主机执行 Django migrate"
-	@echo "  make dev-clear-migrations 删除所有 app 的迁移文件（保留 __init__.py）"
-	@echo "  make dev-shell        宿主机进入 Django shell_plus"
-	@echo "  make dev-test         启动依赖后使用 Postgres/Redis 运行 Django 测试"
-	@echo "  make pytest           使用 pytest 重建测试库并跳过迁移运行测试"
-	@echo "  make dev-local-init   初始化本地联调链配置（anvil）"
-	@echo "  make dev-bootstrap    初始化主库和本地联调链"
+	@echo "  make dev-mm                宿主机执行 Django makemigrations"
+	@echo "  make dev-migrate           宿主机执行 Django migrate"
+	@echo "  make dev-clear-migrations  删除所有 app 的迁移文件（保留 __init__.py）"
+	@echo "  make dev-shell             宿主机进入 Django shell_plus"
+	@echo "  make dev-test              启动依赖后使用 Postgres/Redis 运行 Django 测试"
+	@echo "  make pytest                使用 pytest 重建测试库并跳过迁移运行测试"
+	@echo "  make dev-local-init        初始化本地联调链配置（anvil）"
+	@echo "  make dev-bootstrap         初始化主库和本地联调链"
 
 init-env:
 	./scripts/init_env.sh
@@ -48,6 +53,27 @@ upgrade:
 
 dev-sync:
 	uv sync --group dev
+
+lint:
+	uv run ruff check .
+	uv run black --check .
+
+fmt:
+	uv run black .
+
+# mypy 存量错误较多，只作增量排查用，不是门禁（详见 pyproject.toml 的说明）。
+typecheck:
+	uv run mypy
+
+# 清理本地缓存产物。这些目录全部已被 .gitignore 覆盖，删除不影响仓库；
+# staticfiles/ 是 collectstatic 产物，生产镜像在构建期自行生成，本地无需保留。
+# 刻意不碰 .venv 与 node_modules：重建代价高，需要时用 make dev-sync / pnpm install。
+clean:
+	@find . -name "__pycache__" -type d -not -path "./.venv/*" -not -path "*/node_modules/*" -exec rm -rf {} + 2>/dev/null || true
+	@find . -name "*.py[co]" -not -path "./.venv/*" -delete 2>/dev/null || true
+	@find . -name ".DS_Store" -not -path "./.venv/*" -not -path "*/node_modules/*" -delete 2>/dev/null || true
+	@rm -rf .mypy_cache .ruff_cache .pytest_cache htmlcov .coverage staticfiles test-staticfiles
+	@echo "已清理本地缓存产物（.venv 与 node_modules 未触碰）。"
 
 dev-up:
 	ENV_FILE=$(ENV_FILE) ./scripts/dev-up.sh

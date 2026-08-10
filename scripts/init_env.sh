@@ -24,10 +24,14 @@ generate_secret() {
 SITE_DOMAIN="pay.example.com"
 LISTEN_TO="127.0.0.1"
 DJANGO_SECRET_KEY=$(generate_secret 64)
-DJANGO_DEFAULT_SUPERUSER_PASSWORD="Admin@123456"
+# 后台超管口令必须随机：固定默认值在开源仓库里等同公开常量，且后台在未设置
+# ADMIN_PATH 时就挂在站点根路径，扫到即可直接登录。
+DJANGO_DEFAULT_SUPERUSER_PASSWORD=$(generate_secret 24)
 PERFORMANCE="low"
 POSTGRES_PASSWORD=$(generate_secret 32)
-TRUSTED_PROXY_IPS=""
+# 自带 Caddy 与 django 同处 Docker 网络，其对端地址落在该私有段内。声明为受信代理，
+# 后端才会采信 Caddy 覆写的 X-Real-IP，商户 IP 白名单与 IP 限流才能拿到真实来源 IP。
+TRUSTED_PROXY_IPS="172.16.0.0/12"
 # 钱包助记词加密密钥：地址派生与签名已在主系统内部闭环，密钥随主应用一起加载。
 WALLET_MNEMONIC_ENCRYPTION_KEY=$(generate_secret 64)
 
@@ -68,5 +72,14 @@ WALLET_MNEMONIC_ENCRYPTION_KEY=${WALLET_MNEMONIC_ENCRYPTION_KEY}
 TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS}
 EOF
 echo "已生成 .env（主应用 + compose 插值 + dev）。"
+
+# 口令是随机生成的，只有这一次机会记录；.env 本身也保存了一份。
+echo ""
+echo "================ 后台管理员账号 ================"
+echo "  用户名: admin"
+echo "  密　码: ${DJANGO_DEFAULT_SUPERUSER_PASSWORD}"
+echo "  请立即保存到密码管理器，并在首次登录后修改。"
+echo "==============================================="
+echo ""
 
 echo "完成。主应用容器加载 .env。"

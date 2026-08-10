@@ -3,6 +3,7 @@ from functools import wraps
 from hashlib import sha256
 from uuid import uuid4
 
+from celery import Task
 from django.core.cache import cache
 
 
@@ -19,6 +20,7 @@ def singleton_task(timeout, *, use_params=False):
         timeout: 锁最大存活秒数（应大于任务最长预期执行时间）。
         use_params: 为 True 时按参数区分锁（同函数不同参数可并行）。
     """
+
     def task_decorator(task_func):
         @wraps(task_func)
         def wrapper(*args, **kwargs):
@@ -55,5 +57,16 @@ def _generate_func_key(func, *args, **kwargs):
     except Exception:  # noqa
         kwargs_str = str(kwargs)
 
-    key = f"{func.__module__}.{func.__name__}:{args}:{kwargs_str}"
+    key = f"{func.__module__}.{func.__name__}:{identifying_args(args)}:{kwargs_str}"
     return sha256(key.encode("utf-8")).hexdigest()
+
+
+def identifying_args(args):
+    """剔除对「同一参数组合」没有标识意义、且跨进程不稳定的参数。
+
+    bind=True 的 Celery 任务会把 Task 实例作为第一个位置参数传进来，而 Task 的 repr
+    形如 `<@task: chains.tasks.confirm_transfer of xcash at 0x1042f2cf0>`——尾部是
+    id(app) 的内存地址，每个 worker 进程各不相同。若让它参与 key，同一任务同一参数
+    在每个进程会各自算出一把锁，分布式互斥完全失效（同 pk 的任务被多个 worker 并发执行）。
+    """
+    return tuple(arg for arg in args if not isinstance(arg, Task))

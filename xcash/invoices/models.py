@@ -84,7 +84,9 @@ class DifferRecipientAddress(models.Model):
         if self.chain_type == ChainType.EVM and not Web3.is_checksum_address(
             self.address
         ):
-            raise ValidationError({"address": _("EVM 钱包直收地址必须是 checksum 地址")})
+            raise ValidationError(
+                {"address": _("EVM 钱包直收地址必须是 checksum 地址")}
+            )
         if self.chain_type == ChainType.TRON and not TronAddressCodec.is_valid_base58(
             self.address
         ):
@@ -175,7 +177,9 @@ class Invoice(models.Model):
     started_at = models.DateTimeField(_("账单收款开始时间"), auto_now_add=True)
     expires_at = models.DateTimeField(_("账单收款截止时间"))
     notify_url = models.URLField(_("异步通知地址"), blank=True, default="")
-    return_url = models.URLField(_("账单收款成功后同步跳转地址"), blank=True, default="")
+    return_url = models.URLField(
+        _("账单收款成功后同步跳转地址"), blank=True, default=""
+    )
     worth = models.DecimalField(
         _("价值(USD)"),
         max_digits=16,
@@ -249,9 +253,7 @@ class Invoice(models.Model):
         from projects.service import ProjectService
 
         allowed = ProjectService.invoice_receivable_methods(project)
-        return {
-            symbol: sorted(chain_codes) for symbol, chain_codes in allowed.items()
-        }
+        return {symbol: sorted(chain_codes) for symbol, chain_codes in allowed.items()}
 
     def _current_payment_combo_is_occupied(
         self,
@@ -290,7 +292,9 @@ class Invoice(models.Model):
             )
 
         # Project 行锁让同一项目的 slot 计数与创建串行化，避免并发请求同时越过上限。
-        Project.objects.select_for_update(of=("self",)).only("pk").get(pk=self.project_id)
+        Project.objects.select_for_update(of=("self",)).only("pk").get(
+            pk=self.project_id
+        )
         existing_slots = list(
             VaultSlot.objects.select_for_update(of=("self",))
             .filter(
@@ -312,12 +316,9 @@ class Invoice(models.Model):
             ):
                 from chains.vault_slots import should_predeploy_on_address_exposure
 
-                if (
-                    not slot.is_deployed
-                    and should_predeploy_on_address_exposure(
-                        chain=chain,
-                        crypto=crypto,
-                    )
+                if not slot.is_deployed and should_predeploy_on_address_exposure(
+                    chain=chain,
+                    crypto=crypto,
                 ):
                     db_transaction.on_commit(
                         lambda slot_pk=slot.pk: VaultSlot.schedule_deploy(slot_pk)
@@ -346,14 +347,11 @@ class Invoice(models.Model):
                 )
             except RuntimeError as exc:
                 raise self.InvoiceAllocationError(str(exc)) from exc
-            slot = (
-                VaultSlot.objects.select_for_update(of=("self",))
-                .get(
-                    project=self.project,
-                    chain=chain,
-                    usage=VaultSlotUsage.INVOICE,
-                    invoice_index=invoice_index,
-                )
+            slot = VaultSlot.objects.select_for_update(of=("self",)).get(
+                project=self.project,
+                chain=chain,
+                usage=VaultSlotUsage.INVOICE,
+                invoice_index=invoice_index,
             )
             if slot.pk not in seen_slot_ids:
                 existing_slots.append(slot)
@@ -429,8 +427,11 @@ class Invoice(models.Model):
         """钱包直收：从项目链类型地址池中分配未被 WAITING 账单占用的金额组合。"""
         from chains.capabilities import ChainProductCapabilityService
 
-        if crypto.is_native and not ChainProductCapabilityService.differ_supports_native(
-            chain_type=chain.type
+        if (
+            crypto.is_native
+            and not ChainProductCapabilityService.differ_supports_native(
+                chain_type=chain.type
+            )
         ):
             raise self.InvoiceAllocationError(
                 f"project={self.project_id}, chain={chain.code} 钱包直收不支持该链原生币"

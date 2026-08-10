@@ -103,9 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) == 2 and args[0] == "shell-env":
         print_shell_env(args[1])
         return 0
-    sys.stderr.write(
-        "Usage: python config/performance.py shell-env <web|worker>\n"
-    )
+    sys.stderr.write("Usage: python config/performance.py shell-env <web|worker>\n")
     return 2
 
 

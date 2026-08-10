@@ -683,6 +683,40 @@ class InvoiceDuplicateOutNoTests(TestCase):
         self.assertEqual(response.data["message"], "不支持的计价法币")
         self.assertEqual(response.data["detail"], "JPY")
 
+    def test_create_recovers_from_real_unique_conflict_inside_transaction(self):
+        """真实唯一约束冲突后，幂等兜底的重查必须仍能执行。
+
+        全局 ATOMIC_REQUESTS=True 让整个请求跑在一个事务里。若建单 INSERT 不套
+        savepoint，撞约束会把连接置为 needs_rollback，兜底分支的重查将抛
+        TransactionManagementError，商户并发重试同一 out_no 时收到 500。
+        用 mock 抛 IntegrityError 无法覆盖这条路径——它不会真正污染连接。
+        """
+        project, existing = self._idempotency_fixtures()
+
+        original_filter = Invoice.objects.filter
+        precheck_calls = []
+
+        def filter_blind_to_existing_once(*args, **kwargs):
+            # 模拟并发：预检时另一请求的 INSERT 尚未提交，这里看不到已有账单，
+            # 于是本请求继续 INSERT 并真实撞上唯一约束。
+            precheck_calls.append(1)
+            if len(precheck_calls) == 1:
+                return Invoice.objects.none()
+            return original_filter(*args, **kwargs)
+
+        with patch(
+            "invoices.viewsets.Invoice.objects.filter",
+            side_effect=filter_blind_to_existing_once,
+        ):
+            response = self._create_with_stub_serializer(
+                project, self._matching_validated_data()
+            )
+
+        # 参数与已有账单全等，应走条件幂等返回旧单，而不是 500。
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sys_no"], existing.sys_no)
+        self.assertEqual(Invoice.objects.filter(project=project).count(), 1)
+
     def test_viewset_create_translates_unique_conflict_to_api_error(self):
         # 并发重复 out_no 命中数据库唯一约束时，接口必须返回业务错误而不是 500。
         project = Project.objects.create(
@@ -2175,7 +2209,9 @@ class InvoiceVaultSlotPaymentTest(TestCase, InvoiceTestMixin):
             )
 
         self.assertNotEqual(second_pay_address, first_pay_address)
-        second_slot = VaultSlot.objects.get(address=second_pay_address, chain=self.chain)
+        second_slot = VaultSlot.objects.get(
+            address=second_pay_address, chain=self.chain
+        )
         self.assertEqual(second_slot.invoice_index, first_slot.invoice_index + 1)
         self.assertEqual(
             VaultSlot.objects.filter(
@@ -2888,9 +2924,7 @@ class InvoicePaymentUriTests(InvoiceTestMixin, TestCase):
     以及精度溢出、非 EVM 链、未分配支付指引时的安全降级（返回 None）。
     """
 
-    PAY_ADDRESS = Web3.to_checksum_address(
-        "0x00000000000000000000000000000000000000d1"
-    )
+    PAY_ADDRESS = Web3.to_checksum_address("0x00000000000000000000000000000000000000d1")
 
     def setUp(self):
         # USDT @ Ethereum，decimals=6，chainId=1。
@@ -3009,9 +3043,7 @@ class InvoiceEvmWalletPaymentTests(InvoiceTestMixin, TestCase):
     编码属核心逻辑：编错会导致钱包按错误金额/收款人发交易，必须断言到字节。
     """
 
-    PAY_ADDRESS = Web3.to_checksum_address(
-        "0x00000000000000000000000000000000000000d1"
-    )
+    PAY_ADDRESS = Web3.to_checksum_address("0x00000000000000000000000000000000000000d1")
 
     def setUp(self):
         # USDT @ Ethereum，decimals=6，chainId=1。
@@ -3114,9 +3146,7 @@ class InvoiceEvmWalletPaymentTests(InvoiceTestMixin, TestCase):
 class InvoicePublicEvmPaymentFieldTests(InvoiceTestMixin, TestCase):
     """公开 retrieve 端点 JSON 必须含 evm_payment 键：EVM 为对象、非 EVM 为 null。"""
 
-    PAY_ADDRESS = Web3.to_checksum_address(
-        "0x00000000000000000000000000000000000000d2"
-    )
+    PAY_ADDRESS = Web3.to_checksum_address("0x00000000000000000000000000000000000000d2")
 
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -3374,3 +3404,123 @@ class InvoicePublicTronPaymentFieldTests(InvoiceTestMixin, TestCase):
         self.assertIn("tron_payment", response.data)
         self.assertIsNotNone(response.data["evm_payment"])
         self.assertIsNone(response.data["tron_payment"])
+
+
+class InvoicePriceUnavailableTests(TestCase):
+    """价格源缺该币/该法币报价时，建单与选币主链路必须 fail-soft。
+
+    Crypto.price() 抛的是 PriceUnavailableError（直接继承 Exception，不是
+    KeyError 子类）。invoices 层若按旧契约只捕 (KeyError, ValueError)，缺价会
+    直接击穿成 500——而缺价并不罕见：非 USD 计价需要 USDT 对该法币的报价
+    （epay 协议默认 CNY），部署冷启动首次刷价前、行情源故障期间都取不到。
+    """
+
+    def setUp(self):
+        cache.clear()
+        Fiat.objects.get_or_create(code="USD")
+        self.fiat_cny, _ = Fiat.objects.get_or_create(code="CNY")
+        self.project = Project.objects.create(name="PriceUnavailableProject")
+        self.crypto = Crypto.objects.create(
+            name="Tether",
+            symbol="USDT",
+            prices={},  # 无任何法币报价
+            coingecko_id="tether-price-missing",
+        )
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    def test_refresh_initial_worth_keeps_default_when_price_missing(self):
+        invoice = Invoice.objects.create(
+            project=self.project,
+            out_no="worth-no-price",
+            title="No price",
+            currency=self.fiat_cny,
+            amount=Decimal("100"),
+            methods={},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        # 不抛异常，worth 保持默认值。
+        InvoiceService.refresh_initial_worth(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.worth, Decimal("0"))
+
+    def test_auto_select_skips_when_price_missing(self):
+        chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
+        CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=chain,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000031"
+            ),
+            decimals=6,
+        )
+        # 必须配好收款地址，否则会先因 available_methods 为空走分配失败分支，
+        # 根本到不了价格换算，这条用例就测不到它要测的东西。
+        DifferRecipientAddress.objects.create(
+            project=self.project,
+            chain_type=ChainType.EVM,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000034"
+            ),
+            active=True,
+        )
+        invoice = Invoice.objects.create(
+            project=self.project,
+            out_no="auto-select-no-price",
+            title="No price",
+            currency=self.fiat_cny,
+            amount=Decimal("100"),
+            methods={"USDT": [ChainCode.Ethereum]},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        # 缺价时跳过自动选币，而不是让整个建单请求 500。
+        InvoiceService.try_auto_select_single_method(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, InvoiceStatus.WAITING)
+        self.assertIsNone(invoice.pay_amount)
+
+    def test_select_method_returns_api_error_not_500(self):
+        chain = create_active_evm_test_chain(code=ChainCode.Ethereum)
+        CryptoOnChain.objects.create(
+            crypto=self.crypto,
+            chain=chain,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000032"
+            ),
+            decimals=6,
+        )
+        DifferRecipientAddress.objects.create(
+            project=self.project,
+            chain_type=ChainType.EVM,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000033"
+            ),
+            active=True,
+        )
+        invoice = Invoice.objects.create(
+            project=self.project,
+            out_no="select-no-price",
+            title="No price",
+            currency=self.fiat_cny,
+            amount=Decimal("100"),
+            methods={"USDT": [ChainCode.Ethereum]},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        request = APIRequestFactory().post(
+            f"/v1/invoice/{invoice.sys_no}/select-method",
+            {"crypto": "USDT", "chain": ChainCode.Ethereum},
+            format="json",
+        )
+        response = InvoiceViewSet.as_view({"post": "select_method"})(
+            request, sys_no=invoice.sys_no
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "price unavailable")

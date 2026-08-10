@@ -81,9 +81,7 @@ class ProjectForm(forms.ModelForm):
             )
         if old_address:
             if old_address != address:
-                raise forms.ValidationError(
-                    _("EVM 收款归集地址一旦设置不可修改。")
-                )
+                raise forms.ValidationError(_("EVM 收款归集地址一旦设置不可修改。"))
             return old_address
 
         return address
@@ -102,9 +100,7 @@ class ProjectForm(forms.ModelForm):
             )
         if old_address:
             if old_address != address:
-                raise forms.ValidationError(
-                    _("Tron 收款归集地址一旦设置不可修改。")
-                )
+                raise forms.ValidationError(_("Tron 收款归集地址一旦设置不可修改。"))
             return old_address
 
         return address

@@ -92,14 +92,8 @@ class RiskAssessment(models.Model):
             models.CheckConstraint(
                 name="aml_assessment_exactly_one_target",
                 condition=(
-                    (
-                        models.Q(invoice__isnull=False)
-                        & models.Q(deposit__isnull=True)
-                    )
-                    | (
-                        models.Q(invoice__isnull=True)
-                        & models.Q(deposit__isnull=False)
-                    )
+                    (models.Q(invoice__isnull=False) & models.Q(deposit__isnull=True))
+                    | (models.Q(invoice__isnull=True) & models.Q(deposit__isnull=False))
                 ),
             ),
             models.CheckConstraint(

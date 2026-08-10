@@ -92,7 +92,9 @@ class TestSaasVaultSlotBalanceEndpoint:
         data = response.json()
         assert data["count"] == 2
         item = data["results"][0]
-        assert item["vault_slot_address"] == "0x1111111111111111111111111111111111111111"
+        assert (
+            item["vault_slot_address"] == "0x1111111111111111111111111111111111111111"
+        )
         assert item["usage"] == VaultSlotUsage.DEPOSIT
         assert item["customer_uid"] == "user-1"
         assert item["chain"] == ChainCode.Ethereum

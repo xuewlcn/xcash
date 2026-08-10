@@ -92,12 +92,19 @@ class EpaySubmitService:
     @staticmethod
     def _get_active_merchant(*, pid: int) -> EpayMerchant:
         try:
-            return EpayMerchant.objects.select_related("project").get(
+            merchant = EpayMerchant.objects.select_related("project").get(
                 pid=pid,
                 active=True,
             )
         except EpayMerchant.DoesNotExist as exc:
             raise EpaySubmitError("invalid pid") from exc
+        # 所属项目停用时必须与 /v1 商户 API（ProjectConfigMiddleware）同口径拒绝。
+        # epay 入口不在 /v1 前缀下、不经过该中间件，EpayMerchant.active 又是独立
+        # 开关：漏掉这里，运维停用项目后 epay 通道仍能照常建单、占用收款地址。
+        # 自托管场景（IS_SAAS=False）没有 SaaS 冻结兜底，这是唯一的停用闸门。
+        if not merchant.project.active:
+            raise EpaySubmitError("project deactivated")
+        return merchant
 
     @staticmethod
     def _get_existing_order_for_update(

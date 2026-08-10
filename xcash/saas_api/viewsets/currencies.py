@@ -43,9 +43,7 @@ class SaasCryptoViewSet(ListModelMixin, GenericViewSet):
             .filter(crypto_filters)
             .distinct()
             .order_by("symbol")
-            .prefetch_related(
-                Prefetch("crypto_on_chains", queryset=crypto_on_chains)
-            )
+            .prefetch_related(Prefetch("crypto_on_chains", queryset=crypto_on_chains))
         )
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import structlog
 from django.core.cache import cache
 
@@ -11,6 +13,25 @@ from currencies.models import CryptoOnChain
 logger = structlog.get_logger()
 
 TOKEN_REGISTRY_CACHE_KEY_TEMPLATE = "evm:scanner:token_registry:{chain_id}"
+
+# 候选地址下发 address__in 时的分片尺寸。
+# Django 不会对 __in 做自动分片，每个元素占一个 bind parameter，而 PostgreSQL 协议单条语句
+# 上限是 65535 个参数。主网一个 100 块窗口能抽出数千至上万个候选地址，一旦越过上限就抛
+# ProgrammingError；该异常不被扫描链路任何 except 接住，游标不推进、下一轮窗口完全相同，
+# 形成确定性死循环。取 1000 是为了离协议上限留出数十倍余量（同一 SQL 里还有其他参数），
+# 同时片数不至于把单窗口的查询次数放大到不可接受。
+ADDRESS_LOOKUP_CHUNK_SIZE = 1000
+
+
+def chunk_addresses(candidates: set[str]) -> Iterator[set[str]]:
+    """把候选地址集切成固定尺寸的互不相交分片，供 address__in 逐片下发。
+
+    分片纯粹是查询层的切分：各片按地址划分且互不相交，逐片结果的并集与一次性查询完全等价，
+    不改变任何调用方的返回语义。
+    """
+    ordered = list(candidates)
+    for start in range(0, len(ordered), ADDRESS_LOOKUP_CHUNK_SIZE):
+        yield set(ordered[start : start + ADDRESS_LOOKUP_CHUNK_SIZE])
 
 
 def load_token_registry(
@@ -59,18 +80,23 @@ def load_owned_addresses_for_candidates(
 
     自有收款地址来自 VaultSlot 与 DifferRecipientAddress；不在扫描前全量加载，
     而是在每个日志窗口内按候选地址即时匹配，所以与代币表分开维护。
+
+    候选集来自整个日志窗口，规模不可控，所有 address__in 查询一律按
+    ADDRESS_LOOKUP_CHUNK_SIZE 分片下发，避免超出 DB 的 bind parameter 上限。
     """
 
     if not addresses:
         return frozenset()
 
     candidates = set(addresses)
-    vault_slot_addresses = set(
-        VaultSlot.objects.filter(
-            chain=chain,
-            address__in=candidates,
-        ).values_list("address", flat=True)
-    )
+    vault_slot_addresses: set[str] = set()
+    for candidate_chunk in chunk_addresses(candidates):
+        vault_slot_addresses |= set(
+            VaultSlot.objects.filter(
+                chain=chain,
+                address__in=candidate_chunk,
+            ).values_list("address", flat=True)
+        )
     # 充值地址按 (project, customer) 在同一链类型内确定唯一、与具体网络无关（salt 不掺
     # chain，factory/implementation 全网同址）。客户可能只在别的 EVM 链取过该地址，本链
     # 尚无 VaultSlot 行，导致同地址的跨链充值被静默丢弃。这里对这类候选按需补建本链槽位，
@@ -81,10 +107,12 @@ def load_owned_addresses_for_candidates(
     )
     from invoices.models import DifferRecipientAddress
 
-    differ_addresses = DifferRecipientAddress.matched_addresses_for_candidates(
-        chain=chain,
-        candidates=candidates,
-    )
+    differ_addresses: set[str] = set()
+    for candidate_chunk in chunk_addresses(candidates):
+        differ_addresses |= DifferRecipientAddress.matched_addresses_for_candidates(
+            chain=chain,
+            candidates=candidate_chunk,
+        )
     return frozenset(vault_slot_addresses | differ_addresses)
 
 
@@ -97,25 +125,29 @@ def ensure_cross_chain_deposit_slots(
 
     只处理 DEPOSIT 用途：账单（INVOICE）收款是按指定链发生的，跨链付款属于「付错链」，
     语义不同，不在此自动补建。返回本轮成功补建（或已存在）的、确属本链可归集的地址集合。
+
+    源行查询同样按候选地址分片下发。分片以地址为界且互不相交，同一地址的全部源行必落在
+    同一片内，补建逻辑看到的输入与不分片时一致；补建本身又由 (customer, chain) /
+    (chain, address) 唯一约束经 get_or_create 收口，重复执行幂等，分片不影响其正确性。
     """
     if not candidates:
         return set()
 
-    source_slots = (
-        VaultSlot.objects.filter(
-            usage=VaultSlotUsage.DEPOSIT,
-            chain__type=chain.type,
-            project__is_test=chain.is_testnet,
-            address__in=candidates,
-        )
-        .exclude(chain=chain)
-        .select_related("project", "customer", "chain")
-    )
-
     materialized: set[str] = set()
-    for source in source_slots:
-        if materialize_deposit_slot_on_chain(chain=chain, source=source):
-            materialized.add(source.address)
+    for candidate_chunk in chunk_addresses(candidates):
+        source_slots = (
+            VaultSlot.objects.filter(
+                usage=VaultSlotUsage.DEPOSIT,
+                chain__type=chain.type,
+                project__is_test=chain.is_testnet,
+                address__in=candidate_chunk,
+            )
+            .exclude(chain=chain)
+            .select_related("project", "customer", "chain")
+        )
+        for source in source_slots:
+            if materialize_deposit_slot_on_chain(chain=chain, source=source):
+                materialized.add(source.address)
     return materialized
 
 

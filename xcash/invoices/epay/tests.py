@@ -511,6 +511,24 @@ class EpaySubmitServiceTests(TestCase):
 
         self.assertFalse(Invoice.objects.filter(out_no="EPAY-FROZEN-1001").exists())
 
+    def test_submit_rejects_deactivated_project(self):
+        """项目停用必须拦住 epay 建单，与 /v1 商户 API 同口径。
+
+        epay 入口不经过 ProjectConfigMiddleware，EpayMerchant.active 又是独立
+        开关；自托管（IS_SAAS=False）没有 SaaS 冻结兜底，Project.active 是唯一
+        的停用闸门，漏掉它等于停用形同虚设。
+        """
+        self.project.active = False
+        self.project.save(update_fields=["active"])
+        params = self._signed_params(out_trade_no="EPAY-DEACTIVATED-1001")
+
+        with self.assertRaises(EpaySubmitError):
+            EpaySubmitService.submit(params)
+
+        self.assertFalse(
+            Invoice.objects.filter(out_no="EPAY-DEACTIVATED-1001").exists()
+        )
+
     @patch("invoices.epay.service.InvoiceService.initialize_invoice")
     @patch("invoices.epay.service.check_saas_permission")
     def test_submit_verifies_sign_with_raw_parameter_shape(

@@ -1,6 +1,7 @@
 import httpx
 import structlog
 from celery import shared_task
+from django.utils import timezone
 
 from currencies.models import Crypto
 from currencies.models import Fiat
@@ -51,9 +52,24 @@ def refresh_crypto_prices():
 
     for crypto_id in crypto_ids:
         crypto = Crypto.objects.get(coingecko_id=crypto_id)
+        refreshed = False
         for fiat_code in fiat_codes:
             price = price_data.get(crypto_id, {}).get(fiat_code.lower(), None)
             if price:
                 crypto.prices[fiat_code] = price
-        # 价格刷新只更新 JSONField prices，避免把其他字段旧值随任务回写。
-        crypto.save(update_fields=["prices"])
+                refreshed = True
+
+        if not refreshed:
+            # 本轮没拿到该币任何报价（行情源未覆盖或返回空），不推进时间戳，
+            # 否则会把陈旧价格伪装成刚刷新过的，新鲜度校验形同虚设。
+            logger.warning(
+                "本轮未取得任何价格，保留原时间戳",
+                crypto=crypto.symbol,
+                coingecko_id=crypto_id,
+            )
+            continue
+
+        # 时间戳与价格必须同批写入：它是判断价格是否陈旧的唯一依据。
+        crypto.prices_updated_at = timezone.now()
+        # 价格刷新只更新这两个字段，避免把其他字段旧值随任务回写。
+        crypto.save(update_fields=["prices", "prices_updated_at"])

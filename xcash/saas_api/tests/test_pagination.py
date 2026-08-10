@@ -93,9 +93,9 @@ class TestSaasApiPagination:
             ).json()
             page_ids = {row["id"] for row in body["results"]}
             # 关键断言：稳定排序保证任何两页之间 ID 集合不重叠。
-            assert all_ids.isdisjoint(page_ids), (
-                f"page {page} 与之前页存在重复 ID，说明排序不稳定"
-            )
+            assert all_ids.isdisjoint(
+                page_ids
+            ), f"page {page} 与之前页存在重复 ID，说明排序不稳定"
             all_ids.update(page_ids)
             total_seen += len(body["results"])
             if body["next"] is None:

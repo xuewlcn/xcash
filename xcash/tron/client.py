@@ -28,6 +28,12 @@ class TronHttpClient:
         self.chain = chain
         self.base_url = getattr(chain, "tron_base_url", "") or self.BASE_URL
         self.timeout = settings.TRON_RPC_TIMEOUT
+        # 最近一次整块拉取的 (block_number, payload)。get_solid_block 与
+        # get_solid_block_id 打的是同一个 POST /walletsolidity/getblockbynum，
+        # 而扫描器对同一块会先后要 blockID 与整块交易，不复用就是把主网单块
+        # （数百 KB～MB）整体下载两遍。已固化块内容不可变，缓存同块号安全；
+        # 扫描逐块顺序推进，只留最近一块即可命中，不会累积内存。
+        self._cached_block: tuple[int, dict] | None = None
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -91,7 +97,9 @@ class TronHttpClient:
                         json=json_body,
                     )
                 else:
-                    raise ValueError(f"unsupported HTTP method: {method}")  # noqa: TRY301
+                    raise ValueError(  # noqa: TRY301
+                        f"unsupported HTTP method: {method}"
+                    )
             except Exception as exc:  # noqa: BLE001
                 if not self._is_retriable_http_error(exc):
                     raise TronClientError(f"{request_label} from {chain_code}") from exc
@@ -157,6 +165,22 @@ class TronHttpClient:
         return block_number
 
     def get_solid_block_id(self, *, block_number: int) -> str:
+        payload = self.get_solid_block(block_number=block_number)
+        block_id = ""
+        if isinstance(payload, dict):
+            block_id = str(payload.get("blockID") or "").strip().lower()
+        if len(block_id) != 64:
+            raise TronClientError(f"invalid solid block id from {self.chain.code}")
+        return block_id
+
+    def get_solid_block(self, *, block_number: int) -> dict:
+        """拉取已固化（BFT 不可逆）整块，含 transactions，用于原生 TRX TransferContract 扫描。
+
+        同块号在本客户端实例内只请求一次：TRC20 与原生两条扫描路径对同一块分别要
+        blockID 和 transactions，走同一个接口，复用可省掉一次整块下载。
+        """
+        if self._cached_block is not None and self._cached_block[0] == block_number:
+            return self._cached_block[1]
         response = self._request_with_retry(
             method="POST",
             url=f"{self.base_url}/walletsolidity/getblockbynum",
@@ -164,20 +188,9 @@ class TronHttpClient:
             json_body={"num": block_number},
         )
         payload = response.json()
-        block_id = str(payload.get("blockID") or "").strip().lower()
-        if len(block_id) != 64:
-            raise TronClientError(f"invalid solid block id from {self.chain.code}")
-        return block_id
-
-    def get_solid_block(self, *, block_number: int) -> dict:
-        """拉取已固化（BFT 不可逆）整块，含 transactions，用于原生 TRX TransferContract 扫描。"""
-        response = self._request_with_retry(
-            method="POST",
-            url=f"{self.base_url}/walletsolidity/getblockbynum",
-            request_label="failed to fetch solid block",
-            json_body={"num": block_number},
-        )
-        return response.json()
+        if isinstance(payload, dict):
+            self._cached_block = (block_number, payload)
+        return payload
 
     def get_transaction_info_by_id(self, tx_hash: str) -> dict:
         response = self._request_with_retry(

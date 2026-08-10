@@ -27,7 +27,9 @@ def make_chain(**kwargs) -> Chain:
 
 @pytest.mark.django_db
 class TestSaasCryptosList:
-    def test_lists_active_cryptos_with_icon_and_active_mainnet_deployments(self, client):
+    def test_lists_active_cryptos_with_icon_and_active_mainnet_deployments(
+        self, client
+    ):
         ethereum = make_chain(code="ethereum", active=True, rpc="http://rpc")
         bsc = make_chain(code="bsc", active=True, rpc="http://rpc")
         sepolia = make_chain(code="sepolia", active=True, rpc="http://rpc")
@@ -57,7 +59,9 @@ class TestSaasCryptosList:
             active=True,
         )
 
-        inactive = Crypto.objects.create(name="Inactive Token", symbol="ITK", active=False)
+        inactive = Crypto.objects.create(
+            name="Inactive Token", symbol="ITK", active=False
+        )
         CryptoOnChain.objects.create(
             crypto=inactive,
             chain=ethereum,

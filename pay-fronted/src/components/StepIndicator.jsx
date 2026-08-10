@@ -20,58 +20,60 @@ function StepIndicator({ activeStep, naturalStep, onStepClick, stepCount = 3, lo
   const isClickable = (n) => !lockBack && n < naturalStep && n !== activeStep
 
   return (
-    <div className="px-6 pt-4 pb-3 max-w-lg mx-auto">
-      {/* Nodes + lines */}
-      <div className="grid items-center" style={gridStyle}>
-        {nodes.map((n, i) => (
-          <div key={n} className="relative flex justify-center">
-            <button
-              onClick={() => isClickable(n) && onStepClick?.(n)}
-              disabled={!isClickable(n)}
-              className={cn(
-                "relative z-10 size-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 transition-colors outline-none",
-                isSuccess(n)
-                  ? "bg-success text-success-foreground"
-                  : n <= activeStep
-                  ? "bg-success text-success-foreground"
-                  : "bg-muted text-muted-foreground border",
-                isClickable(n) && "cursor-pointer hover:opacity-90"
-              )}
-              aria-label={`${t("payment.step")} ${n}: ${t(keys[i])}`}
-            >
-              {isSuccess(n) ? <Check className="size-3.5" /> : n}
-            </button>
-            {n < stepCount && (
-              <div
+    <div className="px-6 pt-6 sm:px-8 lg:pt-10">
+      <div className="mx-auto max-w-xl">
+        {/* Nodes + lines */}
+        <div className="grid items-center" style={gridStyle}>
+          {nodes.map((n, i) => (
+            <div key={n} className="relative flex justify-center">
+              <button
+                onClick={() => isClickable(n) && onStepClick?.(n)}
+                disabled={!isClickable(n)}
                 className={cn(
-                  "absolute top-1/2 left-[calc(50%+1rem)] right-[calc(-50%+1rem)] h-px -translate-y-1/2",
-                  n < naturalStep ? "bg-success" : "bg-border"
+                  "relative z-10 flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-all outline-none",
+                  isSuccess(n)
+                    ? "bg-success text-success-foreground shadow-[0_0_10px_#72e85759]"
+                    : n <= activeStep
+                      ? "bg-primary text-primary-foreground shadow-[0_0_0_4px_var(--brand-soft),0_0_16px_#72e85780]"
+                      : "border bg-card text-muted-foreground",
+                  isClickable(n) && "cursor-pointer hover:scale-105"
                 )}
-              />
-            )}
-          </div>
-        ))}
-      </div>
+                aria-label={`${t("payment.step")} ${n}: ${t(keys[i])}`}
+              >
+                {isSuccess(n) ? <Check className="size-3.5" /> : n}
+              </button>
+              {n < stepCount && (
+                <div className="absolute left-[calc(50%+1.125rem)] right-[calc(-50%+1.125rem)] top-1/2 h-0.5 -translate-y-1/2 overflow-hidden rounded-full bg-border">
+                  <div
+                    className={cn(
+                      "h-full rounded-full bg-gradient-to-r from-[#3dcf40] to-[#72e857] shadow-[0_0_8px_#72e85773] transition-all duration-500",
+                      n < naturalStep ? "w-full" : "w-0"
+                    )}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
 
-      {/* Labels */}
-      <div className="grid mt-2" style={gridStyle}>
-        {nodes.map((n, i) => (
-          <div
-            key={n}
-            className={cn(
-              "min-w-0 px-1 text-center text-[10px] leading-tight whitespace-nowrap",
-              n === activeStep
-                ? isSuccess(n)
-                  ? "text-success font-medium"
-                  : "text-success font-medium"
-                : isSuccess(n)
+        {/* Labels */}
+        <div className="mt-2.5 grid" style={gridStyle}>
+          {nodes.map((n, i) => (
+            <div
+              key={n}
+              className={cn(
+                "min-w-0 whitespace-nowrap px-1 text-center text-[11px] font-medium leading-tight tracking-wide",
+                isSuccess(n)
                   ? "text-success"
-                  : "text-muted-foreground"
-            )}
-          >
-            {t(keys[i])}
-          </div>
-        ))}
+                  : n === activeStep
+                    ? "text-brand font-semibold"
+                    : "text-muted-foreground"
+              )}
+            >
+              {t(keys[i])}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

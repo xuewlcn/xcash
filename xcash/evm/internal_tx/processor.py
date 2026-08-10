@@ -87,9 +87,7 @@ def _finalize_deploy_success(
     receipt: dict,
 ) -> bool:
     slot = (
-        VaultSlot.objects.select_related("chain")
-        .filter(deploy_tx_task=tx_task)
-        .first()
+        VaultSlot.objects.select_related("chain").filter(deploy_tx_task=tx_task).first()
     )
     if slot is None:
         # 槽位已不存在（项目/客户/链级联删除，或 deploy_tx_task 已改指新任务）。

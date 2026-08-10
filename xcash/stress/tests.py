@@ -260,7 +260,9 @@ class StressServiceTests(SimpleTestCase):
             patch(
                 "stress.service.Project.objects.create", return_value=created_project
             ) as create_project_mock,
-            patch("stress.service._setup_differ_recipient_address") as setup_differ_mock,
+            patch(
+                "stress.service._setup_differ_recipient_address"
+            ) as setup_differ_mock,
             patch("stress.service._setup_wallet_for_vault") as setup_vault_mock,
             patch("stress.service._fund_vault_for_stress") as fund_vault_mock,
             patch("stress.service.InvoiceStressCase.objects.bulk_create"),
@@ -953,6 +955,7 @@ class StressRecipientSetupTests(TestCase):
             ip_white_list="*",
             active=True,
         )
+
 
 class FinalizeStressTimeoutTests(TestCase):
     def setUp(self):

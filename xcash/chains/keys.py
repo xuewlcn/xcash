@@ -76,9 +76,7 @@ def coin_for_chain_type(chain_type: str) -> Bip44Coins:
 
 def generate_mnemonic() -> str:
     """生成 24 词（256 bit 熵）英文助记词，与行业标准（Ledger/Trezor）一致。"""
-    return str(
-        Bip39MnemonicGenerator().FromWordsNumber(Bip39WordsNum.WORDS_NUM_24)
-    )
+    return str(Bip39MnemonicGenerator().FromWordsNumber(Bip39WordsNum.WORDS_NUM_24))
 
 
 class MnemonicCipher:
@@ -89,7 +87,11 @@ class MnemonicCipher:
     """
 
     def __init__(self, *, master_key: str | None = None) -> None:
-        key = master_key if master_key is not None else settings.WALLET_MNEMONIC_ENCRYPTION_KEY
+        key = (
+            master_key
+            if master_key is not None
+            else settings.WALLET_MNEMONIC_ENCRYPTION_KEY
+        )
         if not key:
             raise RuntimeError(
                 "WALLET_MNEMONIC_ENCRYPTION_KEY 未配置，无法加解密钱包助记词"

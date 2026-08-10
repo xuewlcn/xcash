@@ -44,6 +44,15 @@ class WebhookEvent(models.Model):
         choices=Status,
         default=Status.PENDING,
     )
+    attempt_count = models.PositiveSmallIntegerField(
+        _("已尝试次数"),
+        default=0,
+        help_text=_(
+            "认领投递时原子自增，是重试次数的唯一真源。"
+            "不能用 attempts 关联表计数：任务在写 DeliveryAttempt 之前被杀时，"
+            "关联表计数不增长，重试上限就永远不会触发。"
+        ),
+    )
     schedule_locked_until = models.DateTimeField(
         verbose_name=_("下次投递"), null=True, blank=True
     )

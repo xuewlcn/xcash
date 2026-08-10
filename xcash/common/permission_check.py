@@ -2,12 +2,18 @@
 
 设计原则（高可用优先，availability over consistency）：
 - IS_SAAS=False 视为未对接 SaaS（自托管），直接放行
-- 缓存值带 `_fetched_at` 时间戳，永不过期；判定完全基于缓存
-- 命中缓存且 fetched_at 落后 > 60s：派发异步刷新任务，本次仍按旧缓存判定
+- 缓存值带 `_fetched_at` 时间戳；判定完全基于缓存
+- 命中缓存且 fetched_at 落后 > REFRESH_AFTER：派发异步刷新任务，本次仍按旧缓存判定
 - 未命中缓存：默认放行，并派发异步刷新任务（让下次有数据可用）
-- 异步刷新失败只 log，不破坏旧缓存；同一 appid 60s 内只派发一次（去重锁）
+- 异步刷新失败只 log，不破坏旧缓存；同一 appid REFRESH_AFTER 秒内只派发一次
 
-这样设计的目的：SaaS 暂时不可用不会阻塞 xcash 主链路；权限变更最多延迟 60s 生效。
+这样设计的目的：SaaS 暂时不可用不会阻塞 xcash 主链路；权限变更靠异步刷新在秒级生效。
+
+关于缓存 TTL：新鲜度由 `_fetched_at` + 异步刷新负责，TTL 只是防止条目永久滞留的
+兜底，因此必须显著长于刷新周期。TTL 若取得很短（曾经是 10s），一旦刷新任务因队列
+积压或 SaaS 短暂 5xx 没能按时完成，缓存条目就会消失——而缓存缺失走的是 fail-open
+放行分支，等于被冻结的商户在空窗期恢复全部权限。让 stale 缓存继续拒绝，比让它消失
+后放行安全得多。
 """
 
 from __future__ import annotations
@@ -30,6 +36,9 @@ _SAAS_PERMISSION_PATH = "/callbacks/xcash/permission"
 
 # fetched_at 落后超过此秒数即派发异步刷新；同时也是去重锁 TTL
 REFRESH_AFTER = 5
+# 权限缓存条目的存活上限。远大于 REFRESH_AFTER：新鲜度由异步刷新保证，
+# 这里只防条目永久滞留，绝不能短到让刷新一慢缓存就消失、进而 fail-open 放行。
+PERMISSION_CACHE_TTL = 3600
 
 _TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=3.0, pool=5.0)
 
@@ -173,7 +182,7 @@ def _refresh_saas_permission(*, appid: str) -> None:
         return
 
     perm["_fetched_at"] = time.time()
-    cache.set(_cache_key(appid), perm, 10)
+    cache.set(_cache_key(appid), perm, PERMISSION_CACHE_TTL)
 
 
 def _fetch_from_saas(appid: str) -> dict:

@@ -419,9 +419,7 @@ def create_deposit_context(*, native: bool = False, confirmed: bool = True):
         customer=customer,
         chain=chain,
         usage=VaultSlotUsage.DEPOSIT,
-        address=Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000a11"
-        ),
+        address=Web3.to_checksum_address("0x0000000000000000000000000000000000000a11"),
         salt=b"\x11" * 32,
     )
     transfer = Transfer.objects.create(
@@ -438,9 +436,7 @@ def create_deposit_context(*, native: bool = False, confirmed: bool = True):
         amount=Decimal("1"),
         timestamp=1,
         datetime=timezone.now(),
-        status=(
-            TransferStatus.CONFIRMED if confirmed else TransferStatus.CONFIRMING
-        ),
+        status=(TransferStatus.CONFIRMED if confirmed else TransferStatus.CONFIRMING),
     )
     return SimpleNamespace(
         wallet=wallet,
@@ -605,7 +601,9 @@ class DepositAddressValidationTests(TestCase):
         ) as ensure_address:
             response = self.call_address(project=project, chain=chain, crypto=crypto)
 
-        self.assertEqual(response.status_code, ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT.status)
+        self.assertEqual(
+            response.status_code, ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT.status
+        )
         self.assertEqual(response.data["code"], ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT.code)
         ensure_address.assert_not_called()
 
@@ -616,7 +614,9 @@ class DepositAddressValidationTests(TestCase):
 
         response = self.call_address(project=project, chain=chain, crypto=crypto)
 
-        self.assertEqual(response.status_code, ErrorCode.RECIPIENT_NOT_CONFIGURED.status)
+        self.assertEqual(
+            response.status_code, ErrorCode.RECIPIENT_NOT_CONFIGURED.status
+        )
         self.assertEqual(response.data["code"], ErrorCode.RECIPIENT_NOT_CONFIGURED.code)
 
 
@@ -683,7 +683,9 @@ class DepositCustomerLimitTests(TestCase):
         response = self.call_address("new-user")
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertTrue(Customer.objects.filter(project=self.project, uid="new-user").exists())
+        self.assertTrue(
+            Customer.objects.filter(project=self.project, uid="new-user").exists()
+        )
 
     def test_rejects_new_customer_at_limit(self):
         Customer.objects.create(project=self.project, uid="existing")
@@ -696,7 +698,9 @@ class DepositCustomerLimitTests(TestCase):
             ErrorCode.DEPOSIT_CUSTOMER_LIMIT_REACHED.status,
             response.data,
         )
-        self.assertEqual(response.data["code"], ErrorCode.DEPOSIT_CUSTOMER_LIMIT_REACHED.code)
+        self.assertEqual(
+            response.data["code"], ErrorCode.DEPOSIT_CUSTOMER_LIMIT_REACHED.code
+        )
 
     def test_zero_limit_rejects_first_customer(self):
         self.set_permission({"max_deposit_customers": 0})
@@ -724,4 +728,6 @@ class DepositCustomerLimitTests(TestCase):
         response = self.call_address("new-user")
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertTrue(Customer.objects.filter(project=self.project, uid="new-user").exists())
+        self.assertTrue(
+            Customer.objects.filter(project=self.project, uid="new-user").exists()
+        )

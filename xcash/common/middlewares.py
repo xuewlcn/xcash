@@ -19,6 +19,7 @@ from common.consts import TIMESTAMP_HEADER
 from common.crypto import verify_hmac
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from common.utils.security import client_ip
 from common.utils.security import is_ip_in_whitelist
 from projects.models import Project
 
@@ -42,10 +43,10 @@ class AdminSessionTimeoutMiddleware:
         except Resolver404:
             return False
 
-        return (
-            match.namespace == "admin"
-            or match.url_name in {"operational-inspection", "admin-path-redirect"}
-        )
+        return match.namespace == "admin" or match.url_name in {
+            "operational-inspection",
+            "admin-path-redirect",
+        }
 
 
 @dataclass
@@ -143,18 +144,8 @@ class XcashMiddleware:
 
     @staticmethod
     def _client_ip(request: HttpRequest) -> str | None:
-        # 只有 TCP 对端本身属于受信代理时，才接受其转发的 X-Real-IP；
-        # 否则一律退回 REMOTE_ADDR，避免源站直连时被伪造请求头绕过白名单。
-        remote_addr = request.META.get("REMOTE_ADDR")
-        x_real_ip = request.headers.get("x-real-ip")
-        if (
-            x_real_ip
-            and remote_addr
-            and is_ip_in_whitelist(settings.TRUSTED_PROXY_IPS, remote_addr)
-        ):
-            return x_real_ip.strip()
-        # 无受信代理参与时，直接使用当前 TCP 连接来源 IP。
-        return remote_addr
+        # 与限流层共用同一份可信代理判定，避免两套取 IP 口径产生绕过缝隙。
+        return client_ip(request)
 
     def _nonce_cache(self):
         if self._nonce_connection is None:
@@ -202,6 +193,13 @@ class ProjectConfigMiddleware(XcashMiddleware):
         project = self.project(request)
         if not project:
             return APIError(ErrorCode.INVALID_APPID).to_response()
+
+        # 停用的项目必须在此拒绝。active 此前只有 SaaS 的 activate/deactivate 会写、
+        # 没有任何读取方：运维或 SaaS 停用商户后，对方仍能照常建账单、申请充币地址、
+        # 占用 VaultSlot 并消耗归集 gas，后台却显示「已停用」。
+        # 注意它与 SaaS 侧的 frozen 是两套独立状态，check_saas_permission 兜不住。
+        if not project.active:
+            return APIError(ErrorCode.ACCESS_DENY).to_response()
 
         if not settings.DEBUG:
             request_timestamp = self.timestamp(request)

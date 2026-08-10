@@ -64,12 +64,15 @@ def test_predict_xcash_vault_slot_address_changes_with_vault(fixtures):
     second = fixtures["xcash_vault_slot_second_vault"]
 
     assert first["predicted"].lower() != second["predicted"].lower()
-    assert codec.predict_xcash_vault_slot_address(
-        factory=second["factory"],
-        vault_slot_implementation=second["vault_slot_implementation"],
-        vault=second["vault"],
-        salt=_hex_to_bytes(fixtures["salt"]),
-    ).lower() == second["predicted"].lower()
+    assert (
+        codec.predict_xcash_vault_slot_address(
+            factory=second["factory"],
+            vault_slot_implementation=second["vault_slot_implementation"],
+            vault=second["vault"],
+            salt=_hex_to_bytes(fixtures["salt"]),
+        ).lower()
+        == second["predicted"].lower()
+    )
 
 
 def test_predict_xcash_vault_slot_address_returns_checksum(fixtures):
@@ -96,7 +99,9 @@ def test_predict_xcash_vault_slot_address_rejects_zero_vault(fixtures):
 
 def test_predict_xcash_vault_slot_address_rejects_zero_implementation(fixtures):
     case = fixtures["xcash_vault_slot"]
-    with pytest.raises(ValueError, match="vault_slot_implementation address must not be zero"):
+    with pytest.raises(
+        ValueError, match="vault_slot_implementation address must not be zero"
+    ):
         codec.predict_xcash_vault_slot_address(
             factory=case["factory"],
             vault_slot_implementation="0x0000000000000000000000000000000000000000",

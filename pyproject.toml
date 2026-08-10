@@ -3,23 +3,23 @@ package = false
 
 [project]
 name = "xcash"
-version = "0.5.1"
+version = "0.6.0"
 description = "Open-source self-hosted cryptocurrency payment gateway. Accept USDT, ETH. Zero platform fees, major EVM chains and Tron, Docker deploy, full self-custody."
 requires-python = "==3.13.*"
 dependencies = [
     "web3==7.16.0",
     "base58==2.1.1",
     "bip-utils==2.12.1",
-    "redis==8.0.0",
+    "redis==8.0.1",
     "hiredis==3.4.0",
     "cryptography==48.0.1",
     "argon2-cffi==25.1.0",
     "shortuuid==1.0.13",
     "httpx==0.28.1",
     # Django
-    "django==5.2.14",
-    "django-environ==0.13.0",
-    "django-unfold==0.97.0",
+    "django==5.2.16",
+    "django-environ==0.14.0",
+    "django-unfold==0.102.0",
     "djangorestframework==3.17.1",
     "django-redis==7.0.0",
     "django-cors-headers==4.9.0",
@@ -37,33 +37,30 @@ dependencies = [
 [dependency-groups]
 dev = [
     "psycopg[binary]==3.3.4",
-    "celery-types>=0.26.0",
+    "celery-types==0.26.0",
     "django-extensions==4.1",
     "watchfiles==1.2.0",
     "werkzeug[watchdog]==3.1.8",
     "ipdb==0.13.13",
     # Testing
-    "mypy==2.1.0",
-    "django-stubs[compatible-mypy]==6.0.5",
-    "pytest==9.0.3",
+    "mypy==2.3.0",
+    "django-stubs[compatible-mypy]==6.0.7",
+    "pytest==9.1.1",
     "pytest-sugar==1.1.1",
-    "djangorestframework-stubs[compatible-mypy]==3.17.0",
-    # Documents
-    "sphinx==9.1.0",
-    "sphinx-autobuild==2025.8.25",
+    "djangorestframework-stubs[compatible-mypy]==3.17.1",
     # Code quality
-    "ruff==0.15.15",
-    "coverage==7.14.1",
-    "djlint==1.36.4",
-    "pylint-django==2.7.0",
-    "pylint-celery==0.3",
-    "pre-commit==4.6.0",
+    # black 是本项目唯一的格式化器（见 .pre-commit-config.yaml 的说明）；
+    # 必须列在依赖里，否则本地 `uv run black` 不可用，只有 pre-commit 自建环境能跑。
+    "black==25.12.0",
+    "ruff==0.16.0",
+    "coverage==7.15.2",
+    "djlint==1.43.0",
+    "pre-commit==4.6.1",
     # Django
-    "factory-boy==3.3.3",
     "django-debug-toolbar==6.3.0",
     "django-coverage-plugin==3.2.2",
     "pytest-django==4.12.0",
-    "vulture>=2.16",
+    "vulture==2.16",
 ]
 production = [
     "psycopg[c]==3.3.4",
@@ -90,8 +87,35 @@ omit = ["*/migrations/*", "*/tests/*"]
 plugins = ["django_coverage_plugin"]
 
 # ==== mypy ====
+# 现状说明：mypy 已可正常运行，但全库仍有数百处存量类型错误（check_untyped_defs
+# 打开且历史代码从未被检查过）。因此它是【增量排查工具】而非 CI 门禁——
+# CI 里不跑 mypy，避免引入一个永久失败的检查项。用法：`make typecheck`。
 [tool.mypy]
-python_version = "3.13.9"
+# 按包名而非路径检查：xcash/ 自身也是包（有 __init__.py），若按路径传入，
+# 同一文件会被同时解析为 xcash.common 和 common 两个模块名而直接报错中止。
+packages = [
+    "aml",
+    "chains",
+    "common",
+    "config",
+    "core",
+    "currencies",
+    "deposits",
+    "evm",
+    "invoices",
+    "projects",
+    "saas_api",
+    "tron",
+    "users",
+    "webhooks",
+]
+# 只接受 x.y，写 x.y.z 会被 mypy 判为非法版本并放弃该配置。
+python_version = "3.13"
+# 各 app 以顶层包形式存在于 xcash/ 下（运行期由 base.py 的 sys.path.append 注入）。
+# mypy 不认这个运行期 hack，必须显式告知，否则它解析不到 users.User 等模块：
+# django-stubs 插件为 AUTH_USER_MODEL 解析 _AnyUser 时会无限 defer，
+# 最终以 "Must not defer during final iteration" 崩溃（INTERNAL ERROR）而非报缺模块。
+mypy_path = "xcash"
 check_untyped_defs = true
 ignore_missing_imports = true
 warn_unused_ignores = true
@@ -108,7 +132,19 @@ module = "*.migrations.*"
 ignore_errors = true
 
 [tool.django-stubs]
-django_settings_module = "config.settings.dev"
+# 必须指向 test settings：django-stubs 插件会在启动时真实导入该 settings 模块，
+# dev/production 依赖 POSTGRES_PASSWORD 等外部环境变量，缺失时插件直接构造失败
+# （mypy 报 INTERNAL ERROR）。test settings 用 os.environ.setdefault 自带全部默认值，
+# 无需任何环境变量即可导入，故是唯一能让 mypy 开箱可用的选择。
+django_settings_module = "config.settings.test"
+
+# ==== black ====
+# 本项目唯一的格式化器。line-length 不配置：black 默认 88，与 [tool.ruff] 一致。
+[tool.black]
+# 必须与 ruff 的 exclude 和 .pre-commit-config.yaml 的 exclude 保持一致地排除迁移文件。
+# 否则口径不一：pre-commit 不格式化 migrations，而 CI 的 `black --check .` 会检查它们，
+# Django 新生成的迁移一旦不符合 black 风格就会让 CI 无故变红。
+extend-exclude = '/migrations/'
 
 # ==== djLint ====
 [tool.djlint]
@@ -130,6 +166,8 @@ indent_size = 2
 indent_size = 2
 
 [tool.ruff]
+# ruff 在本项目【只做 lint】，格式化交给 black（见 .pre-commit-config.yaml）。
+# 故此处不配置 [tool.ruff.format]：两个格式化器并存会互相改写同一批文件。
 # Exclude a variety of commonly ignored directories.
 exclude = [
     ".bzr",
@@ -273,12 +311,6 @@ fixable = ["ALL"]
 unfixable = []
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
 
 [tool.ruff.lint.isort]
 force-single-line = true

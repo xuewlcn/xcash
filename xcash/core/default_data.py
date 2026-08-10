@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import environ
+import structlog
 from django.conf import settings
 from django.db import transaction
 from tron.codec import TronAddressCodec
@@ -16,6 +17,8 @@ from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 from evm.local_erc20 import LOCAL_EVM_ERC20_BYTECODE
 from evm.local_erc20 import has_standard_erc20_interface
 from evm.local_vault_slot import ensure_local_vault_slot_contracts
+
+logger = structlog.get_logger()
 
 env = environ.Env()
 
@@ -51,28 +54,108 @@ PRODUCTION_MAINNET_CHAINS = (
 
 PRODUCTION_MAINNET_TOKEN_MAPPINGS = (
     # ── Ethereum ──
-    {"chain_name": ChainCode.Ethereum, "crypto_symbol": "USDC", "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "decimals": 6},
-    {"chain_name": ChainCode.Ethereum, "crypto_symbol": "USDT", "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "decimals": 6},
-    {"chain_name": ChainCode.Ethereum, "crypto_symbol": "DAI", "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "decimals": 18},
+    {
+        "chain_name": ChainCode.Ethereum,
+        "crypto_symbol": "USDC",
+        "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Ethereum,
+        "crypto_symbol": "USDT",
+        "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Ethereum,
+        "crypto_symbol": "DAI",
+        "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+        "decimals": 18,
+    },
     # ── BSC ──
-    {"chain_name": ChainCode.BSC, "crypto_symbol": "USDC", "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", "decimals": 18},
-    {"chain_name": ChainCode.BSC, "crypto_symbol": "USDT", "address": "0x55d398326f99059fF775485246999027B3197955", "decimals": 18},
-    {"chain_name": ChainCode.BSC, "crypto_symbol": "DAI", "address": "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3", "decimals": 18},
+    {
+        "chain_name": ChainCode.BSC,
+        "crypto_symbol": "USDC",
+        "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        "decimals": 18,
+    },
+    {
+        "chain_name": ChainCode.BSC,
+        "crypto_symbol": "USDT",
+        "address": "0x55d398326f99059fF775485246999027B3197955",
+        "decimals": 18,
+    },
+    {
+        "chain_name": ChainCode.BSC,
+        "crypto_symbol": "DAI",
+        "address": "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3",
+        "decimals": 18,
+    },
     # ── Polygon ──
-    {"chain_name": ChainCode.Polygon, "crypto_symbol": "USDC", "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", "decimals": 6},
-    {"chain_name": ChainCode.Polygon, "crypto_symbol": "USDT", "address": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", "decimals": 6},
-    {"chain_name": ChainCode.Polygon, "crypto_symbol": "DAI", "address": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", "decimals": 18},
+    {
+        "chain_name": ChainCode.Polygon,
+        "crypto_symbol": "USDC",
+        "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Polygon,
+        "crypto_symbol": "USDT",
+        "address": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Polygon,
+        "crypto_symbol": "DAI",
+        "address": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
+        "decimals": 18,
+    },
     # ── Arbitrum One ──
-    {"chain_name": ChainCode.ArbitrumOne, "crypto_symbol": "USDC", "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", "decimals": 6},
-    {"chain_name": ChainCode.ArbitrumOne, "crypto_symbol": "USDT", "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", "decimals": 6},
+    {
+        "chain_name": ChainCode.ArbitrumOne,
+        "crypto_symbol": "USDC",
+        "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.ArbitrumOne,
+        "crypto_symbol": "USDT",
+        "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+        "decimals": 6,
+    },
     # ── Optimism ──
-    {"chain_name": ChainCode.Optimism, "crypto_symbol": "USDC", "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "decimals": 6},
-    {"chain_name": ChainCode.Optimism, "crypto_symbol": "USDT", "address": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", "decimals": 6},
+    {
+        "chain_name": ChainCode.Optimism,
+        "crypto_symbol": "USDC",
+        "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Optimism,
+        "crypto_symbol": "USDT",
+        "address": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+        "decimals": 6,
+    },
     # ── Base ──
-    {"chain_name": ChainCode.Base, "crypto_symbol": "USDC", "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "decimals": 6},
-    {"chain_name": ChainCode.Base, "crypto_symbol": "USDT", "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2", "decimals": 6},
+    {
+        "chain_name": ChainCode.Base,
+        "crypto_symbol": "USDC",
+        "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Base,
+        "crypto_symbol": "USDT",
+        "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+        "decimals": 6,
+    },
     # ── Tron ──
-    {"chain_name": ChainCode.Tron, "crypto_symbol": "USDT", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "decimals": 6},
+    {
+        "chain_name": ChainCode.Tron,
+        "crypto_symbol": "USDT",
+        "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "decimals": 6,
+    },
 )
 
 # 测试网：Sepolia(EVM) / Nile(Tron)。无论 dev 还是生产都建成 inactive 骨架 + USDT 部署，
@@ -83,8 +166,18 @@ TESTNET_CHAINS = (
 )
 
 TESTNET_TOKEN_MAPPINGS = (
-    {"chain_name": ChainCode.Sepolia, "crypto_symbol": "USDT", "address": "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06", "decimals": 6},
-    {"chain_name": ChainCode.Nile, "crypto_symbol": "USDT", "address": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf", "decimals": 6},
+    {
+        "chain_name": ChainCode.Sepolia,
+        "crypto_symbol": "USDT",
+        "address": "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06",
+        "decimals": 6,
+    },
+    {
+        "chain_name": ChainCode.Nile,
+        "crypto_symbol": "USDT",
+        "address": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",
+        "decimals": 6,
+    },
 )
 
 
@@ -172,6 +265,12 @@ def ensure_crypto_on_chain_mapping(
     """为链上 ERC20/同类合约资产补齐 CryptoOnChain 映射。
 
     decimals 为该币在本链上的精度，必填——它是精度的唯一真相。
+
+    只补缺、不覆盖：本函数在每次升级的 post-migration setup 中都会执行，若用
+    update_or_create 无条件回写内置常量，运维在 admin 对 address/decimals 所做的
+    修正（合约迁移、精度勘误）会被静默回滚。地址被回滚会让买家付到不再被扫描的
+    合约上（付款成功但账单永不确认），decimals 被回滚则直接让金额换算错 10^k 倍。
+    因此检测到差异时只告警、不改数据，交由运维显式处置。
     """
     chain_obj = Chain.objects.using(using).get(code=chain_name)
     normalized_address = address.strip()
@@ -187,7 +286,7 @@ def ensure_crypto_on_chain_mapping(
         normalized_address = Web3.to_checksum_address(normalized_address)
 
     crypto_obj = Crypto.objects.using(using).get(symbol=crypto_symbol)
-    CryptoOnChain.objects.using(using).update_or_create(
+    mapping, created = CryptoOnChain.objects.using(using).get_or_create(
         crypto=crypto_obj,
         chain=chain_obj,
         defaults={
@@ -195,6 +294,19 @@ def ensure_crypto_on_chain_mapping(
             "decimals": decimals,
         },
     )
+    if created:
+        return
+
+    if mapping.address != normalized_address or mapping.decimals != decimals:
+        logger.warning(
+            "CryptoOnChain 映射与内置默认值不一致，保留数据库现值",
+            chain=chain_name,
+            crypto=crypto_symbol,
+            db_address=mapping.address,
+            default_address=normalized_address,
+            db_decimals=mapping.decimals,
+            default_decimals=decimals,
+        )
 
 
 def ensure_default_evm_token_mappings(

@@ -172,7 +172,9 @@ def _build_admin_security_rows() -> list[dict]:
         _inspection_row(
             level=_("中"),
             title=_("后台入口未配置"),
-            description=_("ADMIN_PATH 未设置，后台仍使用默认入口；建议配置独立后台路径。"),
+            description=_(
+                "ADMIN_PATH 未设置，后台仍使用默认入口；建议配置独立后台路径。"
+            ),
             href="",
             tone="warning",
         )
@@ -389,9 +391,11 @@ def _build_operational_inspection_summary_cards(snapshot, resource_risk_summary)
         _summary_card(
             title=_("后台安全"),
             metric=0 if admin_path_configured else 1,
-            subtitle=_("ADMIN_PATH 已配置")
-            if admin_path_configured
-            else _("ADMIN_PATH 未设置"),
+            subtitle=(
+                _("ADMIN_PATH 已配置")
+                if admin_path_configured
+                else _("ADMIN_PATH 未设置")
+            ),
             tone="warning",
             active_count=0 if admin_path_configured else 1,
             background="bg-emerald-50" if admin_path_configured else "bg-orange-50",

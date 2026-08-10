@@ -70,6 +70,14 @@ class SystemSettings(models.Model):
             "Tron 归集成本高，默认长延迟批量摊薄。"
         ),
     )
+    crypto_price_max_age_seconds = models.PositiveIntegerField(
+        _("行情价格最长可用时长(秒)"),
+        default=900,
+        help_text=_(
+            "价格距上次成功刷新超过该时长即视为失效，该币暂时退出按法币计价的支付，"
+            "避免行情源中断期间继续按过期汇率收款。0 表示不校验（行情源长期不可用时应急用）。"
+        ),
+    )
     vault_slot_collect_min_worth_usd = models.DecimalField(
         _("VaultSlot 最小归集价值(USD)"),
         max_digits=16,
@@ -162,7 +170,12 @@ class SystemSettings(models.Model):
         # 强制收口为单例记录，避免后台误建第二份配置导致读取口径分叉。
         self.singleton_key = 1
         super().save(*args, **kwargs)
-        cache.delete(SYSTEM_SETTINGS_CACHE_KEY)
+        # 必须等事务提交后再失效缓存。全局 ATOMIC_REQUESTS=True 下，admin 保存请求
+        # 的事务要到响应阶段才提交；若在事务内删除，删除与 COMMIT 之间的窗口里任何
+        # 并发读者（webhook 调度每 15s 一次、每个后台请求都会读）都会 cache miss，
+        # 从库里读到未提交前的旧行，再以 timeout=None 永久写回——新配置提交后永远
+        # 读不到，界面却显示保存成功，且没有 TTL 能自愈。
+        transaction.on_commit(lambda: cache.delete(SYSTEM_SETTINGS_CACHE_KEY))
 
     def delete(self, *args, **kwargs):
         raise RuntimeError("系统运行参数不允许删除")

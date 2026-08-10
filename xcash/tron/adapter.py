@@ -44,7 +44,9 @@ class TronAdapter(AdapterInterface):
                 raise RuntimeError("failed to fetch Tron native balance") from exc
             # 网关错误响应可能带 200 + Error 字段；未激活账户返回空 dict 才是合法 0。
             if not isinstance(payload, dict) or "Error" in payload:
-                raise RuntimeError("failed to fetch Tron native balance: invalid response")
+                raise RuntimeError(
+                    "failed to fetch Tron native balance: invalid response"
+                )
             return int(payload.get("balance") or 0)
 
         token_address = crypto.address(chain)
@@ -70,7 +72,11 @@ class TronAdapter(AdapterInterface):
         result = payload.get("result") or {}
         if not isinstance(result, dict) or result.get("result") is not True:
             code = str(result.get("code") or "") if isinstance(result, dict) else ""
-            message = decode_hex_text(result.get("message")) if isinstance(result, dict) else ""
+            message = (
+                decode_hex_text(result.get("message"))
+                if isinstance(result, dict)
+                else ""
+            )
             raise RuntimeError(
                 "failed to fetch Tron TRC20 balance: "
                 f"{message or code or 'invalid response'}"
@@ -82,7 +88,9 @@ class TronAdapter(AdapterInterface):
             )
         return int(str(constant_result[0]), 16)
 
-    def tx_result(self, chain, tx_hash: str) -> TxCheckStatus | TxCheckResult | Exception:
+    def tx_result(
+        self, chain, tx_hash: str
+    ) -> TxCheckStatus | TxCheckResult | Exception:
         try:
             client = TronHttpClient(chain=chain)
             payload = client.get_transaction_info_by_id(tx_hash)

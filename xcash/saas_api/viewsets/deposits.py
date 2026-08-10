@@ -56,9 +56,7 @@ class SaasDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         if chain_type:
             if chain_type != ChainType.EVM:
                 raise APIError(ErrorCode.INVALID_CHAIN)
-            chain = Chain.objects.filter(
-                type=ChainType.EVM, active=True
-            ).first()
+            chain = Chain.objects.filter(type=ChainType.EVM, active=True).first()
             if chain is None:
                 raise APIError(ErrorCode.INVALID_CHAIN)
         elif chain_code:

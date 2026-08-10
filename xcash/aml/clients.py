@@ -80,7 +80,7 @@ def _request_with_retry(
                 if attempt == _MAX_ATTEMPTS - 1:
                     break
 
-        backoff = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.25)  # noqa: S311
+        backoff = _BASE_BACKOFF * (2**attempt) + random.uniform(0, 0.25)  # noqa: S311
         time.sleep(backoff)
 
     msg = f"{error_label} request failed: {last_exc}"
@@ -160,7 +160,9 @@ class MistTrackOpenApiClient:
         if not isinstance(data, dict):
             raise TypeError("MistTrack OpenAPI returned non-object response")
         if not data.get("success"):
-            raise RuntimeError(str(data.get("msg") or "MistTrack OpenAPI request failed"))
+            raise RuntimeError(
+                str(data.get("msg") or "MistTrack OpenAPI request failed")
+            )
 
         result = data.get("data")
         if not isinstance(result, dict):

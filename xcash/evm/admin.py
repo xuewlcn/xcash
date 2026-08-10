@@ -54,7 +54,9 @@ class EvmTxTaskAdmin(ReadOnlyModelAdmin):
     @admin.display(ordering="last_attempt_at", description=_("执行时间"))
     def formatted_last_attempt_at(self, obj: EvmTxTask):
         if obj.last_attempt_at:
-            return date_format(timezone.localtime(obj.last_attempt_at), "DATETIME_FORMAT")
+            return date_format(
+                timezone.localtime(obj.last_attempt_at), "DATETIME_FORMAT"
+            )
         return None
 
     def has_mark_queued_failed_permission(self, request):
@@ -93,9 +95,7 @@ class EvmTxTaskAdmin(ReadOnlyModelAdmin):
                 skipped_count += 1
 
         level = (
-            messages.WARNING
-            if (skipped_count or blocked_count)
-            else messages.SUCCESS
+            messages.WARNING if (skipped_count or blocked_count) else messages.SUCCESS
         )
         self.message_user(
             request,

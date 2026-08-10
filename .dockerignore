@@ -1,3 +1,4 @@
+# 版本控制、CI 与本地环境目录：镜像内一律用不到
 .editorconfig
 .gitattributes
 .github
@@ -46,3 +47,10 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 运维敏感产物：upgrade.sh 在 production migrate 失败时【有意保留】backups/ 下的
+# 生产库 dump 供回滚使用。生产镜像是 COPY . /app，若不在此排除，下一次
+# docker compose build 会把含加密助记词、商户与账单数据的完整 dump 打进镜像层。
+backups/
+*.dump
+*.sql

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import ROUND_UP
 from decimal import Decimal
 from functools import cached_property
@@ -7,6 +8,7 @@ from functools import cached_property
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from web3 import Web3
 
@@ -14,6 +16,7 @@ from chains.constants import NATIVE_COIN_SYMBOLS
 from chains.constants import ChainType
 from chains.models import Chain
 from common.utils.math import round_decimal
+from core.runtime_settings import get_crypto_price_max_age
 
 
 class PriceUnavailableError(Exception):
@@ -36,12 +39,23 @@ class Crypto(models.Model):
         blank=True,
     )
     prices = models.JSONField(_("价格"), default=dict, blank=True)
+    prices_updated_at = models.DateTimeField(
+        _("价格更新时间"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "最近一次成功写入行情的时间。价格陈旧时该币会退出支付计价，"
+            "避免行情源中断期间继续按过期汇率收款。"
+        ),
+    )
     # CoinGecko 的全局唯一行情 slug（如 tether/binancecoin），与 symbol 无机械对应。
     # 可空：coingecko_id 只是众多取价来源之一（CoinGecko 行情），并非币的身份。未上
     # CoinGecko 的币（如项目方自定义代币）允许留空——它们仍可用于充币等非支付资产流转，只是没有法币价格，
     # 故不会出现在按法币计价的支付（invoice）选项里（见 is_payable 与支付能力门禁）。
     # NULL 让多条无 slug 的币并存而不撞唯一约束；空串在 save() 中归一为 NULL，避免空串互撞。
-    coingecko_id = models.CharField(_("CoinGecko ID"), unique=True, blank=True, null=True)
+    coingecko_id = models.CharField(
+        _("CoinGecko ID"), unique=True, blank=True, null=True
+    )
     active = models.BooleanField(_("启用"), default=True)
     # 是否为链原生币，建币时定死，运行期作为唯一真相（取代旧的硬编码符号名单）。
     is_native = models.BooleanField(_("原生币"), default=False)
@@ -83,9 +97,7 @@ class Crypto(models.Model):
         return CryptoOnChain.objects.get(crypto=self, chain=chain).decimals
 
     def supported_chains(self) -> str:
-        crypto_on_chains = self.crypto_on_chains.select_related(
-            "chain"
-        ).all()
+        crypto_on_chains = self.crypto_on_chains.select_related("chain").all()
         return ", ".join(on_chain.chain.name for on_chain in crypto_on_chains)
 
     @classmethod
@@ -105,11 +117,33 @@ class Crypto(models.Model):
         # 无价格源（如未上 CoinGecko 的自定义代币）抛明确领域异常，由调用方决定降级或排除，
         # 避免裸 KeyError 在上层被误当成其他错误。
         try:
-            return Decimal(self.prices[fiat])
+            price = Decimal(self.prices[fiat])
         except KeyError as exc:
             raise PriceUnavailableError(
                 f"{self.symbol} 缺少 {fiat} 价格（coingecko_id={self.coingecko_id!r}）"
             ) from exc
+
+        # 陈旧价格等同于没有价格。行情源（CoinGecko 免费公共接口）被限流或故障时，
+        # 刷新任务只记日志后返回，旧价会被无限期沿用——买家实付的法币价值会随行情
+        # 漂移而系统性偏离。宁可让该币暂时退出支付选项，也不能按过期汇率收款。
+        if self.price_is_stale():
+            raise PriceUnavailableError(
+                f"{self.symbol} 的 {fiat} 价格已过期"
+                f"（更新于 {self.prices_updated_at}）"
+            )
+        return price
+
+    def price_is_stale(self) -> bool:
+        """价格是否已超出可接受的新鲜度窗口。"""
+        max_age = get_crypto_price_max_age()
+        # 阈值为 0 表示关闭新鲜度校验，用于行情源不可用时的应急放行。
+        if max_age <= 0:
+            return False
+        if self.prices_updated_at is None:
+            # 存量数据在补齐 prices_updated_at 前不判过期，避免升级瞬间所有币停摆；
+            # 刷新任务每分钟执行一次，正常部署下很快就会写上时间戳。
+            return False
+        return timezone.now() - self.prices_updated_at > timedelta(seconds=max_age)
 
     # USD 锚定稳定币的符号集合：price() 对它们恒返回 1，无需依赖行情。
     USD_PEGGED_SYMBOLS = frozenset({"USDT", "USDC", "DAI"})
@@ -304,7 +338,9 @@ class CryptoOnChain(models.Model):
                 else:
                     self.address = TronAddressCodec.hex41_to_base58(self.address)
             except ValueError as exc:
-                raise ValidationError({"address": _("Tron 合约地址格式无效。")}) from exc
+                raise ValidationError(
+                    {"address": _("Tron 合约地址格式无效。")}
+                ) from exc
             return
 
         raise ValidationError({"chain": _("不支持的链类型。")})

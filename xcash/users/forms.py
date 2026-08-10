@@ -35,8 +35,11 @@ class UserAdminCreationForm(admin_forms.AdminUserCreationForm):
 
 
 class LoginForm(forms.Form):
-    """
-    Form used by the public admin login entrance.
+    """后台登录入口表单。
+
+    这里刻意不校验用户名是否存在、账户是否启用：一旦这两种情况的响应与密码错误
+    可区分，表单就成了用户名枚举预言机。存在性与启用态统一由 authenticate()
+    判定（ModelBackend 会拒绝 is_active=False 的用户），对外只回一句通用错误。
     """
 
     username = forms.CharField(
@@ -49,15 +52,3 @@ class LoginForm(forms.Form):
         label=_("密码"),
         widget=UnfoldAdminPasswordWidget(attrs={"autocomplete": "new-password"}),
     )
-
-    def clean(self):
-        cleaned_data = super().clean()
-        username = cleaned_data.get("username")
-        try:
-            user = User.objects.get(username=username)
-            if not user.is_active:
-                raise forms.ValidationError(_("此账户已被禁用，如有疑问请联系管理员。"))
-        except User.DoesNotExist as exc:
-            raise forms.ValidationError("此用户名未注册。") from exc
-
-        return cleaned_data

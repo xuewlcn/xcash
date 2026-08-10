@@ -1,4 +1,5 @@
 """从 Chainlist 数据集中选择指定链的无密钥 HTTPS RPC。"""
+
 # ruff: noqa: INP001
 
 from __future__ import annotations

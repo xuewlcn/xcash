@@ -22,14 +22,30 @@ GOLDEN_MNEMONIC = (
 
 # (bip44_account, address_index, EIP-55 地址, 私钥十六进制)
 GOLDEN_DERIVATIONS = [
-    (0, 0, "0x197A1bEE163923815Ba58EaD0F14B3Fcd8C5926d",
-     "7baa95e968e65395b2b4cc341885bcfbc0d820571af180c65cc9c5019551c669"),
-    (0, 1, "0xFaC7f183C69892E7379202C7E440d23b84d909bf",
-     "12bbb3776db944eaf610e68d9f70416034caf0033ea0149bb135de6e129bddef"),
-    (1, 0, "0xf9E2301a1C62C5B7Bcaf5f42EA5D436098BB99B1",
-     "735c368912a68064d227aff1f00292910e5f31c8a2111e41d59aa8b33aa7c6c6"),
-    (1, 5, "0x48C4401ce3cd5BfcEa3f671462A47963E767546A",
-     "65a1afabaaf8cf1ebf32372d5b40e48774e4f71d4765cd69a54b0b1ca782ee88"),
+    (
+        0,
+        0,
+        "0x197A1bEE163923815Ba58EaD0F14B3Fcd8C5926d",
+        "7baa95e968e65395b2b4cc341885bcfbc0d820571af180c65cc9c5019551c669",
+    ),
+    (
+        0,
+        1,
+        "0xFaC7f183C69892E7379202C7E440d23b84d909bf",
+        "12bbb3776db944eaf610e68d9f70416034caf0033ea0149bb135de6e129bddef",
+    ),
+    (
+        1,
+        0,
+        "0xf9E2301a1C62C5B7Bcaf5f42EA5D436098BB99B1",
+        "735c368912a68064d227aff1f00292910e5f31c8a2111e41d59aa8b33aa7c6c6",
+    ),
+    (
+        1,
+        5,
+        "0x48C4401ce3cd5BfcEa3f671462A47963E767546A",
+        "65a1afabaaf8cf1ebf32372d5b40e48774e4f71d4765cd69a54b0b1ca782ee88",
+    ),
 ]
 
 

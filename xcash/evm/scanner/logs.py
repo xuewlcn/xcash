@@ -64,18 +64,27 @@ class EvmLogScanner:
                 return
             from_block, to_block = scan_window
 
-            cls.scan_range(
-                chain=chain,
-                rpc_client=rpc_client,
-                token_registry=token_registry,
-                from_block=from_block,
-                to_block=to_block,
-            )
+            # 按 chunk 推进，每扫完一段立即提交游标。整窗口最多 batch_size 块、会被
+            # 拆成多次 eth_getLogs，单 tick 总耗时可能超过 Celery 的软超时（默认 30s）
+            # 或撞上进程回收；若等整窗口扫完才提交游标，中断就会把已经扫完的区块一并
+            # 回退，下一轮从同一起点重来——节点稍慢即原地踏步、永远追不上链头。
+            # 分段提交后中断只损失当前这一段，已完成的进度不丢。
+            chunk_size = max(1, chain.evm_log_max_block_range)
+            chunk_from = from_block
+            while chunk_from <= to_block:
+                chunk_to = min(to_block, chunk_from + chunk_size - 1)
+                cls.scan_range(
+                    chain=chain,
+                    rpc_client=rpc_client,
+                    token_registry=token_registry,
+                    from_block=chunk_from,
+                    to_block=chunk_to,
+                )
+                cls._advance_cursor(cursor=cursor, scanned_to_block=chunk_to)
+                chunk_from = chunk_to + 1
         except EvmScannerRpcError as exc:
             cls._mark_cursor_error(cursor=cursor, exc=exc)
             raise
-
-        cls._advance_cursor(cursor=cursor, scanned_to_block=to_block)
 
     @classmethod
     def scan_range(

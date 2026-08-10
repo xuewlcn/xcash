@@ -355,9 +355,7 @@ class EvmTxTaskTests(TestCase):
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=gas_price,
-                get_balance=Mock(
-                    return_value=2 * 21_000 * gas_price
-                ),
+                get_balance=Mock(return_value=2 * 21_000 * gas_price),
                 estimate_gas=estimate_gas_mock,
                 send_raw_transaction=send_raw_mock,
             )
@@ -1087,8 +1085,8 @@ class EvmTxTaskTests(TestCase):
             "hash": "0x" + ("cc" if number == 100 else "bb") * 32
         }
 
-        status, tx_hash, receipt, observed = (
-            EvmTaskPoller._find_receipt_across_hashes(evm_task=tx_task)
+        status, tx_hash, receipt, observed = EvmTaskPoller._find_receipt_across_hashes(
+            evm_task=tx_task
         )
 
         self.assertEqual(status, TxCheckStatus.FAILED)

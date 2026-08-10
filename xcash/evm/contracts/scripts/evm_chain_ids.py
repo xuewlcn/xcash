@@ -1,4 +1,5 @@
 """静态读取 xcash/chains/constants.py 中登记的 EVM chain id。"""
+
 # ruff: noqa: INP001
 
 from __future__ import annotations

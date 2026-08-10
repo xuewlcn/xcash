@@ -1,0 +1,39 @@
+{
+	# 文档化的部署拓扑是「宿主机反向代理（Nginx/Caddy，终结 TLS）→ 127.0.0.1:6688 → 本 Caddy」。
+	# 本 Caddy 看到的 TCP 对端是 Docker 网关（172.x / 10.x，由 Docker 创建网络时分配，
+	# 无法预先写死），因此默认信任私有网段。只有对端受信时，Caddy 才采信上游转发来的
+	# X-Forwarded-For / X-Real-IP / X-Forwarded-Proto，否则一律按直连对端处理——
+	# 这保证了「无法穿透」而不是「可被伪造」。
+	#
+	# 反代与本机不同机（LISTEN_TO 设为 0.0.0.0 对外暴露 6688）时，务必把反代机的
+	# 公网 IP 显式写进 CADDY_TRUSTED_PROXIES 收紧信任范围，否则任何能连到 6688 的
+	# 私网来源都可伪造客户端 IP。
+	servers {
+		trusted_proxies static {$CADDY_TRUSTED_PROXIES:private_ranges}
+		# 顺序即优先级，X-Real-IP 必须排在 X-Forwarded-For 之前：
+		# Caddy 取 X-Forwarded-For 的【最左】值作为客户端 IP，而 Nginx 最常见的
+		# `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` 是【追加】语义——
+		# 最左值来自客户端请求头，可被任意伪造，商户 IP 白名单会因此形同虚设。
+		# `proxy_set_header X-Real-IP $remote_addr` 是【覆写】语义，取 Nginx 自己看到的
+		# TCP 对端，不可伪造，所以优先采信它（README 的反代示例即按此配置）。
+		# X-Forwarded-For 作为兜底保留：宿主用 Caddy 反代时它不设 X-Real-IP，但会把
+		# 非受信来源的 X-Forwarded-For 重写为真实对端，同样不可伪造。
+		client_ip_headers X-Real-IP X-Forwarded-For
+	}
+}
+
+:80 {
+	handle_path /static/* {
+		root * /srv/staticfiles
+		file_server
+	}
+
+	reverse_proxy django:8000 {
+		# X-Real-IP 是 IP 白名单与全部 IP 维度限流的取值来源（见 xcash/common/utils/security.py
+		# 的 client_ip）。必须用 {client_ip} 而非 {remote_host}：后者是本容器看到的 TCP
+		# 对端，在宿主反代拓扑下恒为 Docker 网关，会让所有外部请求在 Django 眼里收敛成
+		# 同一个 IP——商户 IP 白名单全量拒绝、IP 限流塌缩成全站单桶。{client_ip} 会按上面
+		# 的 trusted_proxies 沿转发链回溯出第一个非受信地址，即真实客户端 IP。
+		header_up X-Real-IP {client_ip}
+	}
+}

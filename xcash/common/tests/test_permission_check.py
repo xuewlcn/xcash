@@ -254,7 +254,9 @@ class RefreshSaasPermissionTaskTest(TestCase):
             "frozen": False,
         }
         mock_resp.raise_for_status.return_value = None
-        mock_client_cls.return_value.__enter__.return_value.post.return_value = mock_resp
+        mock_client_cls.return_value.__enter__.return_value.post.return_value = (
+            mock_resp
+        )
 
         before = time.time()
         _refresh_saas_permission.run(appid="XC-r")
@@ -273,7 +275,9 @@ class RefreshSaasPermissionTaskTest(TestCase):
         old = {"frozen": False, "_fetched_at": time.time() - 100}
         cache.set("saas:permission:XC-keep", old, None)
 
-        mock_client_cls.return_value.__enter__.return_value.post.side_effect = httpx.ConnectError("boom")
+        mock_client_cls.return_value.__enter__.return_value.post.side_effect = (
+            httpx.ConnectError("boom")
+        )
         _refresh_saas_permission.run(appid="XC-keep")
 
         self.assertEqual(cache.get("saas:permission:XC-keep"), old)
@@ -287,9 +291,13 @@ class RefreshSaasPermissionTaskTest(TestCase):
 
         mock_resp = Mock()
         mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Forbidden", request=Mock(), response=Mock(status_code=403),
+            "Forbidden",
+            request=Mock(),
+            response=Mock(status_code=403),
         )
-        mock_client_cls.return_value.__enter__.return_value.post.return_value = mock_resp
+        mock_client_cls.return_value.__enter__.return_value.post.return_value = (
+            mock_resp
+        )
 
         _refresh_saas_permission.run(appid="XC-4xx")
 

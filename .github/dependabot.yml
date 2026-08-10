@@ -1,0 +1,80 @@
+version: 2
+
+# 本项目所有依赖都精确 pin（见 pyproject.toml），好处是部署可复现，代价是没人
+# 主动升级就永远停在旧版本——Django / cryptography / web3 这类包的安全补丁会被漏掉。
+# 因此统一按周检查，并【按生态分组成单个 PR】：分组后每周最多几个 PR，
+# 既不会淹没 review，也保证补丁不会无人问津。
+updates:
+  # Python 依赖：uv 生态同时理解 pyproject.toml 的精确 pin 与 uv.lock。
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # 运行时依赖单独成组：这些会进生产镜像，需要人工确认后再合。
+      production-dependencies:
+        dependency-type: "production"
+      # 开发工具链合成一个 PR：ruff/black/mypy/pytest 之类升级互不相干，
+      # 逐个开 PR 只是噪音。
+      dev-dependencies:
+        dependency-type: "development"
+    ignore:
+      # 大版本升级一律不自动跟：major 变更要人工排期评估与回归，混进每周的补丁
+      # 分组 PR 只会让整组都合不了，反而把同组的安全补丁一起拖住。
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # Django 锁死在 5.2 LTS（安全支持到 2028-04）。dependabot 默认追最新版本、
+      # 不认 LTS 策略：不加这条它会直接提 6.x，把同分支的 5.2.x 安全补丁整个跳过去
+      # ——本意是跟补丁，结果反而漏补丁。5.3 同样不是 LTS，一并挡掉。
+      - dependency-name: "django"
+        versions: [">= 5.3"]
+
+  # 支付前端（pnpm）
+  - package-ecosystem: "npm"
+    directory: "/pay-fronted"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    groups:
+      pay-fronted:
+        patterns: ["*"]
+    ignore:
+      # 同上：前端 major 升级（React、Vite、Tailwind 之流）要人工验证支付页渲染，
+      # 不适合混在自动 PR 里。
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # CI 里用到的 action 版本
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # 容器基础镜像（Dockerfile 里的 uv / python / caddy）。
+  # 注意 docker-compose.yml 里的 postgres / redis 镜像 tag 不在此生态覆盖范围内，
+  # 仍需人工跟进。
+  - package-ecosystem: "docker"
+    directory: "/compose/production/django"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      docker-images:
+        patterns: ["*"]
+    ignore:
+      # python 基础镜像【有意不交给 dependabot】：build-stage 用的是
+      # ghcr.io/astral-sh/uv:python3.13-bookworm-slim，run-stage 用
+      # python:3.13-slim-bookworm，两者的 Python 小版本必须一致——venv 里是
+      # lib/python3.13/site-packages，run-stage 单独升到 3.14 后解释器根本不去那儿找，
+      # 构建期直接 ModuleNotFoundError: No module named 'django'。dependabot 只认
+      # 后者、看不到这层跨阶段耦合，只能人工同步升。
+      - dependency-name: "python"
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

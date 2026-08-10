@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import structlog
+from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
 from django.db import Error as DatabaseLayerError
 from django.db import transaction
@@ -130,26 +131,33 @@ class TronScanner:
                     )
                     events_seen += len(parsed_events)
                     for event in parsed_events:
-                        cls._persist_observed_transfer_safely(
-                            observed=event.observed
-                        )
+                        cls._persist_observed_transfer_safely(observed=event.observed)
                     blocks_scanned += 1
                     last_successfully_scanned = block_number
         except TronClientError as exc:
             # 已经成功扫完的块仍需落到游标，避免下一轮重新扫一遍 + 让错误信息可见。
             # 顺序：先 advance（清 last_error），再 mark_error（写新 last_error），
             # 保证 last_error 反映最近一次失败而非被 advance 覆盖。
-            if last_successfully_scanned is not None:
-                cls._advance_cursor(
-                    cursor=cursor,
-                    latest_block=latest_block,
-                    scanned_block=last_successfully_scanned,
-                )
+            cls.flush_scan_progress(
+                cursor=cursor,
+                latest_block=latest_block,
+                scanned_block=last_successfully_scanned,
+            )
             cls._mark_cursor_error(cursor=cursor, exc=exc)
             raise
-
-        if last_successfully_scanned is not None:
-            cls._advance_cursor(
+        except BaseException:
+            # TronClientError 之外的中断同样必须落盘进度，典型是 Celery 软超时：
+            # 单轮最多 DEFAULT_TRON_SCAN_BATCH_SIZE 块、每块要读整块交易，总耗时很容易
+            # 越过软超时，而这条路径若不提交，本轮已扫完的二十几块会连带回退、下一轮
+            # 从同一起点重来——节点持续偏慢时游标就再也推不动，充值全面滞留。
+            cls.flush_scan_progress(
+                cursor=cursor,
+                latest_block=latest_block,
+                scanned_block=last_successfully_scanned,
+            )
+            raise
+        else:
+            cls.flush_scan_progress(
                 cursor=cursor,
                 latest_block=latest_block,
                 scanned_block=last_successfully_scanned,
@@ -500,17 +508,19 @@ class TronScanner:
                     tokens_by_address=tokens_by_address,
                 )
             )
-        if candidates:
-            # TransactionInfo 不携带 blockID；仅在本块确有候选事件时补拉一次，
-            # 空块不额外打点。
-            block_hash = client.get_solid_block_id(block_number=block_number)
-            candidates = [
-                ParsedTronTransferEvent(
-                    observed=replace(event.observed, block_hash=block_hash)
-                )
-                for event in candidates
-            ]
-        return cls.filter_matched_events(chain=chain, candidates=candidates)
+        matched = cls.filter_matched_events(chain=chain, candidates=candidates)
+        if not matched:
+            return []
+        # TransactionInfo 不携带 blockID，只有确实命中系统收款地址的块才需要补拉。
+        # 必须放在地址过滤之后：注册 USDT 后主网几乎每块都有 Transfer 日志，过滤前的
+        # candidates 恒为非空，按"有候选就补拉"等于每块都多打一次整块请求。
+        block_hash = client.get_solid_block_id(block_number=block_number)
+        return [
+            ParsedTronTransferEvent(
+                observed=replace(event.observed, block_hash=block_hash)
+            )
+            for event in matched
+        ]
 
     @classmethod
     def _parse_transaction_info_events(
@@ -680,6 +690,11 @@ class TronScanner:
     ) -> None:
         try:
             TransferService.create_observed_transfer(observed=observed)
+        except SoftTimeLimitExceeded:
+            # 软超时继承自 Exception，被下面的逐事件容错分支吞掉会让扫描继续往下跑，
+            # 直到硬超时被 SIGKILL——那条路径连 except 都来不及执行，已扫块的进度会
+            # 彻底丢失。上抛后交给 scan_chain 的中断分支落盘进度。
+            raise
         except DatabaseLayerError:
             # 数据库层异常多为暂时性故障（死锁被牺牲、连接抖动、超时），必须上抛，
             # 让本轮扫描中断、游标停在该块之前，由下一轮重扫幂等恢复；
@@ -697,6 +712,27 @@ class TronScanner:
                 amount=str(observed.amount),
                 error=str(exc),
             )
+
+    @classmethod
+    def flush_scan_progress(
+        cls,
+        *,
+        cursor: TronWatchCursor,
+        latest_block: int,
+        scanned_block: int | None,
+    ) -> None:
+        """把本轮已成功扫完的最高块落到游标；一块都没扫成时保持游标不动。
+
+        正常结束、RPC 失败、被中断（软超时/进程回收）三条路径共用，确保任何退出方式
+        都不会丢弃已完成的扫描进度。
+        """
+        if scanned_block is None:
+            return
+        cls._advance_cursor(
+            cursor=cursor,
+            latest_block=latest_block,
+            scanned_block=scanned_block,
+        )
 
     @staticmethod
     def _advance_cursor(

@@ -78,9 +78,7 @@ class TestSetVault:
         project.refresh_from_db()
         assert project.tron_vault in (None, "")
 
-    def test_set_vault_rejects_global_differ_address_conflict(
-        self, client, project
-    ):
+    def test_set_vault_rejects_global_differ_address_conflict(self, client, project):
         other_project = Project.objects.create(name="vault-conflict-owner")
         DifferRecipientAddress.objects.create(
             project=other_project,

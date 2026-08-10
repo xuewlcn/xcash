@@ -224,7 +224,9 @@ def _handle_invoice_webhook(*, nonce, timestamp_str, signature, body_str, payloa
     is_final = data.get("confirmed", False)
     if not is_final:
         logger.info(
-            "stress.webhook.skipped_non_final", sys_no=sys_no, confirmed=data.get("confirmed")
+            "stress.webhook.skipped_non_final",
+            sys_no=sys_no,
+            confirmed=data.get("confirmed"),
         )
         return
 
@@ -371,14 +373,9 @@ def _verify_deposit_webhook(
     # 2. Payload 匹配：hash（忽略 0x 前缀差异）和 uid 必须与 case 一致
     data_hash = (data.get("hash") or "").removeprefix("0x")
     case_hash = case.tx_hash.removeprefix("0x")
-    payload_ok = (
-        data_hash == case_hash
-        and data.get("uid") == case.customer_uid
-    )
+    payload_ok = data_hash == case_hash and data.get("uid") == case.customer_uid
     if not payload_ok:
-        errors.append(
-            f"Payload 不匹配: hash={data.get('hash')}, uid={data.get('uid')}"
-        )
+        errors.append(f"Payload 不匹配: hash={data.get('hash')}, uid={data.get('uid')}")
 
     # 3. Nonce 唯一性
     nonce_ok = nonce not in case.webhook_received_nonces
@@ -447,8 +444,6 @@ def _update_deposit_case(case, nonce, result: _VerifyResult):
             case.finished_at = now
             update_fields.append("finished_at")
 
-        case.save(
-            update_fields=update_fields
-        )
+        case.save(update_fields=update_fields)
 
     return case

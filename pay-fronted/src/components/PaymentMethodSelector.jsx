@@ -1,33 +1,37 @@
 import { Check, Loader2, AlertCircle } from "lucide-react"
-import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import TokenSelector from "@/components/TokenSelector"
 import ChainSelector from "@/components/ChainSelector"
 import { useI18n } from "@/hooks/useI18n"
 
-// 步骤序号圆点：已选 → primary + 勾，未选 → muted + 数字
-function StepDot({ active, done, number, disabled }) {
+// 小节标题：序号圆点（已选 → 品牌色 + 勾，未选 → 描边数字）
+function SectionHeading({ done, number, title, desc, trailing, dimmed }) {
   return (
-    <div
-      className={cn(
-        "mt-0.5 size-6 rounded-full flex items-center justify-center shrink-0 transition-colors",
-        done || active
-          ? "bg-primary text-primary-foreground"
-          : "bg-muted text-muted-foreground border",
-        disabled && "opacity-40"
-      )}
-    >
-      {done ? <Check className="size-3.5" /> : <span className="text-[11px] font-bold">{number}</span>}
+    <div className={cn("flex items-start gap-3", dimmed && "opacity-50")}>
+      <div
+        className={cn(
+          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full transition-colors",
+          done
+            ? "bg-primary text-primary-foreground"
+            : "border bg-card text-[11px] font-bold text-muted-foreground"
+        )}
+      >
+        {done ? <Check className="size-3.5" /> : number}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold tracking-tight">{title}</span>
+          {trailing}
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground">{desc}</p>
+      </div>
     </div>
   )
 }
 
 function PaymentMethodSelector({
-  invoice,
   availableMethods,
   selectedCrypto,
   selectedChain,
@@ -39,103 +43,74 @@ function PaymentMethodSelector({
   onCancelEdit,
 }) {
   const { t } = useI18n()
-  const hasOrderNumber = Boolean(invoice.out_no)
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Invoice summary */}
-      <Card>
-        <CardContent className="flex items-start justify-between gap-4">
-          <div className="min-w-0 space-y-3">
-            <h2 className="truncate text-base font-semibold">{invoice.title}</h2>
-            <div className="space-y-2 text-xs text-muted-foreground">
-              {hasOrderNumber && (
-                <p>
-                  {t("invoice.orderNumber")}: <span className="font-mono">{invoice.out_no}</span>
-                </p>
-              )}
-              <p>
-                {t("invoice.systemNumber")}: <span className="font-mono">{invoice.sys_no}</span>
-              </p>
-            </div>
-          </div>
-          <div className="shrink-0 text-right">
-            <div className="text-2xl font-bold leading-none tabular-nums">{invoice.amount}</div>
-            <div className="mt-2 text-sm text-muted-foreground">{invoice.currency}</div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Title */}
-      <div>
-        <h2 className="text-base font-semibold">{t("payment.selectMethod")}</h2>
+    <div className="flex flex-col gap-6">
+      {/* 页头 */}
+      <div className="space-y-1.5">
+        <h1 className="text-xl font-bold tracking-tight">{t("payment.selectMethod")}</h1>
+        <p className="text-sm text-muted-foreground">{t("payment.selectMethodDesc")}</p>
       </div>
 
       {/* Step 1: Token */}
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex items-start gap-3">
-            <StepDot done={Boolean(selectedCrypto)} number={1} />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold">{t("payment.selectToken")}</span>
-                {selectedCrypto && <Badge variant="secondary">{selectedCrypto}</Badge>}
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">{t("payment.selectTokenDesc")}</p>
-            </div>
-          </div>
-          <TokenSelector
-            availableMethods={availableMethods}
-            selectedCrypto={selectedCrypto}
-            onCryptoChange={onCryptoChange}
-            disabled={isSelecting}
-          />
-        </CardContent>
-      </Card>
-
-      {/* Connector */}
-      <div className="flex justify-center py-1">
-        <Separator orientation="vertical" className="h-5" />
-      </div>
+      <section className="flex flex-col gap-3.5">
+        <SectionHeading
+          done={Boolean(selectedCrypto)}
+          number={1}
+          title={t("payment.selectToken")}
+          desc={t("payment.selectTokenDesc")}
+          trailing={
+            selectedCrypto && (
+              <span className="rounded-full bg-brand-soft px-2.5 py-0.5 text-xs font-semibold text-brand">
+                {selectedCrypto}
+              </span>
+            )
+          }
+        />
+        <TokenSelector
+          availableMethods={availableMethods}
+          selectedCrypto={selectedCrypto}
+          onCryptoChange={onCryptoChange}
+          disabled={isSelecting}
+        />
+      </section>
 
       {/* Step 2: Network */}
-      <Card className={cn(!selectedCrypto && "opacity-60")}>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex items-start gap-3">
-            <StepDot
-              done={Boolean(selectedChain)}
-              number={2}
-              disabled={!selectedCrypto && !selectedChain}
-            />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold">{t("payment.selectNetwork")}</span>
-                {selectedChain && <Badge variant="secondary">{selectedChain}</Badge>}
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">{t("payment.selectNetworkDesc")}</p>
-            </div>
-          </div>
-          <ChainSelector
-            availableMethods={availableMethods}
-            selectedCrypto={selectedCrypto}
-            selectedChain={selectedChain}
-            onChainChange={onChainChange}
-            disabled={isSelecting}
-          />
-        </CardContent>
-      </Card>
+      <section className="flex flex-col gap-3.5">
+        <SectionHeading
+          done={Boolean(selectedChain)}
+          number={2}
+          title={t("payment.selectNetwork")}
+          desc={t("payment.selectNetworkDesc")}
+          dimmed={!selectedCrypto && !selectedChain}
+          trailing={
+            selectedChain && (
+              <span className="rounded-full bg-brand-soft px-2.5 py-0.5 text-xs font-semibold text-brand">
+                {selectedChain}
+              </span>
+            )
+          }
+        />
+        <ChainSelector
+          availableMethods={availableMethods}
+          selectedCrypto={selectedCrypto}
+          selectedChain={selectedChain}
+          onChainChange={onChainChange}
+          disabled={isSelecting}
+        />
+      </section>
 
       {/* Loading */}
       {isSelecting && (
-        <div className="mt-2 flex items-center justify-center gap-2.5 py-4 bg-muted rounded-lg">
-          <Loader2 className="size-4 animate-spin text-muted-foreground" />
+        <div className="flex items-center justify-center gap-2.5 rounded-xl border bg-card py-4">
+          <Loader2 className="size-4 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">{t("payment.gettingPaymentInfo")}</p>
         </div>
       )}
 
       {/* Error */}
       {error && !isSelecting && (
-        <Alert variant="destructive" className="mt-2">
+        <Alert variant="destructive">
           <AlertCircle />
           <AlertDescription>{error}</AlertDescription>
         </Alert>
@@ -143,7 +118,7 @@ function PaymentMethodSelector({
 
       {/* Cancel edit */}
       {isEditing && !isSelecting && (
-        <div className="flex justify-end pt-1">
+        <div className="flex justify-end">
           <Button variant="ghost" onClick={onCancelEdit} size="sm">
             {t("common.cancel")}
           </Button>

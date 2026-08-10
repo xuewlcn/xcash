@@ -7,6 +7,7 @@ from decimal import Decimal
 import structlog
 from celery import shared_task
 from django.db import transaction
+from tron.client import TronClientError
 from tron.client import TronHttpClient
 
 from chains.constants import ChainCode
@@ -50,6 +51,14 @@ def int_payload_value(payload: dict, key: str) -> int:
 
 def build_tx_detail(*, chain: Chain, tx_hash: str) -> TronTxDetail:
     payload = TronHttpClient(chain=chain).get_transaction_info_by_id(tx_hash)
+    # 必须确认回执确实属于这笔交易再计价。gettransactioninfobyid 走 walletsolidity，
+    # 负载均衡到固化头略落后的后端时会返回空对象——那样 fee 与 energy 都会被当成 0，
+    # 成本按 0 上报；而 sys_no 在 SaaS 侧幂等去重，这笔成本此后永远无法补正。
+    # 抛异常交给上层 notify_* 的退避重试处理，等固化头跟上即可拿到真实回执。
+    if not isinstance(payload, dict) or str(payload.get("id") or "") != tx_hash:
+        raise TronClientError(
+            f"transaction info not found for {tx_hash} from {chain.code}"
+        )
     fee_sun = int_payload_value(payload, "fee")
     receipt = payload.get("receipt") or {}
     if not isinstance(receipt, dict):
@@ -98,10 +107,8 @@ def notify_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
 
 
 def send_vault_slot_deploy_gas_fee(*, tx_task: TxTask) -> None:
-    slot = (
-        VaultSlot.objects.select_related("project", "chain", "customer").get(
-            deploy_tx_task=tx_task
-        )
+    slot = VaultSlot.objects.select_related("project", "chain", "customer").get(
+        deploy_tx_task=tx_task
     )
     tx_detail = build_tx_detail(chain=slot.chain, tx_hash=tx_task.tx_hash)
     send_saas_callback(

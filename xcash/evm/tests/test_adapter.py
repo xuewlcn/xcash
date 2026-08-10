@@ -24,9 +24,7 @@ class EvmAdapterTests(TestCase):
         token_address = Web3.to_checksum_address(
             "0x0000000000000000000000000000000000000b01"
         )
-        owner = Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000b02"
-        )
+        owner = Web3.to_checksum_address("0x0000000000000000000000000000000000000b02")
         CryptoOnChain.objects.create(
             chain=chain, crypto=token, address=token_address, decimals=6
         )
